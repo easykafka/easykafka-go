@@ -232,23 +232,187 @@ const (
 ```
 
 #### 4.4 CircuitBreakerStrategy
-- **Behavior**: Pause consumption after consecutive failure threshold
-- **Use Case**: Protect downstream services from overload during incidents
-- **State**: Failure counter, circuit state (closed/open/half-open)
+- **Behavior**: Temporarily pause message processing after consecutive failures to protect downstream services
+- **Use Case**: Protect downstream services from overload during incidents (database down, API unavailable, etc.)
+- **State**: Failure counter, success counter, circuit state (closed/open/half-open), last state change timestamp
 - **Config**:
-  - FailureThreshold (default: 10)
-  - CooldownPeriod (default: 60 seconds)
-  - HalfOpenMaxAttempts (default: 3)
+  - FailureThreshold (default: 10) - consecutive failures before opening circuit
+  - CooldownPeriod (default: 60 seconds) - how long to wait in Open state before trying again
+  - HalfOpenMaxAttempts (default: 3) - successful messages needed in HalfOpen to close circuit
+
+**Circuit States Explained**:
+
+1. **Closed (Normal Operation)**:
+   - Messages are processed normally
+   - Handler called for every message
+   - On success: Reset failure counter to 0
+   - On failure: Increment failure counter
+   - Transition: When `failureCounter >= FailureThreshold` → Open
+
+2. **Open (Circuit Tripped)**:
+   - **Messages are NOT processed** - handler is NOT called
+   - All messages immediately FAIL (HandleError returns error to stop consumer)
+   - This gives downstream services time to recover
+   - Timestamp recorded when entering Open state
+   - Transition: After `CooldownPeriod` elapses → HalfOpen
+
+3. **HalfOpen (Testing Recovery)**:
+   - Allow LIMITED number of messages through to test if downstream recovered
+   - Process messages one at a time (no parallel processing)
+   - Track success counter (starts at 0)
+   - On success: Increment success counter
+     - If `successCounter >= HalfOpenMaxAttempts` → Closed (recovery confirmed)
+   - On failure: Immediately → Open (downstream still broken, restart cooldown)
 
 **Circuit State Machine**:
 ```
-Closed --[failures >= threshold]--> Open --[cooldown expired]--> HalfOpen
-   ↑                                                                 |
-   |                                                                 |
-   +----[successes >= halfOpenAttempts]----------------------------+
-   |                                                                 |
-   +----[any failure]-----------------------------------------------+
+     ┌─────────────────────────────────────────────────────────┐
+     │                                                           │
+     │                CLOSED (Normal)                           │
+     │  - Process all messages                                  │
+     │  - Track consecutive failures                            │
+     │                                                           │
+     └───────────────────┬───────────────────────────────────────┘
+                         │
+                         │ 10 consecutive failures
+                         │ (FailureThreshold reached)
+                         ↓
+     ┌─────────────────────────────────────────────────────────┐
+     │                                                           │
+     │                 OPEN (Circuit Tripped)                   │
+     │  - Reject all messages (handler NOT called)              │
+     │  - Wait for CooldownPeriod (60s)                         │
+     │  - No processing = downstream can recover                │
+     │                                                           │
+     └───────────────────┬───────────────────────────────────────┘
+                         │
+                         │ 60 seconds elapsed
+                         │ (CooldownPeriod expired)
+                         ↓
+     ┌─────────────────────────────────────────────────────────┐
+     │                                                           │
+     │              HALF-OPEN (Testing)                         │
+     │  - Try processing messages cautiously                    │
+     │  - Track successes (need 3 to close)                     │
+     │                                                           │
+     └─────┬──────────────────────────────────────────┬─────────┘
+           │                                          │
+           │ 3 consecutive successes                  │ ANY failure
+           │ (recovery confirmed)                     │ (still broken)
+           │                                          │
+           ↓                                          ↓
+       Back to CLOSED                            Back to OPEN
+   (reset all counters)                    (restart cooldown)
 ```
+
+**Detailed State Transition Logic**:
+
+```go
+type CircuitBreakerStrategy struct {
+    state            CircuitState  // Closed, Open, HalfOpen
+    failureCount     int           // Consecutive failures in Closed state
+    successCount     int           // Consecutive successes in HalfOpen state
+    lastStateChange  time.Time     // When did we last change state
+    failureThreshold int           // Config: failures to trip circuit
+    cooldownPeriod   time.Duration // Config: how long to wait in Open
+    halfOpenAttempts int           // Config: successes needed to close
+    mu               sync.RWMutex
+}
+
+func (cb *CircuitBreakerStrategy) HandleError(ctx context.Context, msg *Message, handlerErr error) error {
+    cb.mu.Lock()
+    defer cb.mu.Unlock()
+    
+    switch cb.state {
+    case Closed:
+        // Normal operation - handler was called and failed
+        cb.failureCount++
+        log.Warn().Int("failures", cb.failureCount).Msg("handler failed")
+        
+        if cb.failureCount >= cb.failureThreshold {
+            // Too many failures - trip the circuit
+            cb.state = Open
+            cb.lastStateChange = time.Now()
+            log.Error().Msg("Circuit breaker OPENED - pausing consumption")
+            return fmt.Errorf("circuit breaker opened after %d failures", cb.failureCount)
+        }
+        
+        // Not at threshold yet - retry this message (or use retry strategy)
+        return nil // Continue processing
+        
+    case Open:
+        // Circuit is open - check if cooldown period has elapsed
+        if time.Since(cb.lastStateChange) >= cb.cooldownPeriod {
+            // Cooldown completed - try testing recovery
+            cb.state = HalfOpen
+            cb.successCount = 0
+            cb.lastStateChange = time.Now()
+            log.Info().Msg("Circuit breaker entering HALF-OPEN - testing recovery")
+            // Fall through to HalfOpen handling
+        } else {
+            // Still cooling down - reject this message
+            log.Debug().Msg("Circuit breaker OPEN - rejecting message")
+            return fmt.Errorf("circuit breaker open, waiting for cooldown")
+        }
+        
+    case HalfOpen:
+        // We're testing if downstream recovered - handler was called
+        if handlerErr == nil {
+            // Success! Increment success counter
+            cb.successCount++
+            log.Info().Int("successes", cb.successCount).Msg("half-open success")
+            
+            if cb.successCount >= cb.halfOpenAttempts {
+                // Enough successes - downstream is healthy again
+                cb.state = Closed
+                cb.failureCount = 0
+                cb.lastStateChange = time.Now()
+                log.Info().Msg("Circuit breaker CLOSED - normal operation resumed")
+            }
+            return nil // Continue processing
+            
+        } else {
+            // Failure in half-open - downstream still broken
+            cb.state = Open
+            cb.failureCount = 0
+            cb.lastStateChange = time.Now()
+            log.Error().Msg("Circuit breaker reopened - downstream still failing")
+            return fmt.Errorf("circuit breaker reopened")
+        }
+    }
+    
+    return nil
+}
+```
+
+**Key Differences from Retry Strategy**:
+- **Retry**: Retries the SAME message multiple times (transient failures)
+- **Circuit Breaker**: Stops processing ALL messages temporarily (systemic failures)
+- **Retry**: Helps with occasional glitches
+- **Circuit Breaker**: Protects during outages/incidents
+
+**Example Scenario**:
+```
+Time | Event                           | State      | Action
+-----|----------------------------------|------------|---------------------------
+0s   | Processing normally             | Closed     | Process all messages
+10s  | Database connection fails       | Closed     | failureCount = 1
+11s  | Still failing                   | Closed     | failureCount = 2
+...  | ...                             | Closed     | ...
+20s  | 10th consecutive failure        | Closed→Open| Stop processing, start cooldown
+21s  | New message arrives             | Open       | Reject (don't call handler)
+...  | (60 seconds pass)               | Open       | ...
+80s  | Cooldown expired                | Open→Half  | Try next message
+81s  | Message succeeds!               | HalfOpen   | successCount = 1
+82s  | Another success                 | HalfOpen   | successCount = 2
+83s  | Third success                   | Half→Close | Resume normal operation
+84s  | Back to normal                  | Closed     | Process all messages
+```
+
+**Consumer Behavior in Each State**:
+- **Closed**: Consumer runs normally, offset commits after successful processing
+- **Open**: Consumer STOPS with error (forces manual intervention or restart)
+- **HalfOpen**: Consumer cautiously processes messages, commits on success
 
 **Thread Safety**:
 - All strategy implementations must be thread-safe
