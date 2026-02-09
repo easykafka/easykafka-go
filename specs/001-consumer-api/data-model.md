@@ -163,8 +163,10 @@ type BatchHandler func(ctx context.Context, payloads [][]byte) error
 ```go
 type ErrorStrategy interface {
     // HandleError processes a handler failure
+    // msgs contains 1 message in single-message mode, N messages in batch mode
+    // In batch mode, all messages in the slice failed together atomically
     // Returns nil to continue consumption, error to stop consumer
-    HandleError(ctx context.Context, msg *Message, handlerErr error) error
+    HandleError(ctx context.Context, msgs []*Message, handlerErr error) error
     
     // Name returns strategy name for logging/debugging
     Name() string
@@ -178,17 +180,20 @@ type ErrorStrategy interface {
 - **Use Case**: Critical processing where errors require manual intervention
 - **State**: Stateless
 - **Config**: None
+- **Batch Handling**: In batch mode, stops consumer if any batch fails (receives all messages from failed batch)
 
 #### 4.2 SkipStrategy
-- **Behavior**: Log error, commit offset, continue with next message
+- **Behavior**: Log error, commit offsets, continue processing
 - **Use Case**: Best-effort processing where message loss is acceptable
 - **State**: Stateless
 - **Config**: Optional custom logger
+- **Batch Handling**: In batch mode, skips entire batch (commits all offsets in batch)
 
 #### 4.3 RetryStrategy
 - **Behavior**: Retry message processing with configurable backoff, then execute configured action after max attempts
 - **Use Case**: Transient failures (network timeouts, temporary service unavailability)
-- **State**: Retry attempt tracking per message (via message offset key)
+- **State**: Retry attempt tracking (single message: by offset; batch: by first offset or batch ID)
+- **Batch Handling**: In batch mode, retries entire batch together. All messages re-processed on each retry attempt.
 - **Config**:
   - MaxAttempts (default: 3)
   - BackoffType: Fixed, Exponential, or Custom function
@@ -204,9 +209,11 @@ type ErrorStrategy interface {
 type RetryStrategy struct {
     maxAttempts         int
     backoff             BackoffFunc
-    onMaxAttemptsAction MaxAttemptsAction  // New: configurable action
-    dlqTopic            string             // New: only used if action is SendToDLQ
-    attempts            map[int64]int      // offset -> attempt count
+    onMaxAttemptsAction MaxAttemptsAction  // Configurable action after max attempts
+    dlqTopic            string             // Only used if action is SendToDLQ
+    attempts            map[string]int     // tracking key -> attempt count
+                                           // Single mode: use offset as key
+                                           // Batch mode: use first offset or batch ID as key
     mu                  sync.RWMutex
 }
 
@@ -219,6 +226,8 @@ const (
 ```
 
 **DLQ Message Format** (when SendToDLQ action is configured):
+
+Single-message mode:
 ```json
 {
   "originalTopic": "orders",
@@ -231,10 +240,25 @@ const (
 }
 ```
 
+Batch mode (entire batch written as single DLQ message):
+```json
+{
+  "originalTopic": "orders",
+  "batchSize": 10,
+  "firstOffset": 12340,
+  "lastOffset": 12349,
+  "payloads": ["<base64>", "<base64>", ...],
+  "error": "handler error message",
+  "timestamp": "2026-02-09T10:30:00Z",
+  "attemptCount": 3
+}
+```
+
 #### 4.4 CircuitBreakerStrategy
 - **Behavior**: Temporarily pause message processing after consecutive failures to protect downstream services
 - **Use Case**: Protect downstream services from overload during incidents (database down, API unavailable, etc.)
 - **State**: Failure counter, success counter, circuit state (closed/open/half-open), last state change timestamp
+- **Batch Handling**: In batch mode, treats each batch as a single unit (one batch failure = one failure count increment)
 - **Config**:
   - FailureThreshold (default: 10) - consecutive failures before opening circuit
   - CooldownPeriod (default: 60 seconds) - how long to wait in Open state before trying again
@@ -319,9 +343,12 @@ type CircuitBreakerStrategy struct {
     mu               sync.RWMutex
 }
 
-func (cb *CircuitBreakerStrategy) HandleError(ctx context.Context, msg *Message, handlerErr error) error {
+func (cb *CircuitBreakerStrategy) HandleError(ctx context.Context, msgs []*Message, handlerErr error) error {
     cb.mu.Lock()
     defer cb.mu.Unlock()
+    
+    // Note: msgs contains 1 message in single mode, N messages in batch mode
+    // Circuit breaker treats each call as one failure/success regardless of batch size
     
     switch cb.state {
     case Closed:
@@ -623,11 +650,19 @@ type MockClient struct {
 └──────────────┘        └──────────────────┘
                                △
                                │ implements
-                        ┌──────┴────────────────┬───────────┬─────────────┐
-                        │                       │           │             │
-                   ┌────┴─────┐          ┌─────┴────┐  ┌───┴────┐   ┌───┴────────┐
-                   │FailFast  │          │   Skip   │  │ Retry  │   │    DLQ     │
-                   └──────────┘          └──────────┘  └────────┘   └────────────┘
+                        ┌──────┴────────────────┬───────────┬──────────────┐
+                        │                       │           │              │
+                   ┌────┴─────┐          ┌─────┴────┐  ┌───┴────┐   ┌────┴────────┐
+                   │FailFast  │          │   Skip   │  │ Retry  │   │CircuitBreaker│
+                   └──────────┘          └──────────┘  └────┬───┘   └─────────────┘
+                                                             │
+                                                             │ optional action
+                                                             │ after max attempts
+                                                             ↓
+                                                      ┌─────────────┐
+                                                      │  SendToDLQ  │
+                                                      │(DLQ action) │
+                                                      └─────────────┘
 
 ┌──────────────────────────────────────────────────┐
 │          Engine (Internal)                       │
@@ -685,8 +720,8 @@ Engine.Run()
    │        │     └── client.Commit(msg) ────→ Commit offset
    │        │
    │        └── Handler fails (error)
-   │              └── strategy.HandleError(ctx, msg, err)
-   │                     │
+   │              └── strategy.HandleError(ctx, []*Message{msg}, err)
+   │                     │                      └─ Single message wrapped in slice
    │                     ├── Retry: wait & retry handler
    │                     ├── Skip: commit offset anyway
    │                     ├── DLQ: write to DLQ topic, commit
@@ -715,7 +750,8 @@ Engine.Run()
    │        │
    │        ├── Success: commit all offsets in batch
    │        │
-   │        └── Failure: strategy.HandleError()
+   │        └── Failure: strategy.HandleError(ctx, batchMsgs, err)
+   │              │                         └─ All messages from batch as slice
    │              └── Retry entire batch or skip entire batch
    │
    └── Loop continues
@@ -830,7 +866,7 @@ Context cancelled
 | Config.BatchSize | > 0 if batch mode | "batch size must be positive" |
 | Config.BatchTimeout | > 0 if batch mode | "batch timeout must be positive" |
 | RetryStrategy.MaxAttempts | > 0 | "max attempts must be positive" |
-| DLQStrategy.DLQTopic | Non-empty | "DLQ topic required" |
+| RetryStrategy.DLQTopic | Non-empty if SendToDLQ action | "DLQ topic required when using SendToDLQ" |
 | CircuitBreaker.Threshold | > 0 | "failure threshold must be positive" |
 
 All validation happens in Option functions, returning errors before any Kafka connection.

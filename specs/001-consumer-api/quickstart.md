@@ -562,7 +562,15 @@ easykafka.WithLogger(logger)
 **Solutions**:
 1. Fix handler to return `nil` on success
 2. Use Skip strategy for non-critical processing
-3. Use DeadLetter strategy to capture failures and continue
+3. Use Retry strategy with SendToDLQ action to capture failures and continue:
+   ```go
+   easykafka.WithErrorStrategy(
+       easykafka.Retry(
+           easykafka.WithMaxAttempts(3),
+           easykafka.WithOnMaxAttemptsExceeded(easykafka.SendToDLQ("orders-dlq")),
+       ),
+   )
+   ```
 
 ---
 

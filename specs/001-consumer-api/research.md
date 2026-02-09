@@ -127,7 +127,7 @@ type KafkaClient interface {
 
 // Error strategy interface
 type ErrorStrategy interface {
-    HandleError(ctx context.Context, msg Message, err error) error
+    HandleError(ctx context.Context, msgs []*Message, err error) error
 }
 ```
 
@@ -264,8 +264,9 @@ consumer, err := easykafka.New(
 // ErrorStrategy defines how to handle message processing failures
 type ErrorStrategy interface {
     // HandleError is called when a handler returns an error
+    // msgs contains 1 message in single mode, N messages in batch mode
     // Returns nil to continue consumption, error to stop consumer
-    HandleError(ctx context.Context, msg *Message, handlerErr error) error
+    HandleError(ctx context.Context, msgs []*Message, handlerErr error) error
     
     // Name returns the strategy name for logging
     Name() string
@@ -274,9 +275,9 @@ type ErrorStrategy interface {
 
 **Built-in Strategies**:
 1. **Fail-Fast**: Return error immediately, stop consumer
-2. **Skip**: Log error, commit offset, continue
-3. **Retry**: Retry with configurable backoff (fixed/exponential/custom) and configurable action after max attempts (stop consumer or write to DLQ and continue)
-4. **Circuit-Breaker**: Pause after consecutive failures threshold
+2. **Skip**: Log error, commit offset(s), continue
+3. **Retry**: Retry with configurable backoff (fixed/exponential/custom) and configurable action after max attempts (stop consumer or write to DLQ and continue). In batch mode, retries entire batch.
+4. **Circuit-Breaker**: Pause after consecutive failures threshold. In batch mode, treats each batch as one unit.
 
 **Strategy Configuration**:
 ```go
@@ -377,7 +378,10 @@ func (e *Engine) Run(ctx context.Context) error {
                 continue // Handle poll errors
             }
             if err := e.dispatch(msg); err != nil {
-                if err := e.strategy.HandleError(ctx, msg, err); err != nil {
+                // In single-message mode: wrap message in slice []*Message{msg}
+                // In batch mode: pass all messages from failed batch
+                msgs := []*Message{msg}  // Single message mode
+                if err := e.strategy.HandleError(ctx, msgs, err); err != nil {
                     return err // Fatal error, stop consumer
                 }
             }

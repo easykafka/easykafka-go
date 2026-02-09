@@ -167,9 +167,8 @@ easykafka-go/
 │
 ├── strategy/            # Error handling strategies
 │   ├── strategy.go      # ErrorStrategy interface
-│   ├── retry.go         # Retry strategy implementation
+│   ├── retry.go         # Retry strategy (includes DLQ action support)
 │   ├── skip.go          # Skip strategy implementation
-│   ├── dlq.go           # Dead-letter queue strategy
 │   ├── failfast.go      # Fail-fast strategy
 │   └── circuit.go       # Circuit-breaker strategy
 │

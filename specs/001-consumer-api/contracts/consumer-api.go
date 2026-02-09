@@ -162,8 +162,10 @@ func WithKafkaConfig(config map[string]any) Option
 // Implement this interface to create custom error handling behavior.
 type ErrorStrategy interface {
 	// HandleError is called when a handler returns an error.
+	// In single-message mode, msgs contains one message.
+	// In batch mode, msgs contains all messages from the failed batch.
 	// Return nil to continue consumption, error to stop the consumer.
-	HandleError(ctx context.Context, msg *Message, handlerErr error) error
+	HandleError(ctx context.Context, msgs []*Message, handlerErr error) error
 
 	// Name returns the strategy name for logging purposes.
 	Name() string
