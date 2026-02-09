@@ -85,7 +85,6 @@ type Config struct {
     BatchTimeout  time.Duration       // Default: 5 seconds (if batch mode)
     PollTimeout   time.Duration       // Default: 100ms
     ShutdownTimeout time.Duration     // Default: 30 seconds
-    RetryQueueMode bool               // Default: false (set true for retry queue consumer)
     Logger        zerolog.Logger      // Default: zerolog.Nop()
     
     // Advanced passthrough to confluent-kafka-go
@@ -193,40 +192,32 @@ type ErrorStrategy interface {
 - **Batch Handling**: In batch mode, skips entire batch (commits all offsets in batch)
 
 #### 4.3 RetryStrategy
-- **Behavior**: Retry message processing with configurable backoff using a dedicated Kafka retry queue, then execute configured action after max attempts
+- **Behavior**: Retry message processing with configurable backoff using a dedicated Kafka retry queue, then send to DLQ after max attempts. **Automatically creates an internal retry consumer** - user only creates one consumer, library manages both main and retry consumers internally.
 - **Use Case**: Transient failures (network timeouts, temporary service unavailability)
 - **State**: Stateless - retry attempt tracking stored in Kafka message headers
 - **Batch Handling**: In batch mode, each message in the failed batch is written to retry queue individually with its own retry metadata
 - **Config**:
   - RetryTopic (required) - Dedicated Kafka topic for retry queue
+  - DLQTopic (required) - Dead-letter queue topic for messages that exceed max attempts
   - MaxAttempts (default: 3)
   - BackoffType: Fixed, Exponential, or Custom function
   - InitialDelay (default: 1 second)
   - MaxDelay (default: 30 seconds)
   - Multiplier (default: 2.0 for exponential)
-  - OnMaxAttemptsExceeded: Action to take after all retries exhausted
-    - **FailConsumer**: Stop consumer (default)
-    - **SendToDLQ(topic)**: Write message to dead-letter queue and continue consumption
+
+**Internal Architecture**: When RetryStrategy is configured, the library automatically spawns a second internal consumer dedicated to processing the retry queue. Both consumers use the same handler function provided by the user. The retry consumer adds pre-processing logic to check retry time headers before invoking the handler.
 
 **Kafka-Based Retry Queue Architecture**:
 ```go
 type RetryStrategy struct {
-    maxAttempts         int
-    backoff             BackoffFunc
-    retryTopic          string            // Dedicated Kafka retry queue topic
-    retryProducer       KafkaProducer     // Producer for writing to retry queue
-    onMaxAttemptsAction MaxAttemptsAction // Configurable action after max attempts
-    dlqTopic            string            // Only used if action is SendToDLQ
-    dlqProducer         KafkaProducer     // Producer for DLQ
-    logger              zerolog.Logger
+    maxAttempts   int
+    backoff       BackoffFunc
+    retryTopic    string        // Dedicated Kafka retry queue topic
+    retryProducer KafkaProducer // Producer for writing to retry queue
+    dlqTopic      string        // Dead-letter queue topic (required)
+    dlqProducer   KafkaProducer // Producer for DLQ
+    logger        zerolog.Logger
 }
-
-type MaxAttemptsAction int
-
-const (
-    FailConsumer MaxAttemptsAction = iota
-    SendToDLQ
-)
 ```
 
 **Why Kafka-Based Retry Queue?**
@@ -243,39 +234,49 @@ Instead of storing retry attempts in memory (which causes memory leaks and state
 
 **Architecture Overview**:
 ```
-Main Consumer (Topic: "orders")
+User creates ONE consumer with RetryStrategy
         │
-        ├─ Message succeeds ──→ Commit offset
-        │
-        └─ Message fails (handler error)
-                 ↓
-           RetryStrategy.HandleError()
-                 ↓
-           Read retry headers (if present)
-                 ↓
-           Increment RetryAttempt
-                 ↓
-      ┌──────────┴──────────┐
-      │                     │
-   < MaxAttempts        >= MaxAttempts
-      │                     │
-      ↓                     ↓
-  Write to         Execute OnMaxAttemptsAction
-  Retry Queue       - FailConsumer: stop
-  with headers      - SendToDLQ: write to DLQ
+        └─ Library automatically spawns TWO internal consumers:
 
-Retry Consumer (Topic: "orders.retry")
-        │
-        ├─ Poll message from retry queue
-        ├─ Check RetryTime header
-        │     └─ If not elapsed: Skip (re-poll later)
-        │     └─ If elapsed: Process message
-        ├─ Call original handler
-        │
-        ├─ Success ──→ Commit offset (message done)
-        │
-        └─ Failure ──→ Back to RetryStrategy.HandleError()
-                       (increments attempt, writes back to retry queue)
+┌────────────────────────────────────────────────────────────┐
+│ Main Consumer (Topic: "orders")                            │
+│        │                                                   │
+│        ├─ Message succeeds ──→ Commit offset               │
+│        │                                                   │
+│        └─ Message fails (handler error)                    │
+│                 ↓                                          │
+│           RetryStrategy.HandleError()                      │
+│                 ↓                                          │
+│           Read retry headers (if present)                  │
+│                 ↓                                          │
+│           Increment RetryAttempt                           │
+│                 ↓                                          │
+│      ┌──────────┴──────────┐                              │
+│      │                     │                              │
+│   < MaxAttempts        >= MaxAttempts                      │
+│      │                     │                              │
+│      ↓                     ↓                              │
+│  Write to              Send to DLQ                         │
+│  Retry Queue           (continue consumption)              │
+│  with headers                                              │
+└────────────────────────────────────────────────────────────┘
+
+┌────────────────────────────────────────────────────────────┐
+│ Retry Consumer (Topic: "orders.retry") - INTERNAL          │
+│        │                                                   │
+│        ├─ Poll message from retry queue                    │
+│        ├─ Check RetryTime header                           │
+│        │     └─ If not elapsed: wait/sleep until time      │
+│        │     └─ If elapsed: process immediately            │
+│        ├─ Call handler (same handler as main consumer)     │
+│        │                                                   │
+│        ├─ Success ──→ Commit offset (message done)         │
+│        │                                                   │
+│        └─ Failure ──→ Back to RetryStrategy.HandleError()  │
+│                       (increments attempt, writes back)    │
+└────────────────────────────────────────────────────────────┘
+
+Both consumers use the SAME handler function provided by user
 ```
 
 **Retry Message Headers**:
@@ -334,9 +335,9 @@ Main Consumer: Handler fails → HandleError() called with msgs []*Message
                  YES                                       NO
            (retry again)                          (max attempts reached)
                    │                                        │
-                   ├─→ Calculate backoff delay              ├─→ Execute onMaxAttemptsAction
-                   │   delay = backoff(RetryAttempt)        │     - FailConsumer: log & return error
-                   │                                        │     - SendToDLQ: write to DLQ topic
+                   ├─→ Calculate backoff delay              ├─→ Send message to DLQ topic
+                   │   delay = backoff(RetryAttempt)        │
+                   │                                        │
                    ├─→ RetryTime = now + delay              │
                    │                                        └─→ Commit offset (done with message)
                    ├─→ Add/update retry headers
@@ -373,27 +374,20 @@ func (r *RetryStrategy) HandleError(ctx context.Context, msgs []*Message, handle
         
         // Step 2: Check if max attempts reached for THIS message
         if retryAttempt >= r.maxAttempts {
-            // Max attempts exhausted - execute configured action
+            // Max attempts exhausted - send to DLQ
             r.logger.Error().
                 Str("topic", msg.Topic).
                 Int64("offset", msg.Offset).
                 Int("attempts", retryAttempt).
-                Msg("max retry attempts reached")
+                Msg("max retry attempts reached, sending to DLQ")
             
-            switch r.onMaxAttemptsAction {
-            case FailConsumer:
-                r.logger.Error().Msg("max attempts reached, stopping consumer")
-                return fmt.Errorf("max retry attempts exceeded: %w", handlerErr)
-                
-            case SendToDLQ:
-                // Send THIS individual message to DLQ
-                if err := r.sendMessageToDLQ(ctx, msg, handlerErr, retryAttempt); err != nil {
-                    r.logger.Error().Err(err).Msg("failed to send message to DLQ")
-                    return fmt.Errorf("DLQ write failed: %w", err)
-                }
-                r.logger.Info().Msg("message sent to DLQ")
-                // Continue to next message (this one is handled)
+            // Send THIS individual message to DLQ
+            if err := r.sendMessageToDLQ(ctx, msg, handlerErr, retryAttempt); err != nil {
+                r.logger.Error().Err(err).Msg("failed to send message to DLQ")
+                return fmt.Errorf("DLQ write failed: %w", err)
             }
+            r.logger.Info().Msg("message sent to DLQ, continuing consumption")
+            // Continue to next message (this one is handled)
         } else {
             // Not at max attempts yet - write to retry queue
             if err := r.sendMessageToRetryQueue(ctx, msg, handlerErr, retryAttempt); err != nil {
@@ -480,54 +474,93 @@ func (r *RetryStrategy) sendMessageToDLQ(ctx context.Context, msg *Message, hand
 }
 ```
 
-**Retry Consumer Implementation**:
+**User-Facing API**:
 
-A **separate consumer** is needed to process the retry queue:
+User creates **ONE consumer** - the library automatically manages the retry consumer internally:
 
 ```go
-// User creates TWO consumers:
-
-// 1. Main consumer for original topic
-mainConsumer := easykafka.New(
+// User creates a SINGLE consumer with RetryStrategy
+consumer := easykafka.New(
     easykafka.WithTopic("orders"),
     easykafka.WithHandler(processOrder),
     easykafka.WithRetryStrategy(
         easykafka.NewRetryStrategy(
             easykafka.WithRetryTopic("orders.retry"),
+            easykafka.WithDLQTopic("orders.dlq"),
             easykafka.WithMaxRetries(3),
         ),
     ),
 )
 
-// 2. Retry consumer for retry topic
-retryConsumer := easykafka.New(
-    easykafka.WithTopic("orders.retry"),
-    easykafka.WithHandler(processOrder), // SAME handler
-    easykafka.WithRetryStrategy(
-        easykafka.NewRetryStrategy(
-            easykafka.WithRetryTopic("orders.retry"), // Same retry queue
-            easykafka.WithMaxRetries(3),
-        ),
-    ),
-    easykafka.WithRetryQueueMode(true), // Special mode for retry processing
-)
+// Start the consumer - internally spawns TWO consumers (main + retry)
+consumer.Start(ctx)
+
+// Shutdown stops BOTH internal consumers
+consumer.Shutdown(ctx)
+```
+
+**Internal Implementation**:
+
+The RetryStrategy automatically creates and manages a second consumer internally:
+
+```go
+type RetryStrategy struct {
+    maxAttempts     int
+    backoff         BackoffFunc
+    retryTopic      string
+    dlqTopic        string
+    retryProducer   KafkaProducer
+    dlqProducer     KafkaProducer
+    
+    // Internal retry consumer (automatically created)
+    retryConsumer   *Consumer
+    logger          zerolog.Logger
+}
+
+// When RetryStrategy is initialized, it creates an internal retry consumer
+func (r *RetryStrategy) Initialize(mainConfig *Config) error {
+    // Create internal consumer for retry queue
+    r.retryConsumer = easykafka.New(
+        easykafka.WithTopic(r.retryTopic),
+        easykafka.WithHandler(mainConfig.Handler), // Same handler!
+        easykafka.WithBrokers(mainConfig.Brokers),
+        easykafka.WithConsumerGroup(mainConfig.ConsumerGroup + ".retry"),
+        // No retry strategy for retry consumer (avoids infinite loops)
+        easykafka.WithErrorStrategy(easykafka.NewFailFastStrategy()),
+    )
+    
+    // Start retry consumer in background
+    go r.retryConsumer.Start(context.Background())
+    
+    return nil
+}
 ```
 
 **Retry Queue Processing Logic**:
 
-When `WithRetryQueueMode(true)` is set, the engine adds a pre-processing step:
+The internal retry consumer checks retry time headers and waits if necessary:
 
 ```go
 func (e *Engine) processMessage(msg *Message) {
-    if e.config.RetryQueueMode {
-        // Check if retry time has elapsed
+    // For retry consumer, check if retry time has elapsed
+    if e.isRetryConsumer {
         retryTime := e.getRetryTimeFromHeaders(msg)
         if retryTime.After(time.Now()) {
-            // Too early to retry - skip this message (don't commit offset)
+            // Too early to retry - wait until retry time elapses
+            waitDuration := time.Until(retryTime)
             e.logger.Debug().
                 Time("retryTime", retryTime).
-                Msg("retry time not elapsed, skipping message")
-            return // Message will be re-polled later
+                Dur("waitDuration", waitDuration).
+                Msg("waiting for retry time to elapse")
+            
+            // Block until retry time OR context cancellation
+            select {
+            case <-time.After(waitDuration):
+                e.logger.Debug().Msg("retry time elapsed, processing message")
+            case <-e.ctx.Done():
+                e.logger.Debug().Msg("context cancelled during retry wait")
+                return // Shutdown requested
+            }
         }
     }
     
@@ -535,6 +568,15 @@ func (e *Engine) processMessage(msg *Message) {
     e.callHandler(msg)
 }
 ```
+
+**Why Block/Wait Instead of Skip?**
+
+Kafka commits offsets sequentially. If we skip message A (retry time not elapsed) and process message B successfully, committing B's offset also implicitly commits A's offset. This means A would never be reprocessed, causing message loss.
+
+**Blocking Approach**:
+- Message A polled → retry time not elapsed → **wait/sleep** until time elapses → process A → commit A's offset
+- Then poll message B → process normally
+- Ensures all messages processed in order and no message loss
 
 **Example Trace (Single-Message Mode)**:
 
@@ -571,15 +613,16 @@ Time | Event                                  | Retry Queue State             | 
 **Key Architecture Points**:
 
 1. **No In-Memory State**: RetryStrategy is completely stateless - all state in Kafka headers
-2. **Two Consumers Required**: One for main topic, one for retry topic (can use same handler function)
-3. **Graceful Backoff**: RetryTime header prevents premature retries without blocking
-4. **Survives Restarts**: Consumer can restart anytime - retry state persists in Kafka
-5. **Single Topic per Consumer**: Each consumer handles one topic (main OR retry), not both
-6. **Independent Scaling**: Main and retry consumers can scale independently
+2. **Automatic Retry Consumer**: Library internally creates and manages retry consumer - user only creates one consumer
+3. **Same Handler Function**: Both main and internal retry consumer use the same handler function
+4. **Graceful Backoff**: RetryTime header prevents premature retries without blocking
+5. **Survives Restarts**: Consumer can restart anytime - retry state persists in Kafka
+6. **Single Topic per Consumer**: Each internal consumer handles one topic (main OR retry), not both
+7. **Lifecycle Management**: Starting/stopping the main consumer automatically manages the internal retry consumer
 
-**DLQ Message Format** (when SendToDLQ action is configured):
+**DLQ Message Format**:
 
-Same format as before - individual messages:
+When max retry attempts are exceeded, messages are sent to the DLQ topic with the following JSON format:
 ```json
 {
   "originalTopic": "orders",
@@ -1063,9 +1106,9 @@ Engine.Run()
    │        │
    │        └── Message received
    │
-   ├── If RetryQueueMode: Check retry headers
+   ├── If internal retry consumer: Check retry headers
    │        │
-   │        ├── RetryTime not elapsed? ────→ Skip message (re-poll later)
+   │        ├── RetryTime not elapsed? ────→ Wait until time elapses
    │        └── RetryTime elapsed ────→ Continue processing
    │
    ├── recovery.SafeCall(handler, msg.Value)
@@ -1229,12 +1272,10 @@ Context cancelled
 | Config.BatchTimeout | > 0 if batch mode | "batch timeout must be positive" |
 | RetryStrategy.MaxAttempts | > 0 | "max attempts must be positive" |
 | RetryStrategy.RetryTopic | Non-empty string | "retry topic required for retry strategy" |
-| RetryStrategy.DLQTopic | Non-empty if SendToDLQ action | "DLQ topic required when using SendToDLQ" |
+| RetryStrategy.DLQTopic | Non-empty string | "DLQ topic required for retry strategy" |
 | CircuitBreaker.Threshold | > 0 | "failure threshold must be positive" |
 
 All validation happens in Option functions, returning errors before any Kafka connection.
-
----
 
 ## Testing Implications
 
