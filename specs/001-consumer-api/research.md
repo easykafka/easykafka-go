@@ -490,11 +490,10 @@ func (b *BatchAccumulator) Add(msg []byte) bool {
 ## Open Questions & Future Work
 
 ### Phase 1 Design Decisions Needed
-1. **Handler registration API**: How do users provide handlers? Constructor parameter vs RegisterHandler method?
-2. **Context propagation**: Always pass context or make it optional variant?
-3. **Message metadata access**: How do users access headers, offset, timestamp if needed?
-4. **Batch error handling**: Partial batch failure - retry all or just failed? (Decision: retry all for simplicity)
-5. **Graceful shutdown timeout**: Default value? (Decision: 30 seconds)
+1. **Handler registration API**: How do users provide handlers? Constructor parameter vs RegisterHandler method? (Decision: Constructor parameter via WithHandler option)
+2. **Message metadata access**: How do users access headers, offset, timestamp if needed? (Decision: Via MessageFromContext(ctx))
+3. **Batch error handling**: Partial batch failure - retry all or just failed? (Decision: retry all for simplicity)
+4. **Graceful shutdown timeout**: Default value? (Decision: 30 seconds)
 
 ### Future Enhancements (Out of Scope v1)
 - Multi-topic consumption via regex patterns

@@ -115,13 +115,11 @@ type Config struct {
 
 **Function Signatures**:
 ```go
-// Single-message handlers
-type Handler func([]byte) error
-type HandlerWithContext func(context.Context, []byte) error
+// Single-message handler (context always provided)
+type Handler func(ctx context.Context, payload []byte) error
 
-// Batch handlers
-type BatchHandler func([][]byte) error
-type BatchHandlerWithContext func(context.Context, [][]byte) error
+// Batch handler (context always provided)
+type BatchHandler func(ctx context.Context, payloads [][]byte) error
 ```
 
 **Contracts**:
@@ -130,6 +128,7 @@ type BatchHandlerWithContext func(context.Context, [][]byte) error
 - Must not panic (but library recovers if they do)
 - Should respect context cancellation for graceful shutdown
 - Should not retain references to `[]byte` slices (may be reused)
+- Context is always provided and cancelled during shutdown
 
 **Processing Guarantees**:
 - At-least-once delivery: message may be redelivered on failure
@@ -140,6 +139,11 @@ type BatchHandlerWithContext func(context.Context, [][]byte) error
 - Should complete quickly (seconds, not minutes)
 - Long-running handlers should check context cancellation
 - Blocking indefinitely prevents graceful shutdown
+
+**Context Usage**:
+- Check `ctx.Done()` for cancellation during long operations
+- Use context for timeouts: `ctx, cancel := context.WithTimeout(ctx, 5*time.Second)`
+- Access message metadata via `easykafka.MessageFromContext(ctx)`
 
 ---
 

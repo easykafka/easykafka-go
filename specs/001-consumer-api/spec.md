@@ -112,9 +112,9 @@ A developer wants their service to shut down cleanly on SIGTERM. They pass a con
 
 #### Core Handler Interface
 
-- **FR-001**: Library MUST accept single-message handlers with signature `func([]byte) error`
-- **FR-002**: Library MUST accept batch handlers with signature `func([][]byte) error`
-- **FR-003**: Library MUST accept context-aware handlers with signatures `func(context.Context, []byte) error` and `func(context.Context, [][]byte) error`
+- **FR-001**: Library MUST accept single-message handlers with signature `func(context.Context, []byte) error`
+- **FR-002**: Library MUST accept batch handlers with signature `func(context.Context, [][]byte) error`
+- **FR-003**: All handlers MUST receive context as first parameter to support cancellation during graceful shutdown and timeout operations
 - **FR-004**: Library MUST deliver message payloads as raw byte arrays without automatic deserialization
 - **FR-005**: Library MUST interpret `nil` error return as successful processing and commit the offset
 - **FR-006**: Library MUST interpret non-nil error return as processing failure and apply the configured error strategy
@@ -250,6 +250,6 @@ This specification adheres to the EasyKafka Go Constitution:
 
 1. **Simplicity First** (NON-NEGOTIABLE): All Kafka complexity hidden behind simple handler interface
 2. **Metadata-Driven Configuration**: All configuration via struct tags or functional options, no config files
-3. **Minimal Handler Interface**: Handler signatures are just `func([]byte) error` or batch equivalent
+3. **Minimal Handler Interface**: Handler signatures require context and payload/payloads: `func(context.Context, []byte) error` or batch equivalent
 4. **Strategy Pattern Support**: Pluggable consumption and error handling strategies
 5. **Thin Wrapper Philosophy**: Leverages confluent-kafka-go, focuses on ergonomics not reimplementation

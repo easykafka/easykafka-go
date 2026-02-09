@@ -31,22 +31,17 @@ type Consumer interface {
 // HANDLER FUNCTION TYPES
 // ============================================================================
 
-// Handler processes a single message payload.
+// Handler processes a single message payload with context for cancellation support.
+// The context is cancelled during graceful shutdown to allow handlers to abort.
 // Return nil for successful processing (offset will be committed).
 // Return error for failed processing (error strategy will be applied).
-type Handler func(payload []byte) error
+type Handler func(ctx context.Context, payload []byte) error
 
-// HandlerWithContext processes a single message with cancellation support.
-// The context is cancelled during graceful shutdown to allow handlers to abort.
-type HandlerWithContext func(ctx context.Context, payload []byte) error
-
-// BatchHandler processes multiple messages together as a batch.
+// BatchHandler processes multiple messages together as a batch with context support.
+// The context is cancelled during graceful shutdown.
 // Return nil to commit all message offsets in the batch.
 // Return error to apply error strategy to the entire batch.
-type BatchHandler func(payloads [][]byte) error
-
-// BatchHandlerWithContext processes a batch with cancellation support.
-type BatchHandlerWithContext func(ctx context.Context, payloads [][]byte) error
+type BatchHandler func(ctx context.Context, payloads [][]byte) error
 
 // ============================================================================
 // CONFIGURATION (FUNCTIONAL OPTIONS)
@@ -66,8 +61,8 @@ type Option func(*consumerConfig) error
 //	    easykafka.WithTopic("orders"),
 //	    easykafka.WithBrokers("localhost:9092"),
 //	    easykafka.WithConsumerGroup("order-processors"),
-//	    easykafka.WithHandler(func(msg []byte) error {
-//	        return processOrder(msg)
+//	    easykafka.WithHandler(func(ctx context.Context, msg []byte) error {
+//	        return processOrder(ctx, msg)
 //	    }),
 //	)
 func New(options ...Option) (Consumer, error)
@@ -91,22 +86,16 @@ func WithConsumerGroup(groupID string) Option
 
 // WithHandler specifies the message processing function (single-message mode).
 // Required (unless WithBatchHandler is used).
-// The handler receives the message payload as a byte slice.
+// The handler receives context and message payload.
+// Context is cancelled during graceful shutdown.
 func WithHandler(handler Handler) Option
-
-// WithHandlerContext specifies a context-aware handler (single-message mode).
-// Required (unless WithBatchHandler is used).
-// The context is cancelled during graceful shutdown.
-func WithHandlerContext(handler HandlerWithContext) Option
 
 // WithBatchHandler specifies a batch processing function.
 // Required (unless WithHandler is used).
+// The handler receives context and multiple message payloads.
+// Context is cancelled during graceful shutdown.
 // Enables batch mode - see WithBatchSize and WithBatchTimeout.
 func WithBatchHandler(handler BatchHandler) Option
-
-// WithBatchHandlerContext specifies a context-aware batch handler.
-// Required (unless WithHandler is used).
-func WithBatchHandlerContext(handler BatchHandlerWithContext) Option
 
 // ============================================================================
 // OPTIONAL CONFIGURATION

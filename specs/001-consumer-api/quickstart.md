@@ -52,8 +52,8 @@ func main() {
     }
 }
 
-// Handler: just a function that receives bytes and returns an error
-func processOrder(orderData []byte) error {
+// Handler: receives context and bytes, returns an error
+func processOrder(ctx context.Context, orderData []byte) error {
     fmt.Printf("Processing order: %s\n", string(orderData))
     // Your business logic here
     return nil
@@ -109,7 +109,7 @@ func main() {
 
 ---
 
-### 3. With Context-Aware Handler
+### 3. Accessing Message Metadata
 
 ```go
 func main() {
@@ -117,7 +117,7 @@ func main() {
         easykafka.WithTopic("orders"),
         easykafka.WithBrokers("localhost:9092"),
         easykafka.WithConsumerGroup("order-processors"),
-        easykafka.WithHandlerContext(processOrderWithContext),
+        easykafka.WithHandler(processOrderWithMetadata),
     )
     if err != nil {
         log.Fatal(err)
@@ -131,13 +131,13 @@ func main() {
     }
 }
 
-// Handler can check context cancellation for long operations
-func processOrderWithContext(ctx context.Context, orderData []byte) error {
+// Handler can access message metadata and check context cancellation
+func processOrderWithMetadata(ctx context.Context, orderData []byte) error {
     // Access message metadata
     msg := easykafka.MessageFromContext(ctx)
     fmt.Printf("Processing offset %d from partition %d\n", msg.Offset, msg.Partition)
     
-    // Your business logic
+    // Your business logic with context support
     return processWithTimeout(ctx, orderData)
 }
 ```
@@ -253,12 +253,12 @@ func main() {
     }
 }
 
-// Batch handler receives multiple messages at once
-func processBatch(events [][]byte) error {
+// Batch handler receives context and multiple messages at once
+func processBatch(ctx context.Context, events [][]byte) error {
     fmt.Printf("Processing batch of %d events\n", len(events))
     
     // Process all events together (e.g., bulk insert to database)
-    return bulkInsert(events)
+    return bulkInsert(ctx, events)
 }
 ```
 
@@ -335,7 +335,7 @@ func main() {
 ### Handler Error Behavior
 
 ```go
-func processOrder(orderData []byte) error {
+func processOrder(ctx context.Context, orderData []byte) error {
     // Parse order
     order, err := parseOrder(orderData)
     if err != nil {
@@ -344,7 +344,7 @@ func processOrder(orderData []byte) error {
     }
     
     // Save to database
-    if err := saveOrder(order); err != nil {
+    if err := saveOrder(ctx, order); err != nil {
         // Return error → error strategy is applied
         return fmt.Errorf("database error: %w", err)
     }
