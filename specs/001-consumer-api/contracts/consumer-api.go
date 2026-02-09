@@ -101,6 +101,7 @@ func WithHandler(handler Handler) Option
 //   - Retry: all messages in batch are re-processed together
 //   - Skip: all messages in batch are skipped (all offsets committed)
 //   - DLQ: entire batch is written to dead-letter queue
+//
 // No partial batch success/failure tracking.
 func WithBatchHandler(handler BatchHandler) Option
 
