@@ -85,6 +85,7 @@ type Config struct {
     BatchTimeout  time.Duration       // Default: 5 seconds (if batch mode)
     PollTimeout   time.Duration       // Default: 100ms
     ShutdownTimeout time.Duration     // Default: 30 seconds
+    RetryQueueMode bool               // Default: false (set true for retry queue consumer)
     Logger        zerolog.Logger      // Default: zerolog.Nop()
     
     // Advanced passthrough to confluent-kafka-go
@@ -192,11 +193,12 @@ type ErrorStrategy interface {
 - **Batch Handling**: In batch mode, skips entire batch (commits all offsets in batch)
 
 #### 4.3 RetryStrategy
-- **Behavior**: Retry message processing with configurable backoff, then execute configured action after max attempts
+- **Behavior**: Retry message processing with configurable backoff using a dedicated Kafka retry queue, then execute configured action after max attempts
 - **Use Case**: Transient failures (network timeouts, temporary service unavailability)
-- **State**: Retry attempt tracking by individual message offset (same for both single and batch mode)
-- **Batch Handling**: In batch mode, each message in the failed batch is retried individually. If batch handler fails, each message gets its own retry counter and DLQ entry if needed.
+- **State**: Stateless - retry attempt tracking stored in Kafka message headers
+- **Batch Handling**: In batch mode, each message in the failed batch is written to retry queue individually with its own retry metadata
 - **Config**:
+  - RetryTopic (required) - Dedicated Kafka topic for retry queue
   - MaxAttempts (default: 3)
   - BackoffType: Fixed, Exponential, or Custom function
   - InitialDelay (default: 1 second)
@@ -206,16 +208,17 @@ type ErrorStrategy interface {
     - **FailConsumer**: Stop consumer (default)
     - **SendToDLQ(topic)**: Write message to dead-letter queue and continue consumption
 
-**Retry Attempt Tracking**:
+**Kafka-Based Retry Queue Architecture**:
 ```go
 type RetryStrategy struct {
     maxAttempts         int
     backoff             BackoffFunc
-    onMaxAttemptsAction MaxAttemptsAction  // Configurable action after max attempts
-    dlqTopic            string             // Only used if action is SendToDLQ
-    attempts            map[string]int     // tracking key -> attempt count
-                                           // Key format documented below
-    mu                  sync.RWMutex       // Protects attempts map
+    retryTopic          string            // Dedicated Kafka retry queue topic
+    retryProducer       KafkaProducer     // Producer for writing to retry queue
+    onMaxAttemptsAction MaxAttemptsAction // Configurable action after max attempts
+    dlqTopic            string            // Only used if action is SendToDLQ
+    dlqProducer         KafkaProducer     // Producer for DLQ
+    logger              zerolog.Logger
 }
 
 type MaxAttemptsAction int
@@ -226,115 +229,125 @@ const (
 )
 ```
 
-**Detailed Explanation: Why `attempts` Map is Needed**
+**Why Kafka-Based Retry Queue?**
 
-The retry strategy must track how many times each message (or batch) has been retried **across multiple invocations** of `HandleError()`. Here's why:
+Instead of storing retry attempts in memory (which causes memory leaks and state loss on consumer restart), retry metadata is stored in Kafka message headers:
 
-1. **Multiple HandleError Calls for Same Message**:
-   - When a message fails, `HandleError()` is called
-   - RetryStrategy returns `nil` to indicate "retry this message" (continue processing)
-   - The engine re-calls the handler with the **same message** (same offset)
-   - If it fails again, `HandleError()` is called **again** for the same message
-   - Without persistent tracking, we can't distinguish between attempt #1 and attempt #3
+**Benefits**:
+1. **Stateless Strategy**: No in-memory maps or state management needed
+2. **Survives Restarts**: Retry state persists across consumer restarts
+3. **No Memory Leaks**: No unbounded map growth issues
+4. **Distributed**: Multiple retry consumers can process retry queue
+5. **Visibility**: Retry queue is a real Kafka topic - can be monitored, inspected, replayed
+6. **Dedicated Processing**: Separate consumer for retry queue with different configuration
 
-2. **Decision Making**:
-   - On each `HandleError()` call, we must know: "Is this attempt #1, #2, or #3?"
-   - After `maxAttempts` is reached, execute the configured action (FailConsumer or SendToDLQ)
-   - Without the map, every failure would look like attempt #1
-
-3. **Per-Message Tracking**:
-   - Different messages may be at different retry stages simultaneously
-   - Message at offset 100 might be on attempt #2
-   - Message at offset 200 might be on attempt #1
-   - Message at offset 150 might have already been sent to DLQ
-   - The map allows independent tracking per message/batch
-
-**What Exactly is Stored in `attempts`**
-
-**Map Structure**: `map[string]int`
-- **Key**: Unique identifier for the message or batch
-- **Value**: Current attempt count (1-indexed: 1 = first attempt, 2 = retry #1, 3 = retry #2)
-
-**Key Format**:
-
-**Both Single-Message and Batch Mode** use the same format:
+**Architecture Overview**:
 ```
-Key format: "topic:partition:offset"
-Examples:
-  "orders:3:12345"    → Message from topic "orders", partition 3, offset 12345
-  "events:0:9876"     → Message from topic "events", partition 0, offset 9876
+Main Consumer (Topic: "orders")
+        │
+        ├─ Message succeeds ──→ Commit offset
+        │
+        └─ Message fails (handler error)
+                 ↓
+           RetryStrategy.HandleError()
+                 ↓
+           Read retry headers (if present)
+                 ↓
+           Increment RetryAttempt
+                 ↓
+      ┌──────────┴──────────┐
+      │                     │
+   < MaxAttempts        >= MaxAttempts
+      │                     │
+      ↓                     ↓
+  Write to         Execute OnMaxAttemptsAction
+  Retry Queue       - FailConsumer: stop
+  with headers      - SendToDLQ: write to DLQ
+
+Retry Consumer (Topic: "orders.retry")
+        │
+        ├─ Poll message from retry queue
+        ├─ Check RetryTime header
+        │     └─ If not elapsed: Skip (re-poll later)
+        │     └─ If elapsed: Process message
+        ├─ Call original handler
+        │
+        ├─ Success ──→ Commit offset (message done)
+        │
+        └─ Failure ──→ Back to RetryStrategy.HandleError()
+                       (increments attempt, writes back to retry queue)
 ```
 
-**Batch Mode Behavior**:
-- When batch handler fails, each message in the batch gets its own tracking entry
-- Batch of 10 messages (offsets 12340-12349) creates 10 separate map entries:
-  - `"orders:3:12340" → 1`
-  - `"orders:3:12341" → 1`
-  - ...
-  - `"orders:3:12349" → 1`
-- Each message is retried independently
-- Each message can be sent to DLQ independently
+**Retry Message Headers**:
 
-**Why Individual Tracking in Batch Mode?**
-- **Granular DLQ**: Failed messages appear as individual DLQ entries, not as batches
-- **Mixed Retry States**: Some messages in a batch may hit max retries while others succeed
-- **Debugging**: Clear visibility into which specific message offsets are problematic
-- **Flexibility**: Allows future enhancements like partial batch retry
+When a message is written to the retry queue, these headers are added/updated:
 
-**How `attempts` is Used in Implementation**
+```go
+type RetryHeaders struct {
+    RetryAttempt    int       // Current attempt number (1, 2, 3, ...)
+    RetryTime       time.Time // Timestamp when message can be retried
+    ErrorCode       string    // Error code or type (e.g., "TIMEOUT", "DB_ERROR")
+    ErrorMessage    string    // Full error message for debugging
+    OriginalTopic   string    // Source topic where message came from
+    OriginalPartition int32   // Source partition
+    OriginalOffset    int64   // Source offset
+    FailedAt        time.Time // When the failure occurred
+}
+```
+
+**Header Format in Kafka**:
+```
+Headers:
+  "easykafka.retry.attempt"    = "2"
+  "easykafka.retry.time"       = "2026-02-09T10:35:00Z"
+  "easykafka.error.code"       = "TIMEOUT"
+  "easykafka.error.message"    = "context deadline exceeded"
+  "easykafka.original.topic"   = "orders"
+  "easykafka.original.partition" = "3"
+  "easykafka.original.offset"  = "12345"
+  "easykafka.failed.at"        = "2026-02-09T10:30:00Z"
+```
+
+**How Retry Tracking Works**:
 
 **Flow Diagram**:
 ```
-Handler fails → HandleError() called with msgs []*Message
-                     ↓
-         FOR EACH message in msgs (1 in single mode, N in batch mode):
-                     ↓
-         Generate key for THIS message
-         (e.g., "orders:3:12345")
-                     ↓
-         Lock map (mu.Lock())
-                     ↓
-         Lookup key in attempts map
-                     ↓
-    ┌────────────────┴────────────────┐
-    │                                 │
-    ↓                                 ↓
-  NOT FOUND                        FOUND
-  (first failure)              (retry attempt)
-    │                                 │
-    └─→ attempts[key] = 1             ├─→ attempts[key]++
-        (record first attempt)        │   (increment counter)
-                     ↓                ↓
-         currentAttempt = attempts[key]
-                     ↓
-         Unlock map (mu.Unlock())
-                     ↓
-         Check: currentAttempt < maxAttempts?
-                     ↓
-         ┌───────────┴────────────┐
-         │                        │
-         ↓                        ↓
-        YES                      NO
-  (retry again)           (max attempts reached)
-         │                        │
-         │                        ├─→ Execute onMaxAttemptsAction
-         │                        │     - FailConsumer: return error (stop)
-         │                        │     - SendToDLQ: write THIS message to DLQ
-         │                        │
-         ├─→ Apply backoff        └─→ CLEANUP: delete attempts[key]
-         │   delay (once per                 (free memory)
-         │   message)                         
-         │                              └─→ Continue to next message
-         └─→ Add to retry list
+Main Consumer: Handler fails → HandleError() called with msgs []*Message
+                                         ↓
+                   FOR EACH message in msgs (1 in single mode, N in batch mode):
+                                         ↓
+                           Read retry headers from message
+                                         ↓
+                   ┌──────────────────────────────────────┐
+                   │                                      │
+                   ↓                                      ↓
+          Headers NOT present                    Headers present
+          (first failure)                     (retry attempt)
+                   │                                      │
+                   └─→ RetryAttempt = 1                   ├─→ RetryAttempt = existing + 1
+                                         ↓
+                   Check: RetryAttempt < maxAttempts?
+                                         ↓
+                   ┌─────────────────────┴──────────────────┐
+                   │                                        │
+                   ↓                                        ↓
+                 YES                                       NO
+           (retry again)                          (max attempts reached)
+                   │                                        │
+                   ├─→ Calculate backoff delay              ├─→ Execute onMaxAttemptsAction
+                   │   delay = backoff(RetryAttempt)        │     - FailConsumer: log & return error
+                   │                                        │     - SendToDLQ: write to DLQ topic
+                   ├─→ RetryTime = now + delay              │
+                   │                                        └─→ Commit offset (done with message)
+                   ├─→ Add/update retry headers
+                   │
+                   └─→ Write message to retry queue topic
+                       (with original payload + retry headers)
 
-         END FOR EACH
-                     ↓
-         If retry list not empty:
-           Return nil (continue - retry batch)
-         If any message hit FailConsumer:
-           Return error (stop consumer)
-         Otherwise:
-           Return nil (all sent to DLQ, continue)
+                   END FOR EACH
+                                         ↓
+                           Commit offsets for all processed messages
+                           (they're now in retry queue or DLQ)
 ```
 
 **Pseudocode Implementation**:
@@ -342,122 +355,112 @@ Handler fails → HandleError() called with msgs []*Message
 ```go
 func (r *RetryStrategy) HandleError(ctx context.Context, msgs []*Message, handlerErr error) error {
     // In batch mode, msgs contains all messages from failed batch
-    // We process each message individually for retry tracking and DLQ
+    // We process each message individually and write to retry queue
     
-    var (
-        shouldRetry    bool  // Any message needs retry?
-        shouldFailStop bool  // Any message should stop consumer?
-    )
-    
-    // Step 1: Process each message individually
     for _, msg := range msgs {
-        // Generate unique key for THIS message
-        key := r.generateKey(msg)
-        
-        // Step 2: Update attempt counter (thread-safe)
-        r.mu.Lock()
-        currentAttempt := r.attempts[key] + 1  // Auto-handles missing key (0 + 1 = 1)
-        r.attempts[key] = currentAttempt
-        r.mu.Unlock()
+        // Step 1: Read retry metadata from message headers (if exists)
+        retryAttempt := r.getRetryAttemptFromHeaders(msg)
+        retryAttempt++ // Increment for this failure
         
         r.logger.Warn().
-            Str("key", key).
-            Int("attempt", currentAttempt).
+            Str("topic", msg.Topic).
+            Int32("partition", msg.Partition).
+            Int64("offset", msg.Offset).
+            Int("attempt", retryAttempt).
             Int("maxAttempts", r.maxAttempts).
             Err(handlerErr).
-            Msg("handler failed for message, checking retry attempts")
+            Msg("handler failed for message")
         
-        // Step 3: Check if max attempts reached for THIS message
-        if currentAttempt >= r.maxAttempts {
-            // Max attempts exhausted for this message - execute configured action
+        // Step 2: Check if max attempts reached for THIS message
+        if retryAttempt >= r.maxAttempts {
+            // Max attempts exhausted - execute configured action
             r.logger.Error().
-                Str("key", key).
-                Msg("max retry attempts reached for message")
+                Str("topic", msg.Topic).
+                Int64("offset", msg.Offset).
+                Int("attempts", retryAttempt).
+                Msg("max retry attempts reached")
             
-            // Cleanup: remove from tracking map
-            r.mu.Lock()
-            delete(r.attempts, key)
-            r.mu.Unlock()
-            
-            // Execute action for THIS message
             switch r.onMaxAttemptsAction {
             case FailConsumer:
-                shouldFailStop = true
-                r.logger.Error().
-                    Str("key", key).
-                    Msg("max attempts reached, will stop consumer")
+                r.logger.Error().Msg("max attempts reached, stopping consumer")
+                return fmt.Errorf("max retry attempts exceeded: %w", handlerErr)
                 
             case SendToDLQ:
                 // Send THIS individual message to DLQ
-                if err := r.sendMessageToDLQ(ctx, msg, handlerErr, currentAttempt); err != nil {
-                    r.logger.Error().Err(err).Str("key", key).Msg("failed to send message to DLQ")
-                    return fmt.Errorf("DLQ write failed for %s: %w", key, err)
+                if err := r.sendMessageToDLQ(ctx, msg, handlerErr, retryAttempt); err != nil {
+                    r.logger.Error().Err(err).Msg("failed to send message to DLQ")
+                    return fmt.Errorf("DLQ write failed: %w", err)
                 }
-                r.logger.Info().Str("key", key).Msg("message sent to DLQ")
-                // This message handled (in DLQ), don't retry it
+                r.logger.Info().Msg("message sent to DLQ")
+                // Continue to next message (this one is handled)
             }
         } else {
-            // Not at max attempts yet - this message needs retry
-            shouldRetry = true
+            // Not at max attempts yet - write to retry queue
+            if err := r.sendMessageToRetryQueue(ctx, msg, handlerErr, retryAttempt); err != nil {
+                r.logger.Error().Err(err).Msg("failed to send message to retry queue")
+                return fmt.Errorf("retry queue write failed: %w", err)
+            }
+            r.logger.Info().
+                Int("attempt", retryAttempt).
+                Str("retryTopic", r.retryTopic).
+                Msg("message sent to retry queue")
         }
     }
     
-    // Step 4: Decide overall action based on individual message outcomes
-    if shouldFailStop {
-        // At least one message hit max attempts with FailConsumer action
-        return fmt.Errorf("max retry attempts exceeded, stopping consumer")
-    }
-    
-    if !shouldRetry {
-        // All messages either sent to DLQ or some other final state
-        // No messages need retry - continue consumption
-        return nil
-    }
-    
-    // Step 5: Apply backoff delay before retrying the batch
-    // Use the maximum attempt count from all messages for backoff calculation
-    maxAttempt := r.getMaxAttempt(msgs)
-    delay := r.backoff(maxAttempt)
-    r.logger.Info().
-        Int("messageCount", len(msgs)).
-        Dur("delay", delay).
-        Msg("applying backoff before retrying batch")
-    
-    select {
-    case <-time.After(delay):
-        // Backoff completed
-    case <-ctx.Done():
-        // Shutdown requested during backoff
-        return ctx.Err()
-    }
-    
-    // Step 6: Return nil to indicate "continue processing"
-    // Engine will re-call handler with same messages
-    // Next failure will increment attempt counters
+    // All messages either in retry queue or DLQ - continue consumption
     return nil
 }
 
-func (r *RetryStrategy) generateKey(msg *Message) string {
-    // Always use individual message offset, even in batch mode
-    return fmt.Sprintf("%s:%d:%d", msg.Topic, msg.Partition, msg.Offset)
-}
-
-func (r *RetryStrategy) getMaxAttempt(msgs []*Message) int {
-    r.mu.RLock()
-    defer r.mu.RUnlock()
-    
-    maxAttempt := 0
-    for _, msg := range msgs {
-        key := r.generateKey(msg)
-        if attempt := r.attempts[key]; attempt > maxAttempt {
-            maxAttempt = attempt
+func (r *RetryStrategy) getRetryAttemptFromHeaders(msg *Message) int {
+    // Look for "easykafka.retry.attempt" header
+    for _, h := range msg.Headers {
+        if h.Key == "easykafka.retry.attempt" {
+            attempt, _ := strconv.Atoi(string(h.Value))
+            return attempt
         }
     }
-    return maxAttempt
+    return 0 // First failure - no retry headers yet
+}
+
+func (r *RetryStrategy) sendMessageToRetryQueue(ctx context.Context, msg *Message, handlerErr error, attemptCount int) error {
+    // Calculate backoff delay based on attempt count
+    delay := r.backoff(attemptCount)
+    retryTime := time.Now().Add(delay)
+    
+    // Extract error code (simplified - could be more sophisticated)
+    errorCode := "HANDLER_ERROR"
+    if errors.Is(handlerErr, context.DeadlineExceeded) {
+        errorCode = "TIMEOUT"
+    }
+    
+    // Create/update retry headers
+    retryHeaders := []Header{
+        {Key: "easykafka.retry.attempt", Value: []byte(strconv.Itoa(attemptCount))},
+        {Key: "easykafka.retry.time", Value: []byte(retryTime.Format(time.RFC3339))},
+        {Key: "easykafka.error.code", Value: []byte(errorCode)},
+        {Key: "easykafka.error.message", Value: []byte(handlerErr.Error())},
+        {Key: "easykafka.original.topic", Value: []byte(msg.Topic)},
+        {Key: "easykafka.original.partition", Value: []byte(strconv.Itoa(int(msg.Partition)))},
+        {Key: "easykafka.original.offset", Value: []byte(strconv.FormatInt(msg.Offset, 10))},
+        {Key: "easykafka.failed.at", Value: []byte(time.Now().Format(time.RFC3339))},
+    }
+    
+    // Preserve original message headers (application-level headers)
+    retryHeaders = append(retryHeaders, msg.Headers...)
+    
+    // Write to retry queue with updated headers
+    retryMessage := &Message{
+        Topic:   r.retryTopic,
+        Key:     msg.Key,
+        Value:   msg.Value, // Original payload unchanged
+        Headers: retryHeaders,
+    }
+    
+    return r.retryProducer.Produce(ctx, retryMessage)
 }
 
 func (r *RetryStrategy) sendMessageToDLQ(ctx context.Context, msg *Message, handlerErr error, attemptCount int) error {
-    // Send individual message to DLQ
+    // Send individual message to DLQ (similar format as before)
     dlqMessage := map[string]interface{}{
         "originalTopic":     msg.Topic,
         "originalPartition": msg.Partition,
@@ -469,114 +472,114 @@ func (r *RetryStrategy) sendMessageToDLQ(ctx context.Context, msg *Message, hand
     }
     
     dlqPayload, _ := json.Marshal(dlqMessage)
-    return r.dlqProducer.Produce(r.dlqTopic, dlqPayload)
+    dlqMsg := &Message{
+        Topic: r.dlqTopic,
+        Value: dlqPayload,
+    }
+    return r.dlqProducer.Produce(ctx, dlqMsg)
 }
 ```
 
-**Memory Management & Cleanup**
+**Retry Consumer Implementation**:
 
-**Problem**: Unbounded map growth
-- Every failed message adds an entry to `attempts` map
-- Without cleanup, map grows indefinitely
-- Memory leak in long-running consumers
+A **separate consumer** is needed to process the retry queue:
 
-**Solution**: Cleanup strategies
+```go
+// User creates TWO consumers:
 
-1. **Cleanup on Max Attempts Reached** (shown above):
-   ```go
-   if currentAttempt >= r.maxAttempts {
-       delete(r.attempts, key)  // Remove before taking action
-   }
-   ```
+// 1. Main consumer for original topic
+mainConsumer := easykafka.New(
+    easykafka.WithTopic("orders"),
+    easykafka.WithHandler(processOrder),
+    easykafka.WithRetryStrategy(
+        easykafka.NewRetryStrategy(
+            easykafka.WithRetryTopic("orders.retry"),
+            easykafka.WithMaxRetries(3),
+        ),
+    ),
+)
 
-2. **Cleanup on Success** (requires integration with engine):
-   ```go
-   func (r *RetryStrategy) OnMessageSuccess(msgs []*Message) {
-       key := r.generateKey(msgs)
-       r.mu.Lock()
-       delete(r.attempts, key)
-       r.mu.Unlock()
-   }
-   ```
-   - Engine calls this after handler succeeds
-   - Removes entry if message previously failed but now succeeded
-   - Prevents stale entries from accumulating
+// 2. Retry consumer for retry topic
+retryConsumer := easykafka.New(
+    easykafka.WithTopic("orders.retry"),
+    easykafka.WithHandler(processOrder), // SAME handler
+    easykafka.WithRetryStrategy(
+        easykafka.NewRetryStrategy(
+            easykafka.WithRetryTopic("orders.retry"), // Same retry queue
+            easykafka.WithMaxRetries(3),
+        ),
+    ),
+    easykafka.WithRetryQueueMode(true), // Special mode for retry processing
+)
+```
 
-3. **Periodic Cleanup** (optional, for long-running consumers):
-   ```go
-   // Background goroutine (started in NewRetryStrategy)
-   func (r *RetryStrategy) periodicCleanup(interval time.Duration) {
-       ticker := time.NewTicker(interval)
-       for range ticker.C {
-           r.mu.Lock()
-           // Could track timestamps and remove old entries
-           // For now, map only holds active retries, so manual trigger
-           r.mu.Unlock()
-       }
-   }
-   ```
+**Retry Queue Processing Logic**:
 
-**Recommended Implementation**: Use cleanup on max attempts + cleanup on success. This ensures:
-- No memory leak (entries removed when done)
-- Minimal overhead (no background goroutines)
-- Simple and predictable behavior
+When `WithRetryQueueMode(true)` is set, the engine adds a pre-processing step:
 
-**Thread Safety Considerations**
-
-- **Mutex Protection**: `mu sync.RWMutex` protects all map access
-- **Read Lock** (not used here): Could use `RLock()` for lookups, but atomic read+increment requires write lock anyway
-- **Lock Duration**: Keep locks brief - only during map operations
-- **No Lock During Backoff**: Release lock before `time.After()` to avoid blocking other messages
+```go
+func (e *Engine) processMessage(msg *Message) {
+    if e.config.RetryQueueMode {
+        // Check if retry time has elapsed
+        retryTime := e.getRetryTimeFromHeaders(msg)
+        if retryTime.After(time.Now()) {
+            // Too early to retry - skip this message (don't commit offset)
+            e.logger.Debug().
+                Time("retryTime", retryTime).
+                Msg("retry time not elapsed, skipping message")
+            return // Message will be re-polled later
+        }
+    }
+    
+    // Normal processing continues...
+    e.callHandler(msg)
+}
+```
 
 **Example Trace (Single-Message Mode)**:
 
 ```
-Time | Event                         | attempts map state          | Action
------|-------------------------------|-----------------------------|-----------------
-0s   | Message offset 100 fails      | {"orders:3:100": 1}        | Backoff 1s, retry
-1s   | Same message fails again      | {"orders:3:100": 2}        | Backoff 2s, retry
-3s   | Same message fails again      | {"orders:3:100": 3}        | Max reached (3)
-3s   | Max attempts action           | {} (deleted)                | Send to DLQ
-4s   | Message offset 200 fails      | {"orders:3:200": 1}        | Backoff 1s, retry
-5s   | Message offset 200 succeeds   | {} (deleted)                | Commit offset
+Time | Event                                      | Retry Queue State       | Action
+-----|--------------------------------------------|-----------------------|---------------------------
+0s   | Main: Message offset 100 fails            | -                     | Write to retry queue (attempt=1, retryTime=0s+1s)
+0s   | Main: Commit offset 100                   | 1 message in queue    | Done with main topic
+1s   | Retry: Poll message (retryTime=1s)        | Processing            | Time elapsed, call handler
+1s   | Retry: Handler fails again                | -                     | Write back to retry queue (attempt=2, retryTime=1s+2s)
+1s   | Retry: Commit offset                      | 1 message in queue    | Done with this iteration
+3s   | Retry: Poll message (retryTime=3s)        | Processing            | Time elapsed, call handler
+3s   | Retry: Handler fails again                | -                     | Write back to retry queue (attempt=3, retryTime=3s+4s)
+7s   | Retry: Poll message (retryTime=7s)        | Processing            | Time elapsed, call handler
+7s   | Retry: Handler fails (attempt=3)          | -                     | Max attempts! Send to DLQ
+7s   | Retry: Commit offset                      | Empty                 | Message in DLQ
 ```
 
 **Example Trace (Batch Mode)**:
 
 ```
-Time | Event                                  | attempts map state                    | Action
------|----------------------------------------|---------------------------------------|-----------------------
-0s   | Batch [100-109] fails (10 messages)   | {"orders:3:100": 1, ... "orders:3:109": 1} | 10 entries created
-0s   | Backoff 1s                             | (same)                                | Wait
-1s   | Batch [100-109] fails again            | {"orders:3:100": 2, ... "orders:3:109": 2} | All incremented
-1s   | Backoff 2s                             | (same)                                | Wait
-3s   | Batch [100-109] fails again            | {"orders:3:100": 3, ... "orders:3:109": 3} | All at max (3)
-3s   | Max attempts for all                   | {} (all deleted)                      | Send 10 DLQ messages
-3s   | DLQ write complete                     | {} (empty)                            | Continue consumption
-4s   | Batch [110-119] fails                  | {"orders:3:110": 1, ... "orders:3:119": 1} | New 10 entries
-5s   | Batch [110-119] succeeds               | {} (all deleted on success)           | Commit offsets 110-119
+Time | Event                                  | Retry Queue State             | Action
+-----|----------------------------------------|-------------------------------|---------------------------
+0s   | Main: Batch [100-109] fails (10 msgs) | -                             | Write 10 messages to retry queue
+0s   | Main: Commit offsets 100-109           | 10 messages (attempt=1)       | Done with main topic
+1s   | Retry: Poll 10 messages                | Processing all                | All retry times elapsed
+1s   | Retry: Batch fails again               | -                             | Write 10 back (attempt=2)
+3s   | Retry: Poll 10 messages                | Processing all                | All retry times elapsed
+3s   | Retry: Batch fails again               | -                             | Write 10 back (attempt=3)
+7s   | Retry: Poll 10 messages                | Processing all                | All retry times elapsed
+7s   | Retry: Batch fails (attempt=3)         | -                             | Max attempts! Send 10 to DLQ
 ```
 
-**Mixed Outcome Example (Batch with Partial Success)**:
+**Key Architecture Points**:
 
-```
-Time | Event                                  | attempts map state          | Action
------|----------------------------------------|-----------------------------|-----------------------
-0s   | Batch [200-202] fails (3 messages)    | {"orders:3:200": 1,         | 3 entries
-     |                                        |  "orders:3:201": 1,         |
-     |                                        |  "orders:3:202": 1}         |
-1s   | Batch [200-202] fails again            | {"orders:3:200": 2,         | All incremented
-     |                                        |  "orders:3:201": 2,         |
-     |                                        |  "orders:3:202": 2}         |
-3s   | Batch [200-202] fails again            | {"orders:3:200": 3,         | All at max
-     |                                        |  "orders:3:201": 3,         |
-     |                                        |  "orders:3:202": 3}         |
-3s   | Send to DLQ                            | {} (all deleted)            | 3 individual DLQ msgs
-```
+1. **No In-Memory State**: RetryStrategy is completely stateless - all state in Kafka headers
+2. **Two Consumers Required**: One for main topic, one for retry topic (can use same handler function)
+3. **Graceful Backoff**: RetryTime header prevents premature retries without blocking
+4. **Survives Restarts**: Consumer can restart anytime - retry state persists in Kafka
+5. **Single Topic per Consumer**: Each consumer handles one topic (main OR retry), not both
+6. **Independent Scaling**: Main and retry consumers can scale independently
 
 **DLQ Message Format** (when SendToDLQ action is configured):
 
-Both single-message and batch mode use the same format (individual messages):
+Same format as before - individual messages:
 ```json
 {
   "originalTopic": "orders",
@@ -588,13 +591,6 @@ Both single-message and batch mode use the same format (individual messages):
   "attemptCount": 3
 }
 ```
-
-**Batch Mode DLQ Behavior**:
-- When a batch of 10 messages fails and hits max retries, 10 individual DLQ messages are produced
-- Each DLQ message contains one original message from the batch
-- Each message tracks its own attempt count independently
-- DLQ consumers see individual messages, not batches
-- Example: Batch with offsets 12340-12349 produces 10 DLQ messages with offsets 12340, 12341, ..., 12349
 
 #### 4.4 CircuitBreakerStrategy
 - **Behavior**: Temporarily pause message processing after consecutive failures to protect downstream services
@@ -998,13 +994,24 @@ type MockClient struct {
                    │FailFast  │          │   Skip   │  │ Retry  │   │CircuitBreaker│
                    └──────────┘          └──────────┘  └────┬───┘   └─────────────┘
                                                              │
-                                                             │ optional action
-                                                             │ after max attempts
+                                                             │ has-one
                                                              ↓
-                                                      ┌─────────────┐
-                                                      │  SendToDLQ  │
-                                                      │(DLQ action) │
-                                                      └─────────────┘
+                                                      ┌──────────────┐
+                                                      │KafkaProducer │
+                                                      │ (Retry Queue)│
+                                                      └──────┬───────┘
+                                                             │ writes to
+                                                             ↓
+                                                      ┌──────────────┐
+                                                      │ Retry Queue  │
+                                                      │ (Kafka Topic)│
+                                                      └──────┬───────┘
+                                                             │ consumed by
+                                                             ↓
+                                                      ┌──────────────┐
+                                                      │Retry Consumer│
+                                                      │(Separate)    │
+                                                      └──────────────┘
 
 ┌──────────────────────────────────────────────────┐
 │          Engine (Internal)                       │
@@ -1056,6 +1063,11 @@ Engine.Run()
    │        │
    │        └── Message received
    │
+   ├── If RetryQueueMode: Check retry headers
+   │        │
+   │        ├── RetryTime not elapsed? ────→ Skip message (re-poll later)
+   │        └── RetryTime elapsed ────→ Continue processing
+   │
    ├── recovery.SafeCall(handler, msg.Value)
    │        │
    │        ├── Handler succeeds (nil)
@@ -1064,9 +1076,9 @@ Engine.Run()
    │        └── Handler fails (error)
    │              └── strategy.HandleError(ctx, []*Message{msg}, err)
    │                     │                      └─ Single message wrapped in slice
-   │                     ├── Retry: wait & retry handler
+   │                     ├── Retry: write to retry queue with headers, commit offset
    │                     ├── Skip: commit offset anyway
-   │                     ├── DLQ: write to DLQ topic, commit
+   │                     ├── DLQ: write to DLQ topic, commit offset
    │                     └── FailFast: return error, stop
    │
    └── Loop continues or exits
@@ -1098,10 +1110,10 @@ Engine.Run()
    │              ├── Skip: commit all offsets (batch skipped)
    │              ├── FailFast: stop consumer (batch atomic)
    │              ├── CircuitBreaker: increment failure count (batch atomic)
-   │              └── Retry: process each message individually
-   │                    ├── Track attempts per message offset
-   │                    ├── Send individual messages to DLQ if max retries
-   │                    └── Retry batch with remaining messages
+   │              └── Retry: write each message to retry queue individually
+   │                    ├── Each message gets retry headers (attempt, time, error)
+   │                    ├── Commit all offsets (messages now in retry queue)
+   │                    └── Retry consumer processes them later
    │
    └── Loop continues
 ```
@@ -1140,9 +1152,9 @@ Context cancelled
 - **Thread Safety**: Single goroutine owns engine loop
 
 ### Strategy State (varies by implementation)
-- **Stateless**: FailFast, Skip
-- **Stateful**: Retry (attempt tracking), CircuitBreaker (failure count)
-- **Thread Safety**: Must be thread-safe (protected by mutex)
+- **Stateless**: FailFast, Skip, Retry (with Kafka queue)
+- **Stateful**: CircuitBreaker (failure count, circuit state)
+- **Thread Safety**: Must be thread-safe (protected by mutex where needed)
 
 ---
 
@@ -1160,7 +1172,8 @@ Context cancelled
 
 ### Lock Contention
 - Consumer state mutex only locked during Start/Shutdown
-- Strategy state locks must be brief (avoid in hot path if possible)
+- RetryStrategy is stateless (no locks needed - uses Kafka for state)
+- CircuitBreaker state locks must be brief (avoid in hot path if possible)
 - Use atomic operations where mutex is overkill
 
 ---
@@ -1215,6 +1228,7 @@ Context cancelled
 | Config.BatchSize | > 0 if batch mode | "batch size must be positive" |
 | Config.BatchTimeout | > 0 if batch mode | "batch timeout must be positive" |
 | RetryStrategy.MaxAttempts | > 0 | "max attempts must be positive" |
+| RetryStrategy.RetryTopic | Non-empty string | "retry topic required for retry strategy" |
 | RetryStrategy.DLQTopic | Non-empty if SendToDLQ action | "DLQ topic required when using SendToDLQ" |
 | CircuitBreaker.Threshold | > 0 | "failure threshold must be positive" |
 
