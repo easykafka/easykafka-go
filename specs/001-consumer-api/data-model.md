@@ -131,12 +131,14 @@ type BatchHandler func(ctx context.Context, payloads [][]byte) error
 - Context is always provided and cancelled during shutdown
 
 **Batch Processing Atomicity**:
-- Batches are atomic units: all messages in batch succeed or fail together
-- If BatchHandler returns error, error strategy applies to entire batch
-- Retry: all messages in batch are re-processed together
-- Skip: all messages in batch are skipped together (all offsets committed)
-- DLQ: entire batch is written to dead-letter queue as a unit
-- No partial batch success/failure tracking in v1 for simplicity
+- Batches are atomic units for handler execution: BatchHandler processes all messages together
+- If BatchHandler returns error, error strategy receives entire batch but behavior depends on strategy:
+  - **Skip**: All messages in batch are skipped together (all offsets committed)
+  - **FailFast**: Consumer stops immediately (atomic)
+  - **Retry**: Each message in batch is retried individually (see RetryStrategy details)
+  - **CircuitBreaker**: Treats batch as single failure unit for circuit state
+- Handler success: all offsets in batch are committed together
+- Handler failure: strategy determines granularity (batch-level or message-level)
 
 **Processing Guarantees**:
 - At-least-once delivery: message may be redelivered on failure
@@ -192,8 +194,8 @@ type ErrorStrategy interface {
 #### 4.3 RetryStrategy
 - **Behavior**: Retry message processing with configurable backoff, then execute configured action after max attempts
 - **Use Case**: Transient failures (network timeouts, temporary service unavailability)
-- **State**: Retry attempt tracking (single message: by offset; batch: by first offset or batch ID)
-- **Batch Handling**: In batch mode, retries entire batch together. All messages re-processed on each retry attempt.
+- **State**: Retry attempt tracking by individual message offset (same for both single and batch mode)
+- **Batch Handling**: In batch mode, each message in the failed batch is retried individually. If batch handler fails, each message gets its own retry counter and DLQ entry if needed.
 - **Config**:
   - MaxAttempts (default: 3)
   - BackoffType: Fixed, Exponential, or Custom function
@@ -212,9 +214,8 @@ type RetryStrategy struct {
     onMaxAttemptsAction MaxAttemptsAction  // Configurable action after max attempts
     dlqTopic            string             // Only used if action is SendToDLQ
     attempts            map[string]int     // tracking key -> attempt count
-                                           // Single mode: use offset as key
-                                           // Batch mode: use first offset or batch ID as key
-    mu                  sync.RWMutex
+                                           // Key format documented below
+    mu                  sync.RWMutex       // Protects attempts map
 }
 
 type MaxAttemptsAction int
@@ -225,9 +226,357 @@ const (
 )
 ```
 
+**Detailed Explanation: Why `attempts` Map is Needed**
+
+The retry strategy must track how many times each message (or batch) has been retried **across multiple invocations** of `HandleError()`. Here's why:
+
+1. **Multiple HandleError Calls for Same Message**:
+   - When a message fails, `HandleError()` is called
+   - RetryStrategy returns `nil` to indicate "retry this message" (continue processing)
+   - The engine re-calls the handler with the **same message** (same offset)
+   - If it fails again, `HandleError()` is called **again** for the same message
+   - Without persistent tracking, we can't distinguish between attempt #1 and attempt #3
+
+2. **Decision Making**:
+   - On each `HandleError()` call, we must know: "Is this attempt #1, #2, or #3?"
+   - After `maxAttempts` is reached, execute the configured action (FailConsumer or SendToDLQ)
+   - Without the map, every failure would look like attempt #1
+
+3. **Per-Message Tracking**:
+   - Different messages may be at different retry stages simultaneously
+   - Message at offset 100 might be on attempt #2
+   - Message at offset 200 might be on attempt #1
+   - Message at offset 150 might have already been sent to DLQ
+   - The map allows independent tracking per message/batch
+
+**What Exactly is Stored in `attempts`**
+
+**Map Structure**: `map[string]int`
+- **Key**: Unique identifier for the message or batch
+- **Value**: Current attempt count (1-indexed: 1 = first attempt, 2 = retry #1, 3 = retry #2)
+
+**Key Format**:
+
+**Both Single-Message and Batch Mode** use the same format:
+```
+Key format: "topic:partition:offset"
+Examples:
+  "orders:3:12345"    → Message from topic "orders", partition 3, offset 12345
+  "events:0:9876"     → Message from topic "events", partition 0, offset 9876
+```
+
+**Batch Mode Behavior**:
+- When batch handler fails, each message in the batch gets its own tracking entry
+- Batch of 10 messages (offsets 12340-12349) creates 10 separate map entries:
+  - `"orders:3:12340" → 1`
+  - `"orders:3:12341" → 1`
+  - ...
+  - `"orders:3:12349" → 1`
+- Each message is retried independently
+- Each message can be sent to DLQ independently
+
+**Why Individual Tracking in Batch Mode?**
+- **Granular DLQ**: Failed messages appear as individual DLQ entries, not as batches
+- **Mixed Retry States**: Some messages in a batch may hit max retries while others succeed
+- **Debugging**: Clear visibility into which specific message offsets are problematic
+- **Flexibility**: Allows future enhancements like partial batch retry
+
+**How `attempts` is Used in Implementation**
+
+**Flow Diagram**:
+```
+Handler fails → HandleError() called with msgs []*Message
+                     ↓
+         FOR EACH message in msgs (1 in single mode, N in batch mode):
+                     ↓
+         Generate key for THIS message
+         (e.g., "orders:3:12345")
+                     ↓
+         Lock map (mu.Lock())
+                     ↓
+         Lookup key in attempts map
+                     ↓
+    ┌────────────────┴────────────────┐
+    │                                 │
+    ↓                                 ↓
+  NOT FOUND                        FOUND
+  (first failure)              (retry attempt)
+    │                                 │
+    └─→ attempts[key] = 1             ├─→ attempts[key]++
+        (record first attempt)        │   (increment counter)
+                     ↓                ↓
+         currentAttempt = attempts[key]
+                     ↓
+         Unlock map (mu.Unlock())
+                     ↓
+         Check: currentAttempt < maxAttempts?
+                     ↓
+         ┌───────────┴────────────┐
+         │                        │
+         ↓                        ↓
+        YES                      NO
+  (retry again)           (max attempts reached)
+         │                        │
+         │                        ├─→ Execute onMaxAttemptsAction
+         │                        │     - FailConsumer: return error (stop)
+         │                        │     - SendToDLQ: write THIS message to DLQ
+         │                        │
+         ├─→ Apply backoff        └─→ CLEANUP: delete attempts[key]
+         │   delay (once per                 (free memory)
+         │   message)                         
+         │                              └─→ Continue to next message
+         └─→ Add to retry list
+
+         END FOR EACH
+                     ↓
+         If retry list not empty:
+           Return nil (continue - retry batch)
+         If any message hit FailConsumer:
+           Return error (stop consumer)
+         Otherwise:
+           Return nil (all sent to DLQ, continue)
+```
+
+**Pseudocode Implementation**:
+
+```go
+func (r *RetryStrategy) HandleError(ctx context.Context, msgs []*Message, handlerErr error) error {
+    // In batch mode, msgs contains all messages from failed batch
+    // We process each message individually for retry tracking and DLQ
+    
+    var (
+        shouldRetry    bool  // Any message needs retry?
+        shouldFailStop bool  // Any message should stop consumer?
+    )
+    
+    // Step 1: Process each message individually
+    for _, msg := range msgs {
+        // Generate unique key for THIS message
+        key := r.generateKey(msg)
+        
+        // Step 2: Update attempt counter (thread-safe)
+        r.mu.Lock()
+        currentAttempt := r.attempts[key] + 1  // Auto-handles missing key (0 + 1 = 1)
+        r.attempts[key] = currentAttempt
+        r.mu.Unlock()
+        
+        r.logger.Warn().
+            Str("key", key).
+            Int("attempt", currentAttempt).
+            Int("maxAttempts", r.maxAttempts).
+            Err(handlerErr).
+            Msg("handler failed for message, checking retry attempts")
+        
+        // Step 3: Check if max attempts reached for THIS message
+        if currentAttempt >= r.maxAttempts {
+            // Max attempts exhausted for this message - execute configured action
+            r.logger.Error().
+                Str("key", key).
+                Msg("max retry attempts reached for message")
+            
+            // Cleanup: remove from tracking map
+            r.mu.Lock()
+            delete(r.attempts, key)
+            r.mu.Unlock()
+            
+            // Execute action for THIS message
+            switch r.onMaxAttemptsAction {
+            case FailConsumer:
+                shouldFailStop = true
+                r.logger.Error().
+                    Str("key", key).
+                    Msg("max attempts reached, will stop consumer")
+                
+            case SendToDLQ:
+                // Send THIS individual message to DLQ
+                if err := r.sendMessageToDLQ(ctx, msg, handlerErr, currentAttempt); err != nil {
+                    r.logger.Error().Err(err).Str("key", key).Msg("failed to send message to DLQ")
+                    return fmt.Errorf("DLQ write failed for %s: %w", key, err)
+                }
+                r.logger.Info().Str("key", key).Msg("message sent to DLQ")
+                // This message handled (in DLQ), don't retry it
+            }
+        } else {
+            // Not at max attempts yet - this message needs retry
+            shouldRetry = true
+        }
+    }
+    
+    // Step 4: Decide overall action based on individual message outcomes
+    if shouldFailStop {
+        // At least one message hit max attempts with FailConsumer action
+        return fmt.Errorf("max retry attempts exceeded, stopping consumer")
+    }
+    
+    if !shouldRetry {
+        // All messages either sent to DLQ or some other final state
+        // No messages need retry - continue consumption
+        return nil
+    }
+    
+    // Step 5: Apply backoff delay before retrying the batch
+    // Use the maximum attempt count from all messages for backoff calculation
+    maxAttempt := r.getMaxAttempt(msgs)
+    delay := r.backoff(maxAttempt)
+    r.logger.Info().
+        Int("messageCount", len(msgs)).
+        Dur("delay", delay).
+        Msg("applying backoff before retrying batch")
+    
+    select {
+    case <-time.After(delay):
+        // Backoff completed
+    case <-ctx.Done():
+        // Shutdown requested during backoff
+        return ctx.Err()
+    }
+    
+    // Step 6: Return nil to indicate "continue processing"
+    // Engine will re-call handler with same messages
+    // Next failure will increment attempt counters
+    return nil
+}
+
+func (r *RetryStrategy) generateKey(msg *Message) string {
+    // Always use individual message offset, even in batch mode
+    return fmt.Sprintf("%s:%d:%d", msg.Topic, msg.Partition, msg.Offset)
+}
+
+func (r *RetryStrategy) getMaxAttempt(msgs []*Message) int {
+    r.mu.RLock()
+    defer r.mu.RUnlock()
+    
+    maxAttempt := 0
+    for _, msg := range msgs {
+        key := r.generateKey(msg)
+        if attempt := r.attempts[key]; attempt > maxAttempt {
+            maxAttempt = attempt
+        }
+    }
+    return maxAttempt
+}
+
+func (r *RetryStrategy) sendMessageToDLQ(ctx context.Context, msg *Message, handlerErr error, attemptCount int) error {
+    // Send individual message to DLQ
+    dlqMessage := map[string]interface{}{
+        "originalTopic":     msg.Topic,
+        "originalPartition": msg.Partition,
+        "originalOffset":    msg.Offset,
+        "payload":           base64.StdEncoding.EncodeToString(msg.Value),
+        "error":             handlerErr.Error(),
+        "timestamp":         time.Now().Format(time.RFC3339),
+        "attemptCount":      attemptCount,
+    }
+    
+    dlqPayload, _ := json.Marshal(dlqMessage)
+    return r.dlqProducer.Produce(r.dlqTopic, dlqPayload)
+}
+```
+
+**Memory Management & Cleanup**
+
+**Problem**: Unbounded map growth
+- Every failed message adds an entry to `attempts` map
+- Without cleanup, map grows indefinitely
+- Memory leak in long-running consumers
+
+**Solution**: Cleanup strategies
+
+1. **Cleanup on Max Attempts Reached** (shown above):
+   ```go
+   if currentAttempt >= r.maxAttempts {
+       delete(r.attempts, key)  // Remove before taking action
+   }
+   ```
+
+2. **Cleanup on Success** (requires integration with engine):
+   ```go
+   func (r *RetryStrategy) OnMessageSuccess(msgs []*Message) {
+       key := r.generateKey(msgs)
+       r.mu.Lock()
+       delete(r.attempts, key)
+       r.mu.Unlock()
+   }
+   ```
+   - Engine calls this after handler succeeds
+   - Removes entry if message previously failed but now succeeded
+   - Prevents stale entries from accumulating
+
+3. **Periodic Cleanup** (optional, for long-running consumers):
+   ```go
+   // Background goroutine (started in NewRetryStrategy)
+   func (r *RetryStrategy) periodicCleanup(interval time.Duration) {
+       ticker := time.NewTicker(interval)
+       for range ticker.C {
+           r.mu.Lock()
+           // Could track timestamps and remove old entries
+           // For now, map only holds active retries, so manual trigger
+           r.mu.Unlock()
+       }
+   }
+   ```
+
+**Recommended Implementation**: Use cleanup on max attempts + cleanup on success. This ensures:
+- No memory leak (entries removed when done)
+- Minimal overhead (no background goroutines)
+- Simple and predictable behavior
+
+**Thread Safety Considerations**
+
+- **Mutex Protection**: `mu sync.RWMutex` protects all map access
+- **Read Lock** (not used here): Could use `RLock()` for lookups, but atomic read+increment requires write lock anyway
+- **Lock Duration**: Keep locks brief - only during map operations
+- **No Lock During Backoff**: Release lock before `time.After()` to avoid blocking other messages
+
+**Example Trace (Single-Message Mode)**:
+
+```
+Time | Event                         | attempts map state          | Action
+-----|-------------------------------|-----------------------------|-----------------
+0s   | Message offset 100 fails      | {"orders:3:100": 1}        | Backoff 1s, retry
+1s   | Same message fails again      | {"orders:3:100": 2}        | Backoff 2s, retry
+3s   | Same message fails again      | {"orders:3:100": 3}        | Max reached (3)
+3s   | Max attempts action           | {} (deleted)                | Send to DLQ
+4s   | Message offset 200 fails      | {"orders:3:200": 1}        | Backoff 1s, retry
+5s   | Message offset 200 succeeds   | {} (deleted)                | Commit offset
+```
+
+**Example Trace (Batch Mode)**:
+
+```
+Time | Event                                  | attempts map state                    | Action
+-----|----------------------------------------|---------------------------------------|-----------------------
+0s   | Batch [100-109] fails (10 messages)   | {"orders:3:100": 1, ... "orders:3:109": 1} | 10 entries created
+0s   | Backoff 1s                             | (same)                                | Wait
+1s   | Batch [100-109] fails again            | {"orders:3:100": 2, ... "orders:3:109": 2} | All incremented
+1s   | Backoff 2s                             | (same)                                | Wait
+3s   | Batch [100-109] fails again            | {"orders:3:100": 3, ... "orders:3:109": 3} | All at max (3)
+3s   | Max attempts for all                   | {} (all deleted)                      | Send 10 DLQ messages
+3s   | DLQ write complete                     | {} (empty)                            | Continue consumption
+4s   | Batch [110-119] fails                  | {"orders:3:110": 1, ... "orders:3:119": 1} | New 10 entries
+5s   | Batch [110-119] succeeds               | {} (all deleted on success)           | Commit offsets 110-119
+```
+
+**Mixed Outcome Example (Batch with Partial Success)**:
+
+```
+Time | Event                                  | attempts map state          | Action
+-----|----------------------------------------|-----------------------------|-----------------------
+0s   | Batch [200-202] fails (3 messages)    | {"orders:3:200": 1,         | 3 entries
+     |                                        |  "orders:3:201": 1,         |
+     |                                        |  "orders:3:202": 1}         |
+1s   | Batch [200-202] fails again            | {"orders:3:200": 2,         | All incremented
+     |                                        |  "orders:3:201": 2,         |
+     |                                        |  "orders:3:202": 2}         |
+3s   | Batch [200-202] fails again            | {"orders:3:200": 3,         | All at max
+     |                                        |  "orders:3:201": 3,         |
+     |                                        |  "orders:3:202": 3}         |
+3s   | Send to DLQ                            | {} (all deleted)            | 3 individual DLQ msgs
+```
+
 **DLQ Message Format** (when SendToDLQ action is configured):
 
-Single-message mode:
+Both single-message and batch mode use the same format (individual messages):
 ```json
 {
   "originalTopic": "orders",
@@ -240,25 +589,18 @@ Single-message mode:
 }
 ```
 
-Batch mode (entire batch written as single DLQ message):
-```json
-{
-  "originalTopic": "orders",
-  "batchSize": 10,
-  "firstOffset": 12340,
-  "lastOffset": 12349,
-  "payloads": ["<base64>", "<base64>", ...],
-  "error": "handler error message",
-  "timestamp": "2026-02-09T10:30:00Z",
-  "attemptCount": 3
-}
-```
+**Batch Mode DLQ Behavior**:
+- When a batch of 10 messages fails and hits max retries, 10 individual DLQ messages are produced
+- Each DLQ message contains one original message from the batch
+- Each message tracks its own attempt count independently
+- DLQ consumers see individual messages, not batches
+- Example: Batch with offsets 12340-12349 produces 10 DLQ messages with offsets 12340, 12341, ..., 12349
 
 #### 4.4 CircuitBreakerStrategy
 - **Behavior**: Temporarily pause message processing after consecutive failures to protect downstream services
 - **Use Case**: Protect downstream services from overload during incidents (database down, API unavailable, etc.)
 - **State**: Failure counter, success counter, circuit state (closed/open/half-open), last state change timestamp
-- **Batch Handling**: In batch mode, treats each batch as a single unit (one batch failure = one failure count increment)
+- **Batch Handling**: In batch mode, treats each batch failure as a single circuit breaker event (one batch failure = one failure count increment), but does NOT retry messages individually like RetryStrategy
 - **Config**:
   - FailureThreshold (default: 10) - consecutive failures before opening circuit
   - CooldownPeriod (default: 60 seconds) - how long to wait in Open state before trying again
@@ -746,13 +1088,20 @@ Engine.Run()
    │                                          ↓
    ├── processBatch()
    │        │
-   │        ├── handler([][]byte) ──→ Process batch
+   │        ├── handler([][]byte) ──→ Process batch atomically
    │        │
    │        ├── Success: commit all offsets in batch
    │        │
    │        └── Failure: strategy.HandleError(ctx, batchMsgs, err)
    │              │                         └─ All messages from batch as slice
-   │              └── Retry entire batch or skip entire batch
+   │              │
+   │              ├── Skip: commit all offsets (batch skipped)
+   │              ├── FailFast: stop consumer (batch atomic)
+   │              ├── CircuitBreaker: increment failure count (batch atomic)
+   │              └── Retry: process each message individually
+   │                    ├── Track attempts per message offset
+   │                    ├── Send individual messages to DLQ if max retries
+   │                    └── Retry batch with remaining messages
    │
    └── Loop continues
 ```
