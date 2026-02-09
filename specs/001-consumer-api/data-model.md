@@ -130,6 +130,14 @@ type BatchHandler func(ctx context.Context, payloads [][]byte) error
 - Should not retain references to `[]byte` slices (may be reused)
 - Context is always provided and cancelled during shutdown
 
+**Batch Processing Atomicity**:
+- Batches are atomic units: all messages in batch succeed or fail together
+- If BatchHandler returns error, error strategy applies to entire batch
+- Retry: all messages in batch are re-processed together
+- Skip: all messages in batch are skipped together (all offsets committed)
+- DLQ: entire batch is written to dead-letter queue as a unit
+- No partial batch success/failure tracking in v1 for simplicity
+
 **Processing Guarantees**:
 - At-least-once delivery: message may be redelivered on failure
 - No message loss: offset only committed after successful processing

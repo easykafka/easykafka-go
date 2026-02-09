@@ -95,6 +95,13 @@ func WithHandler(handler Handler) Option
 // The handler receives context and multiple message payloads.
 // Context is cancelled during graceful shutdown.
 // Enables batch mode - see WithBatchSize and WithBatchTimeout.
+//
+// IMPORTANT: Batch processing is ATOMIC. If the batch handler returns an error,
+// the entire batch is subject to the error strategy:
+//   - Retry: all messages in batch are re-processed together
+//   - Skip: all messages in batch are skipped (all offsets committed)
+//   - DLQ: entire batch is written to dead-letter queue
+// No partial batch success/failure tracking.
 func WithBatchHandler(handler BatchHandler) Option
 
 // ============================================================================
@@ -111,11 +118,14 @@ func WithErrorStrategy(strategy ErrorStrategy) Option
 
 // WithBatchSize specifies the maximum number of messages per batch.
 // Only applies when using WithBatchHandler.
+// When batch size is reached, the batch is immediately processed.
+// If handler returns error, entire batch is retried/skipped together (atomic).
 // Default: 100
 func WithBatchSize(size int) Option
 
 // WithBatchTimeout specifies how long to wait before processing a partial batch.
 // Only applies when using WithBatchHandler.
+// Ensures low latency even when message rate is low.
 // Default: 5 seconds
 func WithBatchTimeout(timeout time.Duration) Option
 

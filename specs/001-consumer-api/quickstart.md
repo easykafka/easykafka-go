@@ -268,6 +268,12 @@ func processBatch(ctx context.Context, events [][]byte) error {
 - Batch size reached (100 messages), OR
 - Timeout expired (5 seconds since first message in batch)
 
+**Atomic Behavior**: 
+- Batches are atomic units - if the batch handler returns an error, the entire batch is subject to the error strategy
+- Retry strategy: all messages in the batch are re-processed together
+- Skip strategy: all messages in the batch are skipped together
+- No partial batch success/failure tracking
+
 ---
 
 ### 7. Skip Strategy (Best-Effort Processing)

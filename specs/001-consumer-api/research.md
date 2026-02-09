@@ -438,6 +438,13 @@ func (b *BatchAccumulator) Add(msg []byte) bool {
 }
 ```
 
+**Atomic Batch Processing**:
+- Batches are atomic units - all messages in batch succeed or fail together
+- If BatchHandler returns error, error strategy applies to entire batch
+- Retry strategy: entire batch is retried (all messages re-processed)
+- Skip strategy: entire batch is skipped (all offsets committed)
+- Simplifies error handling and maintains message ordering guarantees
+
 **Target**: 3x throughput improvement via reduced offset commit overhead
 
 ---
@@ -492,7 +499,7 @@ func (b *BatchAccumulator) Add(msg []byte) bool {
 ### Phase 1 Design Decisions Needed
 1. **Handler registration API**: How do users provide handlers? Constructor parameter vs RegisterHandler method? (Decision: Constructor parameter via WithHandler option)
 2. **Message metadata access**: How do users access headers, offset, timestamp if needed? (Decision: Via MessageFromContext(ctx))
-3. **Batch error handling**: Partial batch failure - retry all or just failed? (Decision: retry all for simplicity)
+3. **Batch error handling**: How to handle partial batch failures? (Decision: Batch processing is ATOMIC - if batch handler returns error, entire batch is retried by error strategy. No partial success/failure in v1 for simplicity)
 4. **Graceful shutdown timeout**: Default value? (Decision: 30 seconds)
 
 ### Future Enhancements (Out of Scope v1)

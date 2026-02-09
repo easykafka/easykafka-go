@@ -104,6 +104,7 @@ A developer wants their service to shut down cleanly on SIGTERM. They pass a con
 - How does the system behave when offset commits fail repeatedly?
 - What occurs if multiple conflicting error strategies are configured?
 - How does batch processing handle partial batch failures (some messages succeed, some fail)?
+  - **Answer**: Batch processing is ATOMIC. If the batch handler returns an error, the entire batch is retried or skipped according to the error strategy. Individual message success/failure tracking within a batch is not supported in v1 for simplicity.
 - What happens when a consumer joins a group that has never committed offsets (no starting position)?
 
 ## Requirements *(mandatory)*
@@ -153,7 +154,7 @@ A developer wants their service to shut down cleanly on SIGTERM. They pass a con
 - **FR-027**: Batch mode MUST accumulate messages up to the configured batch size
 - **FR-028**: Batch mode MUST deliver partial batches when the configured timeout expires, even if batch size not reached
 - **FR-029**: Batch mode MUST treat the entire batch as an atomic unit for offset commits
-- **FR-030**: Batch mode MUST apply error strategies at batch level (retry/skip entire batch)
+- **FR-030**: Batch mode MUST treat the entire batch as an atomic unit for error handling - if batch handler returns error, the entire batch is subject to the error strategy (all messages retried together or all skipped together)
 - **FR-031**: Batch mode MUST maintain message ordering within each batch as received from Kafka
 
 #### Lifecycle and Shutdown
