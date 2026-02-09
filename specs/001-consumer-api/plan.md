@@ -70,8 +70,8 @@ Build a Go library that provides a simple, handler-based interface for consuming
 ### Principle IV: Strategy Pattern Support ✅ PASS
 
 - **Check**: Pluggable error handling and consumption strategies
-- **Status**: PASS - 5 error strategies defined as pluggable implementations
-- **Evidence**: FR-019 through FR-023 define strategy interface with fail-fast, skip, retry, DLQ, circuit-breaker
+- **Status**: PASS - 4 error strategies defined as pluggable implementations
+- **Evidence**: FR-019 through FR-023 define strategy interface with fail-fast, skip, retry (with optional DLQ), circuit-breaker
 
 ### Principle V: Thin Wrapper Philosophy ✅ PASS
 
@@ -119,8 +119,8 @@ Build a Go library that provides a simple, handler-based interface for consuming
 
 ### Principle IV: Strategy Pattern Support ✅ PASS
 
-- **Design Check**: ErrorStrategy interface with 5 implementations
-- **Evidence**: [data-model.md](data-model.md) Section 4 defines strategy interface
+- **Design Check**: ErrorStrategy interface with 4 implementations
+- **Evidence**: [data-model.md](data-model.md) Section 4 defines strategy interface and retry strategy with configurable DLQ action
 - **Verification**: Users can implement custom strategies
 
 ### Principle V: Thin Wrapper Philosophy ✅ PASS

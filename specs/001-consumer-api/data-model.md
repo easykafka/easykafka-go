@@ -174,7 +174,7 @@ type ErrorStrategy interface {
 - **Config**: Optional custom logger
 
 #### 4.3 RetryStrategy
-- **Behavior**: Retry message processing with configurable backoff
+- **Behavior**: Retry message processing with configurable backoff, then execute configured action after max attempts
 - **Use Case**: Transient failures (network timeouts, temporary service unavailability)
 - **State**: Retry attempt tracking per message (via message offset key)
 - **Config**:
@@ -183,27 +183,30 @@ type ErrorStrategy interface {
   - InitialDelay (default: 1 second)
   - MaxDelay (default: 30 seconds)
   - Multiplier (default: 2.0 for exponential)
+  - OnMaxAttemptsExceeded: Action to take after all retries exhausted
+    - **FailConsumer**: Stop consumer (default)
+    - **SendToDLQ(topic)**: Write message to dead-letter queue and continue consumption
 
 **Retry Attempt Tracking**:
 ```go
 type RetryStrategy struct {
-    maxAttempts int
-    backoff     BackoffFunc
-    attempts    map[int64]int  // offset -> attempt count
-    mu          sync.RWMutex
+    maxAttempts         int
+    backoff             BackoffFunc
+    onMaxAttemptsAction MaxAttemptsAction  // New: configurable action
+    dlqTopic            string             // New: only used if action is SendToDLQ
+    attempts            map[int64]int      // offset -> attempt count
+    mu                  sync.RWMutex
 }
+
+type MaxAttemptsAction int
+
+const (
+    FailConsumer MaxAttemptsAction = iota
+    SendToDLQ
+)
 ```
 
-#### 4.4 DeadLetterStrategy
-- **Behavior**: After max retries, write to DLQ topic and continue
-- **Use Case**: Capture permanently failed messages for later analysis
-- **State**: Kafka producer for DLQ writes
-- **Config**:
-  - DLQTopic (required)
-  - MaxRetries (default: 3)
-  - IncludeMetadata (default: true)
-
-**DLQ Message Format**:
+**DLQ Message Format** (when SendToDLQ action is configured):
 ```json
 {
   "originalTopic": "orders",
@@ -216,7 +219,7 @@ type RetryStrategy struct {
 }
 ```
 
-#### 4.5 CircuitBreakerStrategy
+#### 4.4 CircuitBreakerStrategy
 - **Behavior**: Pause consumption after consecutive failure threshold
 - **Use Case**: Protect downstream services from overload during incidents
 - **State**: Failure counter, circuit state (closed/open/half-open)

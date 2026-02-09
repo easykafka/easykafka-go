@@ -26,7 +26,7 @@ A developer wants to consume messages from a Kafka topic without learning Kafka 
 
 ### User Story 2 - Metadata-Driven Configuration (Priority: P1)
 
-A developer wants to configure consumer behavior without writing configuration files or parsing environment variables. They use Go struct tags like `kafka:"topic=orders,consumer-group=processors"` or functional options like `WithRetryStrategy(ExponentialBackoff(3))` to specify all settings at handler registration.
+A developer wants to configure consumer behavior without writing configuration files or parsing environment variables. They use Go struct tags like `kafka:"topic=orders,consumer-group=processors"` or functional options like `WithRetryStrategy(Retry(WithMaxAttempts(3), WithOnMaxAttemptsExceeded(SendToDLQ("orders-dlq"))))` to specify all settings at handler registration.
 
 **Why this priority**: Metadata-driven design is a core constitutional principle. Without this, the library just becomes another wrapper with the same complexity as existing solutions.
 
@@ -35,7 +35,7 @@ A developer wants to configure consumer behavior without writing configuration f
 **Acceptance Scenarios**:
 
 1. **Given** struct tags with topic and consumer group metadata, **When** the consumer is initialized, **Then** it connects to the specified topic in the specified group
-2. **Given** functional options for error strategy, **When** a handler error occurs, **Then** the specified strategy (retry/skip/DLQ/fail-fast) is executed
+2. **Given** functional options for error strategy, **When** a handler error occurs, **Then** the specified strategy (retry with optional DLQ/skip/fail-fast/circuit-breaker) is executed
 3. **Given** invalid metadata (empty topic, negative batch size), **When** the consumer is created, **Then** validation errors are returned before connecting to Kafka
 4. **Given** advanced confluent-kafka-go options via passthrough, **When** the consumer starts, **Then** those low-level settings are applied to the underlying Kafka consumer
 
@@ -43,7 +43,7 @@ A developer wants to configure consumer behavior without writing configuration f
 
 ### User Story 3 - Pluggable Error Handling Strategies (Priority: P1)
 
-A developer needs different failure handling for different use cases. For critical order processing, they configure fail-fast to stop on any error. For analytics ingestion, they configure skip to log and continue. For user action tracking, they configure retry with exponential backoff and dead-letter queue fallback.
+A developer needs different failure handling for different use cases. For critical order processing, they configure fail-fast to stop on any error. For analytics ingestion, they configure skip to log and continue. For user action tracking, they configure retry with exponential backoff and, after exhausting retries, either stop the consumer or write to a dead-letter queue and continue.
 
 **Why this priority**: Error handling is not optional in production systems. Different domains require different failure semantics, making this a P1 requirement alongside basic consumption.
 
@@ -53,9 +53,10 @@ A developer needs different failure handling for different use cases. For critic
 
 1. **Given** fail-fast strategy, **When** handler returns an error, **Then** the consumer stops immediately and returns the error to the caller
 2. **Given** skip strategy, **When** handler returns an error, **Then** the error is logged, offset is committed, and consumption continues with the next message
-3. **Given** retry strategy with 3 attempts and exponential backoff, **When** handler fails, **Then** the message is retried up to 3 times with delays of 1s, 2s, 4s before final failure handling
-4. **Given** dead-letter strategy with DLQ topic "orders-dlq", **When** handler fails after all retries, **Then** the failed message is written to the DLQ topic with error metadata and normal consumption continues
-5. **Given** circuit-breaker strategy with threshold of 10 failures, **When** 10 consecutive errors occur, **Then** consumption pauses for a cooldown period before resuming
+3. **Given** retry strategy with 3 attempts and exponential backoff, **When** handler fails, **Then** the message is retried up to 3 times with delays of 1s, 2s, 4s before executing the configured max-attempts action
+4. **Given** retry strategy with SendToDLQ action and DLQ topic "orders-dlq", **When** handler fails after all retries, **Then** the failed message is written to the DLQ topic with error metadata and normal consumption continues
+5. **Given** retry strategy with FailConsumer action, **When** handler fails after all retries, **Then** the consumer stops and returns an error
+6. **Given** circuit-breaker strategy with threshold of 10 failures, **When** 10 consecutive errors occur, **Then** consumption pauses for a cooldown period before resuming
 
 ---
 
@@ -141,11 +142,11 @@ A developer wants their service to shut down cleanly on SIGTERM. They pass a con
 - **FR-019**: Library MUST provide a fail-fast strategy that stops consumption immediately on handler errors
 - **FR-020**: Library MUST provide a skip strategy that logs errors, commits offsets, and continues consumption
 - **FR-021**: Library MUST provide a retry strategy with configurable attempts, delay type (fixed/exponential/custom), and backoff parameters
-- **FR-022**: Library MUST provide a dead-letter queue strategy that writes failed messages to a configured DLQ topic
+- **FR-022**: Retry strategy MUST support configurable action after max attempts are exhausted: either stop consumer (FailConsumer) or write to dead-letter queue and continue (SendToDLQ)
 - **FR-023**: Library MUST provide a circuit-breaker strategy that pauses consumption after a threshold of consecutive failures
 - **FR-024**: Library MUST allow users to select error strategy at consumer creation time via functional options
 - **FR-025**: Retry strategy MUST respect maximum attempt limits and not retry indefinitely
-- **FR-026**: Dead-letter strategy MUST include original message payload, error details, and timestamps in DLQ messages
+- **FR-026**: Retry strategy with SendToDLQ action MUST include original message payload, error details, and timestamps in DLQ messages
 
 #### Batch Processing Mode
 
@@ -186,7 +187,7 @@ A developer wants their service to shut down cleanly on SIGTERM. They pass a con
 - **Consumer**: Main library type managing the consumption lifecycle, wrapping confluent-kafka-go consumer, coordinating strategy execution
 - **Handler**: User-provided function processing message payloads, with signature `func([]byte) error` or batch equivalent
 - **HandlerMetadata**: Configuration struct containing topic, consumer group, Kafka brokers, error strategy, batch settings, and advanced options
-- **ErrorStrategy**: Interface defining failure handling behavior with implementations for retry, skip, DLQ, fail-fast, and circuit-breaker
+- **ErrorStrategy**: Interface defining failure handling behavior with implementations for fail-fast, skip, retry (with optional DLQ action), and circuit-breaker
 - **ConsumptionMode**: Configuration determining single-message vs batch processing behavior
 - **Message**: Internal representation of Kafka message containing payload bytes plus optional metadata (offset, partition, timestamp, headers)
 - **StrategyContext**: Context object passed to error strategies containing message details, attempt count, and error information

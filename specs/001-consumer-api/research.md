@@ -275,13 +275,12 @@ type ErrorStrategy interface {
 **Built-in Strategies**:
 1. **Fail-Fast**: Return error immediately, stop consumer
 2. **Skip**: Log error, commit offset, continue
-3. **Retry**: Retry with configurable backoff (fixed/exponential/custom)
-4. **Dead-Letter Queue**: Write to DLQ topic after max attempts
-5. **Circuit-Breaker**: Pause after consecutive failures threshold
+3. **Retry**: Retry with configurable backoff (fixed/exponential/custom) and configurable action after max attempts (stop consumer or write to DLQ and continue)
+4. **Circuit-Breaker**: Pause after consecutive failures threshold
 
 **Strategy Configuration**:
 ```go
-// Retry strategy with exponential backoff
+// Retry strategy with exponential backoff and fail-fast after max attempts
 retry := easykafka.NewRetryStrategy(
     easykafka.WithMaxAttempts(3),
     easykafka.WithBackoff(easykafka.ExponentialBackoff{
@@ -289,19 +288,32 @@ retry := easykafka.NewRetryStrategy(
         MaxDelay:     30 * time.Second,
         Multiplier:   2.0,
     }),
+    easykafka.WithOnMaxAttemptsExceeded(easykafka.FailConsumer), // Stop consumer
+)
+
+// OR retry with dead-letter queue fallback
+retryWithDLQ := easykafka.NewRetryStrategy(
+    easykafka.WithMaxAttempts(3),
+    easykafka.WithBackoff(easykafka.ExponentialBackoff{
+        InitialDelay: 1 * time.Second,
+        MaxDelay:     30 * time.Second,
+        Multiplier:   2.0,
+    }),
+    easykafka.WithOnMaxAttemptsExceeded(easykafka.SendToDLQ("orders-dlq")), // Write to DLQ and continue
 )
 
 consumer, _ := easykafka.New(
     // ... other options
-    easykafka.WithErrorStrategy(retry),
+    easykafka.WithErrorStrategy(retryWithDLQ),
 )
 ```
 
 **Best Practices Applied**:
-- strategies are stateless (or thread-safe if stateful)
+- Strategies are stateless (or thread-safe if stateful)
 - Each strategy logs its actions for observability
 - Strategies respect context cancellation for shutdown
-- DLQ strategy includes metadata (original topic, error, timestamp)
+- DLQ writes (when configured in retry strategy) include metadata (original topic, error, timestamp)
+- Retry strategy allows choosing action after max attempts: stop consumer or write to DLQ and continue
 
 ---
 

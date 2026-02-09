@@ -154,12 +154,13 @@ func main() {
         easykafka.WithConsumerGroup("order-processors"),
         easykafka.WithHandler(processOrder),
         
-        // Retry failed messages with exponential backoff
+        // Retry failed messages, then stop consumer
         easykafka.WithErrorStrategy(
             easykafka.Retry(
                 easykafka.WithMaxAttempts(5),
                 easykafka.WithInitialDelay(1 * time.Second),
                 easykafka.WithMaxDelay(30 * time.Second),
+                easykafka.WithOnMaxAttemptsExceeded(easykafka.FailConsumer),
             ),
         ),
     )
@@ -181,7 +182,7 @@ func main() {
 
 ---
 
-### 5. With Dead-Letter Queue
+### 5. With Retry + Dead-Letter Queue
 
 ```go
 func main() {
@@ -191,11 +192,12 @@ func main() {
         easykafka.WithConsumerGroup("order-processors"),
         easykafka.WithHandler(processOrder),
         
-        // Failed messages go to DLQ after 3 retries
+        // Retry failed messages, then send to DLQ and continue
         easykafka.WithErrorStrategy(
-            easykafka.DeadLetter(
-                "orders-dlq",  // DLQ topic name
-                easykafka.WithMaxRetries(3),
+            easykafka.Retry(
+                easykafka.WithMaxAttempts(3),
+                easykafka.WithInitialDelay(1 * time.Second),
+                easykafka.WithOnMaxAttemptsExceeded(easykafka.SendToDLQ("orders-dlq")),
             ),
         ),
     )
@@ -356,13 +358,13 @@ func processOrder(orderData []byte) error {
 
 | Strategy | When Handler Fails | Use Case |
 |----------|-------------------|----------|
-| **Retry** (default) | Retry with backoff, then stop | Transient failures (network, rate limits) |
+| **Retry + FailConsumer** (default) | Retry with backoff, then stop | Transient failures where eventual stop is acceptable |
+| **Retry + SendToDLQ** | Retry, then send to DLQ and continue | Production systems needing error investigation without stopping |
 | **Skip** | Log and continue | Best-effort analytics, non-critical data |
-| **DeadLetter** | Retry, then DLQ | Production systems needing error investigation |
 | **FailFast** | Stop immediately | Critical processing (payments, orders) |
 | **CircuitBreaker** | Pause consumption | Protect downstream during incidents |
 
-**Default**: Retry with 3 attempts and exponential backoff.
+**Default**: Retry with 3 attempts, exponential backoff, then stop consumer.
 
 ---
 

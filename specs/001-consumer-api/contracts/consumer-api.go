@@ -113,7 +113,7 @@ func WithBatchHandlerContext(handler BatchHandlerWithContext) Option
 // ============================================================================
 
 // WithErrorStrategy specifies how to handle message processing failures.
-// Default: ExponentialRetry(3) - retry up to 3 times with exponential backoff.
+// Default: Retry(WithMaxAttempts(3), WithOnMaxAttemptsExceeded(FailConsumer)) - retry up to 3 times then stop.
 //
 // Example:
 //
@@ -178,27 +178,25 @@ func FailFast() ErrorStrategy
 func Skip() ErrorStrategy
 
 // Retry returns an error strategy that retries failed messages with exponential backoff.
+// After max attempts are exhausted, executes the configured action (stop consumer or send to DLQ).
 // Use for transient failures (network timeouts, temporary service unavailability).
 //
-// Example:
+// Example (stop consumer after retries):
 //
 //	easykafka.Retry(
 //	    easykafka.WithMaxAttempts(5),
 //	    easykafka.WithInitialDelay(1 * time.Second),
 //	    easykafka.WithMaxDelay(60 * time.Second),
+//	    easykafka.WithOnMaxAttemptsExceeded(easykafka.FailConsumer),
+//	)
+//
+// Example (send to DLQ after retries):
+//
+//	easykafka.Retry(
+//	    easykafka.WithMaxAttempts(3),
+//	    easykafka.WithOnMaxAttemptsExceeded(easykafka.SendToDLQ("orders-dlq")),
 //	)
 func Retry(options ...RetryOption) ErrorStrategy
-
-// DeadLetter returns an error strategy that writes failed messages to a dead-letter queue.
-// After max retries, the failed message is written to the DLQ topic with error metadata.
-//
-// Example:
-//
-//	easykafka.DeadLetter(
-//	    "orders-dlq",
-//	    easykafka.WithMaxRetries(3),
-//	)
-func DeadLetter(dlqTopic string, options ...DLQOption) ErrorStrategy
 
 // CircuitBreaker returns an error strategy that pauses consumption after consecutive failures.
 // Use to protect downstream services from overload during incidents.
@@ -238,15 +236,32 @@ func WithBackoffMultiplier(multiplier float64) RetryOption
 // The function receives the attempt number (1-based) and returns the delay.
 func WithCustomBackoff(fn func(attempt int) time.Duration) RetryOption
 
-// DLQOption configures a dead-letter queue strategy.
-type DLQOption func(*dlqConfig) error
+// WithOnMaxAttemptsExceeded configures what happens after all retry attempts are exhausted.
+// Options:
+//   - FailConsumer: Stop the consumer and return error (default)
+//   - SendToDLQ("topic-name"): Write message to dead-letter queue and continue consumption
+//
+// Example:
+//
+//	easykafka.WithOnMaxAttemptsExceeded(easykafka.SendToDLQ("orders-dlq"))
+func WithOnMaxAttemptsExceeded(action MaxAttemptsAction) RetryOption
 
-// WithMaxRetries sets the number of retries before sending to DLQ.
-// Default: 3
-func WithMaxRetries(retries int) DLQOption
+// MaxAttemptsAction defines what happens when retry attempts are exhausted.
+type MaxAttemptsAction interface {
+	isMaxAttemptsAction()
+}
 
-// WithDLQHeaders specifies additional headers to include in DLQ messages.
-func WithDLQHeaders(headers map[string]string) DLQOption
+// FailConsumer stops the consumer when max attempts are exceeded.
+// This is the default behavior.
+var FailConsumer MaxAttemptsAction
+
+// SendToDLQ returns an action that writes failed messages to a dead-letter queue.
+// The message is written to the specified topic with error metadata, then consumption continues.
+//
+// Example:
+//
+//	easykafka.SendToDLQ("orders-dlq")
+func SendToDLQ(dlqTopic string) MaxAttemptsAction
 
 // CircuitBreakerOption configures a circuit breaker strategy.
 type CircuitBreakerOption func(*circuitConfig) error
