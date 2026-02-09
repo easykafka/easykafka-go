@@ -155,6 +155,69 @@ type BatchHandler func(ctx context.Context, payloads [][]byte) error
 - Use context for timeouts: `ctx, cancel := context.WithTimeout(ctx, 5*time.Second)`
 - Access message metadata via `easykafka.MessageFromContext(ctx)`
 
+**Multi-Step Handler Pattern** (for non-idempotent operations):
+
+Handlers that perform multiple non-idempotent steps (e.g., separate database writes, external API calls) can use the `RetryStep` mechanism to resume processing from a failed step rather than restarting from the beginning.
+
+**Use Case Example**:
+```go
+// Handler performs 3 non-idempotent steps
+func processOrder(ctx context.Context, payload []byte) error {
+    msg := easykafka.MessageFromContext(ctx)
+    retryStep := easykafka.GetRetryStep(msg) // 0 = start from beginning
+    
+    // Step 1: Create order record (idempotency key could prevent duplicates)
+    if retryStep == 0 {
+        if err := db.CreateOrder(order); err != nil {
+            return easykafka.SetRetryStep(msg, 1, err) // Retry from step 1
+        }
+    }
+    
+    // Step 2: Charge payment (non-idempotent - cannot retry)
+    if retryStep <= 1 {
+        if err := payment.Charge(order); err != nil {
+            return easykafka.SetRetryStep(msg, 2, err) // Skip step 1, retry from step 2
+        }
+    }
+    
+    // Step 3: Send confirmation email
+    if retryStep <= 2 {
+        if err := email.Send(order); err != nil {
+            return easykafka.SetRetryStep(msg, 3, err) // Skip steps 1-2, retry from step 3
+        }
+    }
+    
+    return nil // All steps completed
+}
+```
+
+**How It Works**:
+1. Handler reads current `RetryStep` from message context (0 = first attempt or restart from beginning)
+2. Handler executes steps conditionally based on `retryStep` value
+3. On failure, handler calls `easykafka.SetRetryStep(msg, stepNumber, err)` to indicate which step to resume from
+4. Library persists `RetryStep` in retry queue headers
+5. When message is retried, handler receives `RetryStep` and skips already-completed steps
+
+**Library Convenience Functions**:
+```go
+// Get retry step from message context (returns 0 if not set)
+func GetRetryStep(msg *Message) int32
+
+// Set retry step and return wrapped error
+func SetRetryStep(msg *Message, step int32, err error) error
+
+// Helper to set retry step via context (for handlers that don't access Message directly)
+func SetRetryStepInContext(ctx context.Context, step int32)
+```
+
+**Important Considerations**:
+- `RetryStep` is optional - handlers that don't need it can ignore it (default behavior: always restart from beginning)
+- Step numbering is arbitrary - handler defines what each step means
+- Step 0 always means "start from the beginning"
+- Handler is responsible for step skipping logic - library only persists the step number
+- Works with both single-message and batch modes (each message in batch can have different retry steps)
+- Not all failures need retry steps - use only when steps are truly non-idempotent and expensive
+
 ---
 
 ### 4. ErrorStrategy (Public API - Interface)
@@ -287,6 +350,7 @@ When a message is written to the retry queue, these headers are added/updated:
 type RetryHeaders struct {
     RetryAttempt    int       // Current attempt number (1, 2, 3, ...)
     RetryTime       time.Time // Timestamp when message can be retried
+    RetryStep       int32     // Step number from which to retry (for non-idempotent multi-step handlers)
     ErrorCode       string    // Error code or type (e.g., "TIMEOUT", "DB_ERROR")
     ErrorMessage    string    // Full error message for debugging
     OriginalTopic   string    // Source topic where message came from
@@ -301,6 +365,7 @@ type RetryHeaders struct {
 Headers:
   "easykafka.retry.attempt"    = "2"
   "easykafka.retry.time"       = "2026-02-09T10:35:00Z"
+  "easykafka.retry.step"       = "0"  // Optional: 0 = start from beginning, >0 = resume from step N
   "easykafka.error.code"       = "TIMEOUT"
   "easykafka.error.message"    = "context deadline exceeded"
   "easykafka.original.topic"   = "orders"
@@ -416,6 +481,17 @@ func (r *RetryStrategy) getRetryAttemptFromHeaders(msg *Message) int {
     return 0 // First failure - no retry headers yet
 }
 
+func (r *RetryStrategy) getRetryStepFromHeaders(msg *Message) int32 {
+    // Look for "easykafka.retry.step" header
+    for _, h := range msg.Headers {
+        if h.Key == "easykafka.retry.step" {
+            step, _ := strconv.Atoi(string(h.Value))
+            return int32(step)
+        }
+    }
+    return 0 // Default: start from beginning
+}
+
 func (r *RetryStrategy) sendMessageToRetryQueue(ctx context.Context, msg *Message, handlerErr error, attemptCount int) error {
     // Calculate backoff delay based on attempt count
     delay := r.backoff(attemptCount)
@@ -427,10 +503,14 @@ func (r *RetryStrategy) sendMessageToRetryQueue(ctx context.Context, msg *Messag
         errorCode = "TIMEOUT"
     }
     
+    // Read RetryStep from existing headers (if handler set it for multi-step processing)
+    retryStep := r.getRetryStepFromHeaders(msg)
+    
     // Create/update retry headers
     retryHeaders := []Header{
         {Key: "easykafka.retry.attempt", Value: []byte(strconv.Itoa(attemptCount))},
         {Key: "easykafka.retry.time", Value: []byte(retryTime.Format(time.RFC3339))},
+        {Key: "easykafka.retry.step", Value: []byte(strconv.Itoa(int(retryStep)))},
         {Key: "easykafka.error.code", Value: []byte(errorCode)},
         {Key: "easykafka.error.message", Value: []byte(handlerErr.Error())},
         {Key: "easykafka.original.topic", Value: []byte(msg.Topic)},
@@ -880,6 +960,23 @@ type Header struct {
       return processPayload(payload)
   }
   ```
+- For multi-step handlers, access retry step information:
+  ```go
+  func handler(ctx context.Context, payload []byte) error {
+      msg := easykafka.MessageFromContext(ctx)
+      retryStep := easykafka.GetRetryStep(msg) // 0 = start from beginning
+      
+      // Conditionally skip completed steps
+      if retryStep == 0 {
+          // Execute step 1
+      }
+      if retryStep <= 1 {
+          // Execute step 2
+      }
+      // ... etc
+      return nil
+  }
+  ```
 
 **Memory Management**:
 - Message payload backed by confluent-kafka-go buffer
@@ -1255,6 +1352,28 @@ Context cancelled
    func handler(ctx context.Context, payload []byte) error {
        msg := easykafka.MessageFromContext(ctx)
        // Access headers, offset, timestamp, etc.
+   }
+   ```
+
+4. **Multi-Step Handler with RetryStep**:
+   ```go
+   func handler(ctx context.Context, payload []byte) error {
+       msg := easykafka.MessageFromContext(ctx)
+       retryStep := easykafka.GetRetryStep(msg)
+       
+       if retryStep == 0 {
+           if err := performStep1(); err != nil {
+               return easykafka.SetRetryStep(msg, 1, err)
+           }
+       }
+       
+       if retryStep <= 1 {
+           if err := performStep2(); err != nil {
+               return easykafka.SetRetryStep(msg, 2, err)
+           }
+       }
+       
+       return nil
    }
    ```
 
