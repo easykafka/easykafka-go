@@ -1,0 +1,327 @@
+// Package easykafka provides a simplified Kafka consumer API with handler-based message processing.
+//
+// This file defines the public API contract for the EasyKafka consumer library.
+// All types and functions in this file represent the stable public interface.
+package easykafka
+
+import (
+	"context"
+	"time"
+)
+
+// ============================================================================
+// CORE TYPES
+// ============================================================================
+
+// Consumer manages the lifecycle of Kafka message consumption.
+// Create via New() with functional options, then call Start() to begin consuming.
+type Consumer interface {
+	// Start begins consuming messages from the configured topic.
+	// Blocks until context is cancelled or a fatal error occurs.
+	// Returns error on configuration validation failure or unrecoverable Kafka errors.
+	Start(ctx context.Context) error
+
+	// Shutdown gracefully stops the consumer within the configured timeout.
+	// Completes in-flight message processing and commits final offsets.
+	// Returns error if shutdown timeout is exceeded.
+	Shutdown(ctx context.Context) error
+}
+
+// ============================================================================
+// HANDLER FUNCTION TYPES
+// ============================================================================
+
+// Handler processes a single message payload.
+// Return nil for successful processing (offset will be committed).
+// Return error for failed processing (error strategy will be applied).
+type Handler func(payload []byte) error
+
+// HandlerWithContext processes a single message with cancellation support.
+// The context is cancelled during graceful shutdown to allow handlers to abort.
+type HandlerWithContext func(ctx context.Context, payload []byte) error
+
+// BatchHandler processes multiple messages together as a batch.
+// Return nil to commit all message offsets in the batch.
+// Return error to apply error strategy to the entire batch.
+type BatchHandler func(payloads [][]byte) error
+
+// BatchHandlerWithContext processes a batch with cancellation support.
+type BatchHandlerWithContext func(ctx context.Context, payloads [][]byte) error
+
+// ============================================================================
+// CONFIGURATION (FUNCTIONAL OPTIONS)
+// ============================================================================
+
+// Option configures a Consumer. Options are applied during New().
+type Option func(*consumerConfig) error
+
+// NEW creates a new Consumer with the provided options.
+// Returns error if required options are missing or invalid.
+//
+// Required options: WithTopic, WithBrokers, WithConsumerGroup, WithHandler
+//
+// Example:
+//
+//	consumer, err := easykafka.New(
+//	    easykafka.WithTopic("orders"),
+//	    easykafka.WithBrokers("localhost:9092"),
+//	    easykafka.WithConsumerGroup("order-processors"),
+//	    easykafka.WithHandler(func(msg []byte) error {
+//	        return processOrder(msg)
+//	    }),
+//	)
+func New(options ...Option) (Consumer, error)
+
+// ============================================================================
+// REQUIRED OPTIONS
+// ============================================================================
+
+// WithTopic specifies the Kafka topic to consume from.
+// Required. Must be non-empty.
+func WithTopic(topic string) Option
+
+// WithBrokers specifies the Kafka broker addresses.
+// Required. Must provide at least one broker.
+// Example: WithBrokers("localhost:9092", "localhost:9093")
+func WithBrokers(brokers ...string) Option
+
+// WithConsumerGroup specifies the consumer group ID.
+// Required. Multiple consumers with the same group ID will share partition load.
+func WithConsumerGroup(groupID string) Option
+
+// WithHandler specifies the message processing function (single-message mode).
+// Required (unless WithBatchHandler is used).
+// The handler receives the message payload as a byte slice.
+func WithHandler(handler Handler) Option
+
+// WithHandlerContext specifies a context-aware handler (single-message mode).
+// Required (unless WithBatchHandler is used).
+// The context is cancelled during graceful shutdown.
+func WithHandlerContext(handler HandlerWithContext) Option
+
+// WithBatchHandler specifies a batch processing function.
+// Required (unless WithHandler is used).
+// Enables batch mode - see WithBatchSize and WithBatchTimeout.
+func WithBatchHandler(handler BatchHandler) Option
+
+// WithBatchHandlerContext specifies a context-aware batch handler.
+// Required (unless WithHandler is used).
+func WithBatchHandlerContext(handler BatchHandlerWithContext) Option
+
+// ============================================================================
+// OPTIONAL CONFIGURATION
+// ============================================================================
+
+// WithErrorStrategy specifies how to handle message processing failures.
+// Default: ExponentialRetry(3) - retry up to 3 times with exponential backoff.
+//
+// Example:
+//
+//	easykafka.WithErrorStrategy(easykafka.FailFast())
+func WithErrorStrategy(strategy ErrorStrategy) Option
+
+// WithBatchSize specifies the maximum number of messages per batch.
+// Only applies when using WithBatchHandler.
+// Default: 100
+func WithBatchSize(size int) Option
+
+// WithBatchTimeout specifies how long to wait before processing a partial batch.
+// Only applies when using WithBatchHandler.
+// Default: 5 seconds
+func WithBatchTimeout(timeout time.Duration) Option
+
+// WithPollTimeout specifies the Kafka poll timeout.
+// Lower values improve shutdown responsiveness but increase CPU usage.
+// Default: 100ms
+func WithPollTimeout(timeout time.Duration) Option
+
+// WithShutdownTimeout specifies the maximum time to wait for graceful shutdown.
+// Default: 30 seconds
+func WithShutdownTimeout(timeout time.Duration) Option
+
+// WithLogger specifies a custom zerolog logger.
+// Default: zerolog.Nop() (no logging)
+func WithLogger(logger Logger) Option
+
+// WithKafkaConfig passes advanced configuration to confluent-kafka-go.
+// Use this to set low-level Kafka consumer properties.
+//
+// Example:
+//
+//	easykafka.WithKafkaConfig(map[string]any{
+//	    "session.timeout.ms": 6000,
+//	    "auto.offset.reset": "earliest",
+//	})
+func WithKafkaConfig(config map[string]any) Option
+
+// ============================================================================
+// ERROR HANDLING STRATEGIES
+// ============================================================================
+
+// ErrorStrategy defines how message processing failures are handled.
+// Implement this interface to create custom error handling behavior.
+type ErrorStrategy interface {
+	// HandleError is called when a handler returns an error.
+	// Return nil to continue consumption, error to stop the consumer.
+	HandleError(ctx context.Context, msg *Message, handlerErr error) error
+
+	// Name returns the strategy name for logging purposes.
+	Name() string
+}
+
+// FailFast returns an error strategy that stops the consumer immediately on any handler error.
+// Use for critical processing where errors require manual intervention.
+func FailFast() ErrorStrategy
+
+// Skip returns an error strategy that logs errors and continues processing.
+// Use for best-effort processing where message loss is acceptable.
+func Skip() ErrorStrategy
+
+// Retry returns an error strategy that retries failed messages with exponential backoff.
+// Use for transient failures (network timeouts, temporary service unavailability).
+//
+// Example:
+//
+//	easykafka.Retry(
+//	    easykafka.WithMaxAttempts(5),
+//	    easykafka.WithInitialDelay(1 * time.Second),
+//	    easykafka.WithMaxDelay(60 * time.Second),
+//	)
+func Retry(options ...RetryOption) ErrorStrategy
+
+// DeadLetter returns an error strategy that writes failed messages to a dead-letter queue.
+// After max retries, the failed message is written to the DLQ topic with error metadata.
+//
+// Example:
+//
+//	easykafka.DeadLetter(
+//	    "orders-dlq",
+//	    easykafka.WithMaxRetries(3),
+//	)
+func DeadLetter(dlqTopic string, options ...DLQOption) ErrorStrategy
+
+// CircuitBreaker returns an error strategy that pauses consumption after consecutive failures.
+// Use to protect downstream services from overload during incidents.
+//
+// Example:
+//
+//	easykafka.CircuitBreaker(
+//	    easykafka.WithFailureThreshold(10),
+//	    easykafka.WithCooldownPeriod(60 * time.Second),
+//	)
+func CircuitBreaker(options ...CircuitBreakerOption) ErrorStrategy
+
+// ============================================================================
+// ERROR STRATEGY OPTIONS
+// ============================================================================
+
+// RetryOption configures a retry error strategy.
+type RetryOption func(*retryConfig) error
+
+// WithMaxAttempts sets the maximum number of retry attempts.
+// Default: 3
+func WithMaxAttempts(attempts int) RetryOption
+
+// WithInitialDelay sets the initial delay before the first retry.
+// Default: 1 second
+func WithInitialDelay(delay time.Duration) RetryOption
+
+// WithMaxDelay sets the maximum delay between retries (for exponential backoff).
+// Default: 30 seconds
+func WithMaxDelay(delay time.Duration) RetryOption
+
+// WithBackoffMultiplier sets the exponential backoff multiplier.
+// Default: 2.0 (delays: 1s, 2s, 4s, 8s, ...)
+func WithBackoffMultiplier(multiplier float64) RetryOption
+
+// WithCustomBackoff provides a custom backoff function.
+// The function receives the attempt number (1-based) and returns the delay.
+func WithCustomBackoff(fn func(attempt int) time.Duration) RetryOption
+
+// DLQOption configures a dead-letter queue strategy.
+type DLQOption func(*dlqConfig) error
+
+// WithMaxRetries sets the number of retries before sending to DLQ.
+// Default: 3
+func WithMaxRetries(retries int) DLQOption
+
+// WithDLQHeaders specifies additional headers to include in DLQ messages.
+func WithDLQHeaders(headers map[string]string) DLQOption
+
+// CircuitBreakerOption configures a circuit breaker strategy.
+type CircuitBreakerOption func(*circuitConfig) error
+
+// WithFailureThreshold sets the number of consecutive failures before opening the circuit.
+// Default: 10
+func WithFailureThreshold(threshold int) CircuitBreakerOption
+
+// WithCooldownPeriod sets how long the circuit stays open before attempting recovery.
+// Default: 60 seconds
+func WithCooldownPeriod(period time.Duration) CircuitBreakerOption
+
+// WithHalfOpenAttempts sets how many successes required to close the circuit from half-open.
+// Default: 3
+func WithHalfOpenAttempts(attempts int) CircuitBreakerOption
+
+// ============================================================================
+// MESSAGE METADATA ACCESS
+// ============================================================================
+
+// Message represents a Kafka message with metadata.
+// Access via MessageFromContext() inside context-aware handlers.
+type Message struct {
+	Topic     string
+	Partition int32
+	Offset    int64
+	Timestamp time.Time
+	Headers   []Header
+	Key       []byte
+	Value     []byte
+}
+
+// Header represents a Kafka message header (key-value pair).
+type Header struct {
+	Key   string
+	Value []byte
+}
+
+// MessageFromContext extracts message metadata from the handler context.
+// Returns nil if called outside a context-aware handler.
+//
+// Example:
+//
+//	func handler(ctx context.Context, payload []byte) error {
+//	    msg := easykafka.MessageFromContext(ctx)
+//	    log.Printf("Processing offset %d from partition %d", msg.Offset, msg.Partition)
+//	    return processPayload(payload)
+//	}
+func MessageFromContext(ctx context.Context) *Message
+
+// ============================================================================
+// LOGGING INTERFACE
+// ============================================================================
+
+// Logger is a minimal interface for structured logging.
+// Compatible with zerolog.Logger and other structured loggers.
+type Logger interface {
+	Info() Event
+	Warn() Event
+	Error() Event
+	Debug() Event
+}
+
+// Event represents a log event builder.
+type Event interface {
+	Str(key, val string) Event
+	Int(key string, val int) Event
+	Int64(key string, val int64) Event
+	Err(err error) Event
+	Msg(msg string)
+}
+
+// ============================================================================
+// VERSION INFORMATION
+// ============================================================================
+
+// Version returns the library version string (semantic versioning).
+func Version() string
