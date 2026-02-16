@@ -276,45 +276,51 @@ type ErrorStrategy interface {
 **Built-in Strategies**:
 1. **Fail-Fast**: Return error immediately, stop consumer
 2. **Skip**: Log error, commit offset(s), continue
-3. **Retry**: Retry with configurable backoff (fixed/exponential/custom) and configurable action after max attempts (stop consumer or write to DLQ and continue). In batch mode, retries entire batch.
-4. **Circuit-Breaker**: Pause after consecutive failures threshold. In batch mode, treats each batch as one unit.
+3. **Retry**: Uses Kafka-based retry queue with configurable backoff (fixed/exponential/custom). Failed messages written to retry topic, automatically processed by internal retry consumer. After max attempts exhausted, messages sent to DLQ and consumption continues. In batch mode, each message in failed batch written to retry queue individually.
+4. **Circuit-Breaker**: Same as Retry strategy but adds consumption pausing based on consecutive failure thresholds. Tracks failures from primary topic only, suspends retry queue during circuit open/half-open states.
 
 **Strategy Configuration**:
 ```go
-// Retry strategy with exponential backoff and fail-fast after max attempts
+// Retry strategy with Kafka-based retry queue and DLQ
 retry := easykafka.NewRetryStrategy(
-    easykafka.WithMaxAttempts(3),
+    easykafka.WithRetryTopic("orders.retry"),    // Kafka retry queue topic
+    easykafka.WithDLQTopic("orders.dlq"),        // Dead-letter queue topic
+    easykafka.WithMaxAttempts(3),                 // Retry up to 3 times
     easykafka.WithBackoff(easykafka.ExponentialBackoff{
         InitialDelay: 1 * time.Second,
         MaxDelay:     30 * time.Second,
         Multiplier:   2.0,
     }),
-    easykafka.WithOnMaxAttemptsExceeded(easykafka.FailConsumer), // Stop consumer
-)
-
-// OR retry with dead-letter queue fallback
-retryWithDLQ := easykafka.NewRetryStrategy(
-    easykafka.WithMaxAttempts(3),
-    easykafka.WithBackoff(easykafka.ExponentialBackoff{
-        InitialDelay: 1 * time.Second,
-        MaxDelay:     30 * time.Second,
-        Multiplier:   2.0,
-    }),
-    easykafka.WithOnMaxAttemptsExceeded(easykafka.SendToDLQ("orders-dlq")), // Write to DLQ and continue
+    easykafka.WithFailedMessagePayloadEncoding(easykafka.PayloadEncodingJSON), // Optional: JSON or Base64
 )
 
 consumer, _ := easykafka.New(
-    // ... other options
-    easykafka.WithErrorStrategy(retryWithDLQ),
+    easykafka.WithTopic("orders"),
+    easykafka.WithBrokers("localhost:9092"),
+    easykafka.WithConsumerGroup("processors"),
+    easykafka.WithHandler(processOrder),
+    easykafka.WithErrorStrategy(retry),
 )
+
+// User creates ONE consumer - library internally spawns TWO:
+// 1. Main consumer: processes "orders" topic
+// 2. Retry consumer: processes "orders.retry" topic (automatic)
 ```
 
+**How Retry Strategy Works**:
+1. Handler fails on message from main topic → write to retry queue with headers (attempt count, retry time, error)
+2. Internal retry consumer polls retry queue → waits until retry time elapsed → calls same handler
+3. Handler succeeds → commit offset (done)
+4. Handler fails again → increment attempt, write back to retry queue with updated headers
+5. After max attempts → write to DLQ topic with full metadata → commit offset → continue
+
 **Best Practices Applied**:
-- Strategies are stateless (or thread-safe if stateful)
+- Retry strategy is stateless - state stored in Kafka message headers
+- Library automatically manages internal retry consumer lifecycle
 - Each strategy logs its actions for observability
 - Strategies respect context cancellation for shutdown
-- DLQ writes (when configured in retry strategy) include metadata (original topic, error, timestamp)
-- Retry strategy allows choosing action after max attempts: stop consumer or write to DLQ and continue
+- DLQ messages include metadata (original topic, partition, offset, error, payload encoding, timestamp)
+- Retry queue consumption pauses during circuit breaker open/half-open states
 
 ---
 
@@ -443,11 +449,13 @@ func (b *BatchAccumulator) Add(msg []byte) bool {
 ```
 
 **Atomic Batch Processing**:
-- Batches are atomic units - all messages in batch succeed or fail together
+- Batches are atomic units for handler invocation - all messages in batch processed together
 - If BatchHandler returns error, error strategy applies to entire batch
-- Retry strategy: entire batch is retried (all messages re-processed)
-- Skip strategy: entire batch is skipped (all offsets committed)
-- Simplifies error handling and maintains message ordering guarantees
+- **Retry strategy**: Each message in failed batch written to retry queue individually with retry metadata. Messages can then be retried individually by retry consumer, not as a batch.
+- **Skip strategy**: Entire batch is skipped (all offsets committed together)
+- **FailFast strategy**: Consumer stops immediately (batch atomic failure)
+- **CircuitBreaker**: NOT SUPPORTED in batch mode (validation error at consumer creation)
+- Simplifies error handling and maintains message ordering guarantees within each batch
 
 **Target**: 3x throughput improvement via reduced offset commit overhead
 
@@ -503,8 +511,9 @@ func (b *BatchAccumulator) Add(msg []byte) bool {
 ### Phase 1 Design Decisions Needed
 1. **Handler registration API**: How do users provide handlers? Constructor parameter vs RegisterHandler method? (Decision: Constructor parameter via WithHandler option)
 2. **Message metadata access**: How do users access headers, offset, timestamp if needed? (Decision: Via MessageFromContext(ctx))
-3. **Batch error handling**: How to handle partial batch failures? (Decision: Batch processing is ATOMIC - if batch handler returns error, entire batch is retried by error strategy. No partial success/failure in v1 for simplicity)
+3. **Batch error handling**: How to handle partial batch failures? (Decision: Batch processing is ATOMIC for handler invocation - BatchHandler receives all messages together and succeeds/fails atomically. With Retry strategy, if batch fails, each message is written to retry queue individually and can be retried separately. Skip/FailFast strategies treat batch atomically. No partial batch success tracking in v1 for simplicity.)
 4. **Graceful shutdown timeout**: Default value? (Decision: 30 seconds)
+5. **Retry mechanism**: In-memory state vs Kafka-based? (Decision: Kafka-based retry queue using dedicated topic. Library automatically spawns internal retry consumer. Stateless design with retry metadata in message headers. Survives consumer restarts.)
 
 ### Future Enhancements (Out of Scope v1)
 - Multi-topic consumption via regex patterns

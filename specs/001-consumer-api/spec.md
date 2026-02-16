@@ -26,7 +26,7 @@ A developer wants to consume messages from a Kafka topic without learning Kafka 
 
 ### User Story 2 - Metadata-Driven Configuration (Priority: P1)
 
-A developer wants to configure consumer behavior without writing configuration files or parsing environment variables. They use functional options like `WithTopic("orders")`, `WithConsumerGroup("processors")`, and `WithErrorStrategy(Retry(WithMaxAttempts(3), WithOnMaxAttemptsExceeded(SendToDLQ("orders-dlq"))))` to specify all settings at consumer creation.
+A developer wants to configure consumer behavior without writing configuration files or parsing environment variables. They use functional options like `WithTopic("orders")`, `WithConsumerGroup("processors")`, and `WithErrorStrategy(Retry(WithRetryTopic("orders.retry"), WithDLQTopic("orders.dlq"), WithMaxAttempts(3)))` to specify all settings at consumer creation.
 
 **Why this priority**: Metadata-driven design is a core constitutional principle. Without this, the library just becomes another wrapper with the same complexity as existing solutions.
 
@@ -160,7 +160,10 @@ A developer wants their service to shut down cleanly on SIGTERM. They pass a con
 - **FR-018**: Library MUST provide a fail-fast strategy that stops consumption immediately on handler errors
 - **FR-019**: Library MUST provide a skip strategy that logs errors, commits offsets, and continues consumption
 - **FR-020**: Library MUST provide a retry strategy with configurable attempts, delay type (fixed/exponential/custom), and backoff parameters
-- **FR-021**: Retry strategy MUST support configurable action after max attempts are exhausted: either stop consumer (FailConsumer) or write to dead-letter queue and continue (SendToDLQ)
+- **FR-021**: Retry strategy MUST use Kafka-based retry queue for message retries and dead-letter queue for failed messages after max attempts exhausted; both retry topic and DLQ topic are required configuration parameters
+- **FR-021a**: Retry strategy MUST automatically create and manage internal retry consumer that processes messages from retry queue topic
+- **FR-021b**: Retry strategy MUST write failed messages to retry queue topic with retry metadata headers (attempt count, retry time, error details)
+- **FR-021c**: After max retry attempts exhausted, retry strategy MUST send message to DLQ topic with full metadata and continue consumption (never stops consumer)
 - **FR-022**: Library MUST provide a circuit-breaker strategy that combines retry+DLQ message handling with consumption pausing based on consecutive failure thresholds (single-message mode only; batch mode support deferred)
 - **FR-022a**: Circuit-breaker strategy MUST accept the same retry configuration as retry strategy (max attempts, backoff type, backoff parameters, DLQ topic, payload encoding)
 - **FR-022b**: Circuit-breaker strategy MUST track consecutive message failures from the primary topic only (where a failure means a message exhausted all retry attempts and was sent to DLQ); failures from retry queue topics do NOT increment the circuit breaker counter
@@ -172,7 +175,7 @@ A developer wants their service to shut down cleanly on SIGTERM. They pass a con
 - **FR-022h**: Circuit-breaker strategy MUST commit offsets for all messages that are sent to DLQ during both closed and half-open states
 - **FR-023**: Library MUST allow users to select error strategy at consumer creation time via functional options
 - **FR-024**: Retry strategy MUST respect maximum attempt limits and not retry indefinitely
-- **FR-025**: Retry strategy with SendToDLQ action MUST include original message payload, error details, and timestamps in DLQ messages
+- **FR-025**: Retry strategy MUST include original message payload, error details, retry attempt count, and timestamps in DLQ messages
 - **FR-026**: Failed messages (whether retried or sent to DLQ) MUST support configurable payload encoding: JSON (human-readable, default for text/JSON payloads) or base64 (binary-safe for all payloads)
 - **FR-027**: When JSON encoding is configured, library MUST write the payload as a JSON string field; when base64 encoding is configured, library MUST encode the payload as base64 string for both retry and DLQ operations
 

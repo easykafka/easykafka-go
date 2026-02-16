@@ -752,8 +752,9 @@ When max retry attempts are exceeded, messages are sent to the DLQ topic with a 
 **Configuration**:
 ```go
 easykafka.Retry(
-    easykafka.WithMaxAttempts(3),
-    easykafka.WithOnMaxAttemptsExceeded(easykafka.SendToDLQ("orders-dlq")),
+    easykafka.WithRetryTopic("orders.retry"),    // Kafka retry queue topic
+    easykafka.WithDLQTopic("orders.dlq"),        // Dead-letter queue topic
+    easykafka.WithMaxAttempts(3),                 // Retry up to 3 times
     easykafka.WithFailedMessagePayloadEncoding(easykafka.PayloadEncodingJSON), // or PayloadEncodingBase64
 )
 ```
