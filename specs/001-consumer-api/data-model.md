@@ -57,6 +57,7 @@ Created → Started → Running → ShuttingDown → Stopped
 - Handler function must be non-nil
 - Batch size must be positive if batch mode enabled
 - Batch timeout must be positive if batch mode enabled
+- CircuitBreaker error strategy cannot be used with batch mode (single-message mode only)
 
 **Concurrency**:
 - Start() can only be called once
@@ -136,9 +137,11 @@ type BatchHandler func(ctx context.Context, payloads [][]byte) error
   - **Skip**: All messages in batch are skipped together (all offsets committed)
   - **FailFast**: Consumer stops immediately (atomic)
   - **Retry**: Each message in batch is retried individually (see RetryStrategy details)
-  - **CircuitBreaker**: Treats batch as single failure unit for circuit state
+  - **CircuitBreaker**: NOT SUPPORTED in batch mode (validation error at consumer creation)
 - Handler success: all offsets in batch are committed together
 - Handler failure: strategy determines granularity (batch-level or message-level)
+
+**Note**: CircuitBreaker strategy is only supported with single-message handlers. Attempting to use CircuitBreaker with batch mode will return a validation error during consumer creation. This limitation may be addressed in future releases.
 
 **Processing Guarantees**:
 - At-least-once delivery: message may be redelivered on failure
@@ -759,7 +762,7 @@ easykafka.Retry(
 - **Behavior**: Temporarily pause message processing after consecutive failures to protect downstream services
 - **Use Case**: Protect downstream services from overload during incidents (database down, API unavailable, etc.)
 - **State**: Failure counter, success counter, circuit state (closed/open/half-open), last state change timestamp
-- **Batch Handling**: In batch mode, treats each batch failure as a single circuit breaker event (one batch failure = one failure count increment), but does NOT retry messages individually like RetryStrategy
+- **Batch Handling**: NOT SUPPORTED - CircuitBreaker only works in single-message mode. Using with batch mode returns validation error at consumer creation. Future releases may add batch support.
 - **Config**:
   - FailureThreshold (default: 10) - consecutive failures before opening circuit
   - CooldownPeriod (default: 60 seconds) - how long to wait in Open state before trying again
@@ -848,8 +851,8 @@ func (cb *CircuitBreakerStrategy) HandleError(ctx context.Context, msgs []*Messa
     cb.mu.Lock()
     defer cb.mu.Unlock()
     
-    // Note: msgs contains 1 message in single mode, N messages in batch mode
-    // Circuit breaker treats each call as one failure/success regardless of batch size
+    // Note: msgs always contains exactly 1 message (single-message mode only)
+    // Circuit breaker does NOT support batch mode
     
     switch cb.state {
     case Closed:
@@ -1289,7 +1292,7 @@ Engine.Run()
    │              │
    │              ├── Skip: commit all offsets (batch skipped)
    │              ├── FailFast: stop consumer (batch atomic)
-   │              ├── CircuitBreaker: increment failure count (batch atomic)
+   │              ├── CircuitBreaker: NOT SUPPORTED (returns validation error)
    │              └── Retry: write each message to retry queue individually
    │                    ├── Each message gets retry headers (attempt, time, error)
    │                    ├── Commit all offsets (messages now in retry queue)
@@ -1429,6 +1432,7 @@ Context cancelled
 | Config.Handler | Non-nil function | "handler function required" |
 | Config.BatchSize | > 0 if batch mode | "batch size must be positive" |
 | Config.BatchTimeout | > 0 if batch mode | "batch timeout must be positive" |
+| Config.ErrorStrategy | CircuitBreaker incompatible with batch mode | "circuit breaker not supported in batch mode" |
 | RetryStrategy.MaxAttempts | > 0 | "max attempts must be positive" |
 | RetryStrategy.RetryTopic | Non-empty string | "retry topic required for retry strategy" |
 | RetryStrategy.DLQTopic | Non-empty string | "DLQ topic required for retry strategy" |

@@ -203,6 +203,10 @@ func Retry(options ...RetryOption) ErrorStrategy
 // CircuitBreaker returns an error strategy that pauses consumption after consecutive failures.
 // Use to protect downstream services from overload during incidents.
 //
+// IMPORTANT: CircuitBreaker is only supported in single-message mode (WithHandler).
+// Using CircuitBreaker with batch mode (WithBatchHandler) will return an error at consumer creation.
+// Batch mode support is planned for future releases.
+//
 // Example:
 //
 //	easykafka.CircuitBreaker(

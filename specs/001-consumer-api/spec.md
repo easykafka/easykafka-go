@@ -58,7 +58,9 @@ A developer needs different failure handling for different use cases. For critic
 5. **Given** retry strategy with JSON payload encoding configured, **When** a message fails and is written to retry or DLQ queue, **Then** the message contains the original payload as human-readable JSON rather than base64-encoded bytes
 6. **Given** retry strategy with base64 payload encoding configured, **When** a message fails and is written to retry or DLQ queue, **Then** the message contains the payload as base64-encoded string for binary-safe representation
 7. **Given** retry strategy with FailConsumer action, **When** handler fails after all retries, **Then** the consumer stops and returns an error
-8. **Given** circuit-breaker strategy with threshold of 10 failures, **When** 10 consecutive errors occur, **Then** consumption pauses for a cooldown period before resuming
+8. **Given** circuit-breaker strategy in single-message mode with threshold of 10 failures, **When** 10 consecutive errors occur, **Then** consumption pauses for a cooldown period before resuming
+
+**Note**: Circuit-breaker strategy is only supported in single-message mode. Batch mode support is planned for future releases.
 
 ---
 
@@ -145,7 +147,7 @@ A developer wants their service to shut down cleanly on SIGTERM. They pass a con
 - **FR-019**: Library MUST provide a skip strategy that logs errors, commits offsets, and continues consumption
 - **FR-020**: Library MUST provide a retry strategy with configurable attempts, delay type (fixed/exponential/custom), and backoff parameters
 - **FR-021**: Retry strategy MUST support configurable action after max attempts are exhausted: either stop consumer (FailConsumer) or write to dead-letter queue and continue (SendToDLQ)
-- **FR-022**: Library MUST provide a circuit-breaker strategy that pauses consumption after a threshold of consecutive failures
+- **FR-022**: Library MUST provide a circuit-breaker strategy that pauses consumption after a threshold of consecutive failures (single-message mode only; batch mode support deferred)
 - **FR-023**: Library MUST allow users to select error strategy at consumer creation time via functional options
 - **FR-024**: Retry strategy MUST respect maximum attempt limits and not retry indefinitely
 - **FR-025**: Retry strategy with SendToDLQ action MUST include original message payload, error details, and timestamps in DLQ messages
@@ -191,7 +193,7 @@ A developer wants their service to shut down cleanly on SIGTERM. They pass a con
 - **Consumer**: Main library type managing the consumption lifecycle, wrapping confluent-kafka-go consumer, coordinating strategy execution
 - **Handler**: User-provided function processing message payloads, with signature `func([]byte) error` or batch equivalent
 - **HandlerMetadata**: Configuration struct containing topic, consumer group, Kafka brokers, error strategy, batch settings, and advanced options
-- **ErrorStrategy**: Interface defining failure handling behavior with implementations for fail-fast, skip, retry (with optional DLQ action), and circuit-breaker
+- **ErrorStrategy**: Interface defining failure handling behavior with implementations for fail-fast, skip, retry (with optional DLQ action), and circuit-breaker (single-message mode only)
 - **ConsumptionMode**: Configuration determining single-message vs batch processing behavior
 - **Message**: Internal representation of Kafka message containing payload bytes plus optional metadata (offset, partition, timestamp, headers)
 - **StrategyContext**: Context object passed to error strategies containing message details, attempt count, and error information
