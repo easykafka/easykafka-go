@@ -270,13 +270,14 @@ type ErrorStrategy interface {
 **Kafka-Based Retry Queue Architecture**:
 ```go
 type RetryStrategy struct {
-    maxAttempts   int
-    backoff       BackoffFunc
-    retryTopic    string        // Dedicated Kafka retry queue topic
-    retryProducer KafkaProducer // Producer for writing to retry queue
-    dlqTopic      string        // Dead-letter queue topic (required)
-    dlqProducer   KafkaProducer // Producer for DLQ
-    logger        zerolog.Logger
+    maxAttempts     int
+    backoff         BackoffFunc
+    retryTopic      string        // Dedicated Kafka retry queue topic
+    retryProducer   KafkaProducer // Producer for writing to retry queue
+    dlqTopic        string        // Dead-letter queue topic (required)
+    dlqProducer     KafkaProducer // Producer for DLQ
+    payloadEncoding PayloadEncoding // JSON or Base64 (for retry/DLQ messages)
+    logger          zerolog.Logger
 }
 ```
 
@@ -531,12 +532,27 @@ func (r *RetryStrategy) sendMessageToRetryQueue(ctx context.Context, msg *Messag
 }
 
 func (r *RetryStrategy) sendMessageToDLQ(ctx context.Context, msg *Message, handlerErr error, attemptCount int) error {
-    // Send individual message to DLQ (similar format as before)
+    // Encode payload based on configuration
+    var payloadStr string
+    var encoding string
+    
+    if r.payloadEncoding == PayloadEncodingJSON {
+        // Assume payload is valid UTF-8/JSON - write as string
+        payloadStr = string(msg.Value)
+        encoding = "json"
+    } else {
+        // Base64 encode for binary-safe representation
+        payloadStr = base64.StdEncoding.EncodeToString(msg.Value)
+        encoding = "base64"
+    }
+    
+    // Send individual message to DLQ with configurable payload encoding
     dlqMessage := map[string]interface{}{
         "originalTopic":     msg.Topic,
         "originalPartition": msg.Partition,
         "originalOffset":    msg.Offset,
-        "payload":           base64.StdEncoding.EncodeToString(msg.Value),
+        "payload":           payloadStr,
+        "payloadEncoding":   encoding,
         "error":             handlerErr.Error(),
         "timestamp":         time.Now().Format(time.RFC3339),
         "attemptCount":      attemptCount,
@@ -588,6 +604,7 @@ type RetryStrategy struct {
     dlqTopic        string
     retryProducer   KafkaProducer
     dlqProducer     KafkaProducer
+    payloadEncoding PayloadEncoding // JSON or Base64 (for retry/DLQ messages)
     
     // Internal retry consumer (automatically created)
     retryConsumer   *Consumer
@@ -699,17 +716,43 @@ Time | Event                                  | Retry Queue State             | 
 
 **DLQ Message Format**:
 
-When max retry attempts are exceeded, messages are sent to the DLQ topic with the following JSON format:
+When max retry attempts are exceeded, messages are sent to the DLQ topic with a JSON envelope. The payload encoding is configurable via `WithFailedMessagePayloadEncoding`:
+
+**Option 1: JSON Encoding** (default, recommended for text/JSON payloads):
 ```json
 {
   "originalTopic": "orders",
   "originalPartition": 3,
   "originalOffset": 12345,
-  "payload": "<base64 encoded original>",
+  "payload": "{\"orderId\":\"12345\",\"amount\":99.99}",
+  "payloadEncoding": "json",
   "error": "handler error message",
   "timestamp": "2026-02-09T10:30:00Z",
   "attemptCount": 3
 }
+```
+
+**Option 2: Base64 Encoding** (for binary payloads or binary-safe representation):
+```json
+{
+  "originalTopic": "orders",
+  "originalPartition": 3,
+  "originalOffset": 12345,
+  "payload": "eyJvcmRlcklkIjoiMTIzNDUiLCJhbW91bnQiOjk5Ljk5fQ==",
+  "payloadEncoding": "base64",
+  "error": "handler error message",
+  "timestamp": "2026-02-09T10:30:00Z",
+  "attemptCount": 3
+}
+```
+
+**Configuration**:
+```go
+easykafka.Retry(
+    easykafka.WithMaxAttempts(3),
+    easykafka.WithOnMaxAttemptsExceeded(easykafka.SendToDLQ("orders-dlq")),
+    easykafka.WithFailedMessagePayloadEncoding(easykafka.PayloadEncodingJSON), // or PayloadEncodingBase64
+)
 ```
 
 #### 4.4 CircuitBreakerStrategy
