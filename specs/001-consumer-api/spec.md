@@ -58,9 +58,15 @@ A developer needs different failure handling for different use cases. For critic
 5. **Given** retry strategy with JSON payload encoding configured, **When** a message fails and is written to retry or DLQ queue, **Then** the message contains the original payload as human-readable JSON rather than base64-encoded bytes
 6. **Given** retry strategy with base64 payload encoding configured, **When** a message fails and is written to retry or DLQ queue, **Then** the message contains the payload as base64-encoded string for binary-safe representation
 7. **Given** retry strategy with FailConsumer action, **When** handler fails after all retries, **Then** the consumer stops and returns an error
-8. **Given** circuit-breaker strategy in single-message mode with threshold of 10 failures, **When** 10 consecutive errors occur, **Then** consumption pauses for a cooldown period before resuming
+8. **Given** circuit-breaker strategy with threshold of 5 failures, retry attempts of 2, and DLQ topic "orders-dlq", **When** 3 messages from the primary topic fail consecutively (each exhausting its 2 retries), **Then** each failed message is written to the DLQ, the circuit breaker failure counter increments by 3, and consumption continues normally because failure threshold not yet reached
+9. **Given** circuit-breaker strategy with threshold of 5 failures and cooldown of 30 seconds, **When** 5 consecutive messages from the primary topic fail (each exhausting retries and going to DLQ), **Then** the circuit breaker opens, all consumption pauses (primary topic and retry queue if configured) for 30 seconds, and after cooldown the circuit breaker transitions to half-open state
+10. **Given** circuit-breaker strategy in open state with retry queue configured, **When** circuit is open during cooldown, **Then** no messages are consumed from either the primary topic or the retry queue until the cooldown period expires and circuit transitions to half-open
+11. **Given** circuit-breaker strategy in open state (paused during cooldown), **When** the cooldown period expires, **Then** the circuit breaker transitions to half-open state and attempts to process one test message from the primary topic to determine if the issue is resolved
+12. **Given** circuit-breaker in half-open state, **When** the test message succeeds, **Then** the circuit breaker closes and normal consumption resumes from all configured topics (primary and retry queue) with failure counter reset to zero
+13. **Given** circuit-breaker in half-open state, **When** the test message fails (exhausting retries), **Then** the failed message goes to DLQ, circuit breaker reopens, and cooldown period starts again
+14. **Given** circuit-breaker in closed state with retry queue configured, **When** a message from the retry queue fails after exhausting all retry attempts, **Then** the message goes to DLQ but the circuit breaker failure counter does NOT increment (only primary topic failures count toward circuit breaker threshold)
 
-**Note**: Circuit-breaker strategy is only supported in single-message mode. Batch mode support is planned for future releases.
+**Note**: Circuit-breaker strategy is only supported in single-message mode. Batch mode support is planned for future releases. Circuit-breaker uses the same retry and DLQ configuration as retry strategy, adding failure tracking and consumption pausing on top.
 
 ---
 
@@ -110,6 +116,14 @@ A developer wants their service to shut down cleanly on SIGTERM. They pass a con
 - How does batch processing handle partial batch failures (some messages succeed, some fail)?
   - **Answer**: Batch processing is ATOMIC. If the batch handler returns an error, the entire batch is retried or skipped according to the error strategy. Individual message success/failure tracking within a batch is not supported in v1 for simplicity.
 - What happens when a consumer joins a group that has never committed offsets (no starting position)?
+- How does circuit-breaker handle failed messages during the cooldown period?
+  - **Answer**: During cooldown (open state), NO messages are processed from any source. The circuit breaker pauses consumption from both the primary topic and retry queue (if configured). Messages remain in Kafka waiting to be consumed. After cooldown, the circuit transitions to half-open and tests with one message from the primary topic.
+- What happens to retry queue messages when circuit-breaker opens?
+  - **Answer**: Retry queue consumption is completely suspended during open and half-open states. Only when the circuit fully closes (after successful test message in half-open state) does retry queue consumption resume. This prevents old retry failures from interfering with circuit breaker recovery.
+- Do retry queue failures affect the circuit-breaker counter?
+  - **Answer**: NO. Only failures from the primary topic increment the circuit breaker counter. Retry queue failures still go through retry+DLQ flow but do not contribute to circuit breaker state. This isolates circuit breaker from historical failures and focuses it on detecting current systemic issues.
+- What happens if circuit-breaker opens and closes repeatedly (flapping)?
+  - **Answer**: Each circuit open/close cycle is independent. Consecutive failures are tracked only while circuit is closed or half-open. When circuit closes after successful test message, the failure counter resets to zero. If failures continue after reopening, the pattern repeats with full cooldown periods each time.
 
 ## Requirements *(mandatory)*
 
@@ -147,7 +161,15 @@ A developer wants their service to shut down cleanly on SIGTERM. They pass a con
 - **FR-019**: Library MUST provide a skip strategy that logs errors, commits offsets, and continues consumption
 - **FR-020**: Library MUST provide a retry strategy with configurable attempts, delay type (fixed/exponential/custom), and backoff parameters
 - **FR-021**: Retry strategy MUST support configurable action after max attempts are exhausted: either stop consumer (FailConsumer) or write to dead-letter queue and continue (SendToDLQ)
-- **FR-022**: Library MUST provide a circuit-breaker strategy that pauses consumption after a threshold of consecutive failures (single-message mode only; batch mode support deferred)
+- **FR-022**: Library MUST provide a circuit-breaker strategy that combines retry+DLQ message handling with consumption pausing based on consecutive failure thresholds (single-message mode only; batch mode support deferred)
+- **FR-022a**: Circuit-breaker strategy MUST accept the same retry configuration as retry strategy (max attempts, backoff type, backoff parameters, DLQ topic, payload encoding)
+- **FR-022b**: Circuit-breaker strategy MUST track consecutive message failures from the primary topic only (where a failure means a message exhausted all retry attempts and was sent to DLQ); failures from retry queue topics do NOT increment the circuit breaker counter
+- **FR-022c**: Circuit-breaker strategy MUST pause consumption (open circuit) when consecutive failures from the primary topic reach the configured threshold
+- **FR-022d**: Circuit-breaker strategy in open state MUST pause consumption from ALL sources (primary topic AND retry queue if configured) during the entire cooldown period
+- **FR-022e**: Circuit-breaker strategy MUST maintain pause for the configured cooldown period before transitioning to half-open state
+- **FR-022f**: Circuit-breaker in half-open state MUST attempt one test message from the primary topic; if successful, close circuit and reset failure counter; if failed, reopen circuit and restart cooldown
+- **FR-022g**: Circuit-breaker strategy in half-open state MUST continue to pause retry queue consumption until circuit fully closes (transitions back to closed state after successful test message)
+- **FR-022h**: Circuit-breaker strategy MUST commit offsets for all messages that are sent to DLQ during both closed and half-open states
 - **FR-023**: Library MUST allow users to select error strategy at consumer creation time via functional options
 - **FR-024**: Retry strategy MUST respect maximum attempt limits and not retry indefinitely
 - **FR-025**: Retry strategy with SendToDLQ action MUST include original message payload, error details, and timestamps in DLQ messages
@@ -193,10 +215,11 @@ A developer wants their service to shut down cleanly on SIGTERM. They pass a con
 - **Consumer**: Main library type managing the consumption lifecycle, wrapping confluent-kafka-go consumer, coordinating strategy execution
 - **Handler**: User-provided function processing message payloads, with signature `func([]byte) error` or batch equivalent
 - **HandlerMetadata**: Configuration struct containing topic, consumer group, Kafka brokers, error strategy, batch settings, and advanced options
-- **ErrorStrategy**: Interface defining failure handling behavior with implementations for fail-fast, skip, retry (with optional DLQ action), and circuit-breaker (single-message mode only)
+- **ErrorStrategy**: Interface defining failure handling behavior with implementations for fail-fast, skip, retry (with optional DLQ action), and circuit-breaker (which combines retry+DLQ with consumption pausing based on consecutive failure thresholds; single-message mode only)
 - **ConsumptionMode**: Configuration determining single-message vs batch processing behavior
 - **Message**: Internal representation of Kafka message containing payload bytes plus optional metadata (offset, partition, timestamp, headers)
 - **StrategyContext**: Context object passed to error strategies containing message details, attempt count, and error information
+- **CircuitBreakerState**: State machine for circuit-breaker strategy with three states: Closed (normal operation, tracking failures), Open (consumption paused during cooldown), and Half-Open (testing with one message to determine if circuit should close)
 
 ## Success Criteria *(mandatory)*
 
