@@ -26,7 +26,7 @@ A developer wants to consume messages from a Kafka topic without learning Kafka 
 
 ### User Story 2 - Metadata-Driven Configuration (Priority: P1)
 
-A developer wants to configure consumer behavior without writing configuration files or parsing environment variables. They use Go struct tags like `kafka:"topic=orders,consumer-group=processors"` or functional options like `WithRetryStrategy(Retry(WithMaxAttempts(3), WithOnMaxAttemptsExceeded(SendToDLQ("orders-dlq"))))` to specify all settings at handler registration.
+A developer wants to configure consumer behavior without writing configuration files or parsing environment variables. They use functional options like `WithTopic("orders")`, `WithConsumerGroup("processors")`, and `WithErrorStrategy(Retry(WithMaxAttempts(3), WithOnMaxAttemptsExceeded(SendToDLQ("orders-dlq"))))` to specify all settings at consumer creation.
 
 **Why this priority**: Metadata-driven design is a core constitutional principle. Without this, the library just becomes another wrapper with the same complexity as existing solutions.
 
@@ -34,7 +34,7 @@ A developer wants to configure consumer behavior without writing configuration f
 
 **Acceptance Scenarios**:
 
-1. **Given** struct tags with topic and consumer group metadata, **When** the consumer is initialized, **Then** it connects to the specified topic in the specified group
+1. **Given** functional options `WithTopic()` and `WithConsumerGroup()`, **When** the consumer is initialized, **Then** it connects to the specified topic in the specified group
 2. **Given** functional options for error strategy, **When** a handler error occurs, **Then** the specified strategy (retry with optional DLQ/skip/fail-fast/circuit-breaker) is executed
 3. **Given** invalid metadata (empty topic, negative batch size), **When** the consumer is created, **Then** validation errors are returned before connecting to Kafka
 4. **Given** advanced confluent-kafka-go options via passthrough, **When** the consumer starts, **Then** those low-level settings are applied to the underlying Kafka consumer
@@ -122,66 +122,65 @@ A developer wants their service to shut down cleanly on SIGTERM. They pass a con
 
 #### Metadata-Driven Configuration
 
-- **FR-007**: Library MUST accept configuration via Go struct tags for handler registration
-- **FR-008**: Library MUST accept configuration via functional options pattern for consumer creation
-- **FR-009**: Library MUST require minimum configuration: Kafka broker addresses, topic name, consumer group ID
-- **FR-010**: Library MUST validate all configuration before connecting to Kafka and return clear errors for invalid values
-- **FR-011**: Library MUST support optional configuration including batch size, batch timeout, error strategies, and custom offset behavior
-- **FR-012**: Library MUST provide passthrough access to confluent-kafka-go configuration for advanced users
-- **FR-013**: Library MUST NOT require configuration files or environment variable parsing
+- **FR-007**: Library MUST accept configuration via functional options pattern for consumer creation
+- **FR-008**: Library MUST require minimum configuration: Kafka broker addresses, topic name, consumer group ID
+- **FR-009**: Library MUST validate all configuration before connecting to Kafka and return clear errors for invalid values
+- **FR-010**: Library MUST support optional configuration including batch size, batch timeout, error strategies, and custom offset behavior
+- **FR-011**: Library MUST provide passthrough access to confluent-kafka-go configuration for advanced users
+- **FR-012**: Library MUST NOT require configuration files or environment variable parsing
 
 #### Consumer Group Management
 
-- **FR-014**: Library MUST automatically join the specified consumer group on startup
-- **FR-015**: Library MUST automatically handle partition assignment and rebalancing without user intervention
-- **FR-016**: Library MUST support multiple consumer instances in the same group for load balancing
-- **FR-017**: Library MUST commit offsets only after successful message processing (or per error strategy rules)
-- **FR-018**: Library MUST handle rebalancing gracefully, finishing in-flight messages before releasing partitions
+- **FR-013**: Library MUST automatically join the specified consumer group on startup
+- **FR-014**: Library MUST automatically handle partition assignment and rebalancing without user intervention
+- **FR-015**: Library MUST support multiple consumer instances in the same group for load balancing
+- **FR-016**: Library MUST commit offsets only after successful message processing (or per error strategy rules)
+- **FR-017**: Library MUST handle rebalancing gracefully, finishing in-flight messages before releasing partitions
 
 #### Error Handling Strategies
 
-- **FR-019**: Library MUST provide a fail-fast strategy that stops consumption immediately on handler errors
-- **FR-020**: Library MUST provide a skip strategy that logs errors, commits offsets, and continues consumption
-- **FR-021**: Library MUST provide a retry strategy with configurable attempts, delay type (fixed/exponential/custom), and backoff parameters
-- **FR-022**: Retry strategy MUST support configurable action after max attempts are exhausted: either stop consumer (FailConsumer) or write to dead-letter queue and continue (SendToDLQ)
-- **FR-023**: Library MUST provide a circuit-breaker strategy that pauses consumption after a threshold of consecutive failures
-- **FR-024**: Library MUST allow users to select error strategy at consumer creation time via functional options
-- **FR-025**: Retry strategy MUST respect maximum attempt limits and not retry indefinitely
-- **FR-026**: Retry strategy with SendToDLQ action MUST include original message payload, error details, and timestamps in DLQ messages
+- **FR-018**: Library MUST provide a fail-fast strategy that stops consumption immediately on handler errors
+- **FR-019**: Library MUST provide a skip strategy that logs errors, commits offsets, and continues consumption
+- **FR-020**: Library MUST provide a retry strategy with configurable attempts, delay type (fixed/exponential/custom), and backoff parameters
+- **FR-021**: Retry strategy MUST support configurable action after max attempts are exhausted: either stop consumer (FailConsumer) or write to dead-letter queue and continue (SendToDLQ)
+- **FR-022**: Library MUST provide a circuit-breaker strategy that pauses consumption after a threshold of consecutive failures
+- **FR-023**: Library MUST allow users to select error strategy at consumer creation time via functional options
+- **FR-024**: Retry strategy MUST respect maximum attempt limits and not retry indefinitely
+- **FR-025**: Retry strategy with SendToDLQ action MUST include original message payload, error details, and timestamps in DLQ messages
 
 #### Batch Processing Mode
 
-- **FR-027**: Batch mode MUST accumulate messages up to the configured batch size
-- **FR-028**: Batch mode MUST deliver partial batches when the configured timeout expires, even if batch size not reached
-- **FR-029**: Batch mode MUST treat the entire batch as an atomic unit for offset commits
-- **FR-030**: Batch mode MUST treat the entire batch as an atomic unit for error handling - if batch handler returns error, the entire batch is subject to the error strategy (all messages retried together or all skipped together)
-- **FR-031**: Batch mode MUST maintain message ordering within each batch as received from Kafka
+- **FR-026**: Batch mode MUST accumulate messages up to the configured batch size
+- **FR-027**: Batch mode MUST deliver partial batches when the configured timeout expires, even if batch size not reached
+- **FR-028**: Batch mode MUST treat the entire batch as an atomic unit for offset commits
+- **FR-029**: Batch mode MUST treat the entire batch as an atomic unit for error handling - if batch handler returns error, the entire batch is subject to the error strategy (all messages retried together or all skipped together)
+- **FR-030**: Batch mode MUST maintain message ordering within each batch as received from Kafka
 
 #### Lifecycle and Shutdown
 
-- **FR-032**: Library MUST provide a Start method to begin consuming messages
-- **FR-033**: Library MUST provide a Shutdown method for graceful termination with a timeout parameter
-- **FR-034**: Library MUST support context cancellation as a trigger for graceful shutdown
-- **FR-035**: During shutdown, library MUST stop fetching new messages immediately
-- **FR-036**: During shutdown, library MUST wait for in-flight handlers to complete before exiting
-- **FR-037**: During shutdown, library MUST commit final offsets for all completed messages
-- **FR-038**: During shutdown, library MUST close all Kafka connections and release resources
-- **FR-039**: If shutdown timeout expires, library MUST force-stop and return a timeout error
+- **FR-031**: Library MUST provide a Start method to begin consuming messages
+- **FR-032**: Library MUST provide a Shutdown method for graceful termination with a timeout parameter
+- **FR-033**: Library MUST support context cancellation as a trigger for graceful shutdown
+- **FR-034**: During shutdown, library MUST stop fetching new messages immediately
+- **FR-035**: During shutdown, library MUST wait for in-flight handlers to complete before exiting
+- **FR-036**: During shutdown, library MUST commit final offsets for all completed messages
+- **FR-037**: During shutdown, library MUST close all Kafka connections and release resources
+- **FR-038**: If shutdown timeout expires, library MUST force-stop and return a timeout error
 
 #### Safety and Reliability
 
-- **FR-040**: Library MUST recover from handler panics and treat them as errors for the error handling strategy
-- **FR-041**: Library MUST handle temporary Kafka broker unavailability with automatic reconnection attempts
-- **FR-042**: Library MUST provide at-least-once delivery semantics (messages may be redelivered but never lost)
-- **FR-043**: Library MUST prevent offset commits for messages that failed processing (unless skip strategy is used)
-- **FR-044**: Library MUST log significant lifecycle events (startup, shutdown, rebalancing, errors) for observability
+- **FR-039**: Library MUST recover from handler panics and treat them as errors for the error handling strategy
+- **FR-040**: Library MUST handle temporary Kafka broker unavailability with automatic reconnection attempts
+- **FR-041**: Library MUST provide at-least-once delivery semantics (messages may be redelivered but never lost)
+- **FR-042**: Library MUST prevent offset commits for messages that failed processing (unless skip strategy is used)
+- **FR-043**: Library MUST log significant lifecycle events (startup, shutdown, rebalancing, errors) for observability
 
 #### Architecture Compliance
 
-- **FR-045**: Library MUST wrap confluent-kafka-go and NOT reimplement Kafka protocol operations
-- **FR-046**: Library MUST use confluent-kafka-go for all Kafka consumer operations (fetch, commit, group management)
-- **FR-047**: Library MUST expose only simplified APIs and hide confluent-kafka-go complexity from users
-- **FR-048**: Library MUST be usable by developers with zero Kafka knowledge
+- **FR-044**: Library MUST wrap confluent-kafka-go and NOT reimplement Kafka protocol operations
+- **FR-045**: Library MUST use confluent-kafka-go for all Kafka consumer operations (fetch, commit, group management)
+- **FR-046**: Library MUST expose only simplified APIs and hide confluent-kafka-go complexity from users
+- **FR-047**: Library MUST be usable by developers with zero Kafka knowledge
 
 ### Key Entities
 
@@ -250,7 +249,7 @@ A developer wants their service to shut down cleanly on SIGTERM. They pass a con
 This specification adheres to the EasyKafka Go Constitution:
 
 1. **Simplicity First** (NON-NEGOTIABLE): All Kafka complexity hidden behind simple handler interface
-2. **Metadata-Driven Configuration**: All configuration via struct tags or functional options, no config files
+2. **Metadata-Driven Configuration**: All configuration via functional options, no config files
 3. **Minimal Handler Interface**: Handler signatures require context and payload/payloads: `func(context.Context, []byte) error` or batch equivalent
 4. **Strategy Pattern Support**: Pluggable consumption and error handling strategies
 5. **Thin Wrapper Philosophy**: Leverages confluent-kafka-go, focuses on ergonomics not reimplementation
