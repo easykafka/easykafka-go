@@ -205,9 +205,6 @@ func GetRetryStep(msg *Message) int32
 
 // Set retry step and return wrapped error
 func SetRetryStep(msg *Message, step int32, err error) error
-
-// Helper to set retry step via context (for handlers that don't access Message directly)
-func SetRetryStepInContext(ctx context.Context, step int32)
 ```
 
 **Important Considerations**:
