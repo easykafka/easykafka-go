@@ -144,7 +144,7 @@ func processOrderWithMetadata(ctx context.Context, orderData []byte) error {
 
 ---
 
-### 4. With Retry Strategy
+### 4. With Retry Queue + Dead-Letter Queue
 
 ```go
 func main() {
@@ -154,13 +154,14 @@ func main() {
         easykafka.WithConsumerGroup("order-processors"),
         easykafka.WithHandler(processOrder),
         
-        // Retry failed messages, then stop consumer
+        // Configure retry queue and DLQ for failed messages
         easykafka.WithErrorStrategy(
             easykafka.Retry(
-                easykafka.WithMaxAttempts(5),
+                easykafka.WithRetryTopic("orders.retry"),    // Kafka retry queue
+                easykafka.WithDLQTopic("orders.dlq"),        // Dead-letter queue
+                easykafka.WithMaxAttempts(3),                  // Retry up to 3 times
                 easykafka.WithInitialDelay(1 * time.Second),
                 easykafka.WithMaxDelay(30 * time.Second),
-                easykafka.WithOnMaxAttemptsExceeded(easykafka.FailConsumer),
             ),
         ),
     )
@@ -172,47 +173,19 @@ func main() {
 }
 ```
 
-**Effect**: If `processOrder` returns an error, the library will:
-1. Wait 1 second, retry
-2. Wait 2 seconds, retry
-3. Wait 4 seconds, retry
-4. Wait 8 seconds, retry
-5. Wait 16 seconds, retry (capped at 30s)
-6. After 5 attempts, consumer stops
+**Effect**: If `processOrder` fails:
+1. Message is written to `orders.retry` Kafka topic with retry headers
+2. Library automatically creates internal retry consumer for `orders.retry`
+3. Message is retried up to 3 times with exponential backoff (1s, 2s, 4s)
+4. After max attempts exhausted, message goes to `orders.dlq` with error metadata
+5. Processing continues with next message (no consumer stop)
 
----
-
-### 5. With Retry + Dead-Letter Queue
-
-```go
-func main() {
-    consumer, err := easykafka.New(
-        easykafka.WithTopic("orders"),
-        easykafka.WithBrokers("localhost:9092"),
-        easykafka.WithConsumerGroup("order-processors"),
-        easykafka.WithHandler(processOrder),
-        
-        // Retry failed messages, then send to DLQ and continue
-        easykafka.WithErrorStrategy(
-            easykafka.Retry(
-                easykafka.WithMaxAttempts(3),
-                easykafka.WithInitialDelay(1 * time.Second),
-                easykafka.WithOnMaxAttemptsExceeded(easykafka.SendToDLQ("orders-dlq")),
-            ),
-        ),
-    )
-    if err != nil {
-        log.Fatal(err)
-    }
-    
-    // ... rest of the code
-}
-```
-
-**Effect**: If `processOrder` fails 3 times:
-- Message is written to `orders-dlq` topic with error metadata
-- Original message offset is committed
-- Processing continues with next message
+**How It Works**:
+- User creates **ONE consumer** - library internally spawns TWO consumers (main + retry)
+- Main consumer: processes `orders` topic, writes failures to retry queue
+- Retry consumer: processes `orders.retry` topic, respects retry delay headers
+- Both use the same handler function
+- Stateless: retry metadata stored in Kafka headers (survives restarts)
 
 **DLQ Message Format**:
 ```json
@@ -220,16 +193,26 @@ func main() {
   "originalTopic": "orders",
   "originalPartition": 3,
   "originalOffset": 12345,
-  "payload": "<base64 encoded>",
+  "payload": "{\"orderId\":\"123\"}",
+  "payloadEncoding": "json",
   "error": "database connection failed",
   "timestamp": "2026-02-09T10:30:00Z",
   "attemptCount": 3
 }
 ```
 
+**Payload Encoding Options**:
+```go
+// JSON encoding (default, human-readable)
+easykafka.WithFailedMessagePayloadEncoding(easykafka.PayloadEncodingJSON)
+
+// Base64 encoding (binary-safe for binary payloads)
+easykafka.WithFailedMessagePayloadEncoding(easykafka.PayloadEncodingBase64)
+```
+
 ---
 
-### 6. Batch Processing for High Throughput
+### 5. Batch Processing for High Throughput
 
 ```go
 func main() {
@@ -276,7 +259,7 @@ func processBatch(ctx context.Context, events [][]byte) error {
 
 ---
 
-### 7. Skip Strategy (Best-Effort Processing)
+### 6. Skip Strategy (Best-Effort Processing)
 
 ```go
 func main() {
@@ -306,7 +289,7 @@ func main() {
 
 ---
 
-### 8. Fail-Fast Strategy (Critical Processing)
+### 7. Fail-Fast Strategy (Critical Processing)
 
 ```go
 func main() {
@@ -364,13 +347,12 @@ func processOrder(ctx context.Context, orderData []byte) error {
 
 | Strategy | When Handler Fails | Use Case |
 |----------|-------------------|----------|
-| **Retry + FailConsumer** (default) | Retry with backoff, then stop | Transient failures where eventual stop is acceptable |
-| **Retry + SendToDLQ** | Retry, then send to DLQ and continue | Production systems needing error investigation without stopping |
+| **Retry** (requires retry queue + DLQ) | Write to retry queue, retry with backoff, then send to DLQ and continue | Production systems needing automatic retry with failure investigation |
 | **Skip** | Log and continue | Best-effort analytics, non-critical data |
-| **FailFast** | Stop immediately | Critical processing (payments, orders) |
-| **CircuitBreaker** | Pause consumption | Protect downstream during incidents |
+| **FailFast** | Stop immediately | Critical processing requiring manual intervention |
+| **CircuitBreaker** (requires retry queue + DLQ) | Same as Retry but pauses consumption during systemic failures | Protect downstream services during incidents |
 
-**Default**: Retry with 3 attempts, exponential backoff, then stop consumer.
+**Default**: FailFast strategy (stop on first error). For production, configure Retry with retry queue and DLQ.
 
 ---
 
@@ -557,17 +539,18 @@ easykafka.WithLogger(logger)
 
 **Symptom**: Consumer processes a few messages then stops.
 
-**Cause**: Handler is returning errors and using FailFast or Retry strategy (default).
+**Cause**: Handler is returning errors and using FailFast strategy (default).
 
 **Solutions**:
 1. Fix handler to return `nil` on success
 2. Use Skip strategy for non-critical processing
-3. Use Retry strategy with SendToDLQ action to capture failures and continue:
+3. Use Retry strategy with retry queue and DLQ to capture failures and continue:
    ```go
    easykafka.WithErrorStrategy(
        easykafka.Retry(
+           easykafka.WithRetryTopic("orders.retry"),
+           easykafka.WithDLQTopic("orders.dlq"),
            easykafka.WithMaxAttempts(3),
-           easykafka.WithOnMaxAttemptsExceeded(easykafka.SendToDLQ("orders-dlq")),
        ),
    )
    ```
