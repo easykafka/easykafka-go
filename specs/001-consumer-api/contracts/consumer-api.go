@@ -248,6 +248,21 @@ func WithCustomBackoff(fn func(attempt int) time.Duration) RetryOption
 //	easykafka.WithOnMaxAttemptsExceeded(easykafka.SendToDLQ("orders-dlq"))
 func WithOnMaxAttemptsExceeded(action MaxAttemptsAction) RetryOption
 
+// WithFailedMessagePayloadEncoding configures how message payloads are encoded when written to retry or dead-letter queues.
+// This encoding applies to any failed messages, whether retried or sent to DLQ.
+// Options:
+//   - PayloadEncodingJSON: Write payload as human-readable JSON string (default for better debugging)
+//   - PayloadEncodingBase64: Write payload as base64-encoded string (binary-safe for all payloads)
+//
+// Example:
+//
+//	easykafka.Retry(
+//	    easykafka.WithMaxAttempts(3),
+//	    easykafka.WithOnMaxAttemptsExceeded(easykafka.SendToDLQ("orders-dlq")),
+//	    easykafka.WithFailedMessagePayloadEncoding(easykafka.PayloadEncodingJSON),
+//	)
+func WithFailedMessagePayloadEncoding(encoding PayloadEncoding) RetryOption
+
 // MaxAttemptsAction defines what happens when retry attempts are exhausted.
 type MaxAttemptsAction interface {
 	isMaxAttemptsAction()
@@ -264,6 +279,22 @@ var FailConsumer MaxAttemptsAction
 //
 //	easykafka.SendToDLQ("orders-dlq")
 func SendToDLQ(dlqTopic string) MaxAttemptsAction
+
+// PayloadEncoding specifies how message payloads are encoded in retry and DLQ messages.
+type PayloadEncoding int
+
+const (
+	// PayloadEncodingJSON writes the payload as a JSON string for human readability.
+	// Use this when messages are text or JSON for easier debugging and monitoring.
+	// Applies to both retry queues and dead-letter queues.
+	// Default encoding.
+	PayloadEncodingJSON PayloadEncoding = iota
+
+	// PayloadEncodingBase64 writes the payload as a base64-encoded string.
+	// Use this for binary payloads or when binary-safe representation is required.
+	// Applies to both retry queues and dead-letter queues.
+	PayloadEncodingBase64
+)
 
 // CircuitBreakerOption configures a circuit breaker strategy.
 type CircuitBreakerOption func(*circuitConfig) error

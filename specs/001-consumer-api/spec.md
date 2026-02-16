@@ -55,8 +55,10 @@ A developer needs different failure handling for different use cases. For critic
 2. **Given** skip strategy, **When** handler returns an error, **Then** the error is logged, offset is committed, and consumption continues with the next message
 3. **Given** retry strategy with 3 attempts and exponential backoff, **When** handler fails, **Then** the message is retried up to 3 times with delays of 1s, 2s, 4s before executing the configured max-attempts action
 4. **Given** retry strategy with SendToDLQ action and DLQ topic "orders-dlq", **When** handler fails after all retries, **Then** the failed message is written to the DLQ topic with error metadata and normal consumption continues
-5. **Given** retry strategy with FailConsumer action, **When** handler fails after all retries, **Then** the consumer stops and returns an error
-6. **Given** circuit-breaker strategy with threshold of 10 failures, **When** 10 consecutive errors occur, **Then** consumption pauses for a cooldown period before resuming
+5. **Given** retry strategy with JSON payload encoding configured, **When** a message fails and is written to retry or DLQ queue, **Then** the message contains the original payload as human-readable JSON rather than base64-encoded bytes
+6. **Given** retry strategy with base64 payload encoding configured, **When** a message fails and is written to retry or DLQ queue, **Then** the message contains the payload as base64-encoded string for binary-safe representation
+7. **Given** retry strategy with FailConsumer action, **When** handler fails after all retries, **Then** the consumer stops and returns an error
+8. **Given** circuit-breaker strategy with threshold of 10 failures, **When** 10 consecutive errors occur, **Then** consumption pauses for a cooldown period before resuming
 
 ---
 
@@ -147,40 +149,42 @@ A developer wants their service to shut down cleanly on SIGTERM. They pass a con
 - **FR-023**: Library MUST allow users to select error strategy at consumer creation time via functional options
 - **FR-024**: Retry strategy MUST respect maximum attempt limits and not retry indefinitely
 - **FR-025**: Retry strategy with SendToDLQ action MUST include original message payload, error details, and timestamps in DLQ messages
+- **FR-026**: Failed messages (whether retried or sent to DLQ) MUST support configurable payload encoding: JSON (human-readable, default for text/JSON payloads) or base64 (binary-safe for all payloads)
+- **FR-027**: When JSON encoding is configured, library MUST write the payload as a JSON string field; when base64 encoding is configured, library MUST encode the payload as base64 string for both retry and DLQ operations
 
 #### Batch Processing Mode
 
-- **FR-026**: Batch mode MUST accumulate messages up to the configured batch size
-- **FR-027**: Batch mode MUST deliver partial batches when the configured timeout expires, even if batch size not reached
-- **FR-028**: Batch mode MUST treat the entire batch as an atomic unit for offset commits
-- **FR-029**: Batch mode MUST treat the entire batch as an atomic unit for error handling - if batch handler returns error, the entire batch is subject to the error strategy (all messages retried together or all skipped together)
-- **FR-030**: Batch mode MUST maintain message ordering within each batch as received from Kafka
+- **FR-028**: Batch mode MUST accumulate messages up to the configured batch size
+- **FR-029**: Batch mode MUST deliver partial batches when the configured timeout expires, even if batch size not reached
+- **FR-030**: Batch mode MUST treat the entire batch as an atomic unit for offset commits
+- **FR-031**: Batch mode MUST treat the entire batch as an atomic unit for error handling - if batch handler returns error, the entire batch is subject to the error strategy (all messages retried together or all skipped together)
+- **FR-032**: Batch mode MUST maintain message ordering within each batch as received from Kafka
 
 #### Lifecycle and Shutdown
 
-- **FR-031**: Library MUST provide a Start method to begin consuming messages
-- **FR-032**: Library MUST provide a Shutdown method for graceful termination with a timeout parameter
-- **FR-033**: Library MUST support context cancellation as a trigger for graceful shutdown
-- **FR-034**: During shutdown, library MUST stop fetching new messages immediately
-- **FR-035**: During shutdown, library MUST wait for in-flight handlers to complete before exiting
-- **FR-036**: During shutdown, library MUST commit final offsets for all completed messages
-- **FR-037**: During shutdown, library MUST close all Kafka connections and release resources
-- **FR-038**: If shutdown timeout expires, library MUST force-stop and return a timeout error
+- **FR-033**: Library MUST provide a Start method to begin consuming messages
+- **FR-034**: Library MUST provide a Shutdown method for graceful termination with a timeout parameter
+- **FR-035**: Library MUST support context cancellation as a trigger for graceful shutdown
+- **FR-036**: During shutdown, library MUST stop fetching new messages immediately
+- **FR-037**: During shutdown, library MUST wait for in-flight handlers to complete before exiting
+- **FR-038**: During shutdown, library MUST commit final offsets for all completed messages
+- **FR-039**: During shutdown, library MUST close all Kafka connections and release resources
+- **FR-040**: If shutdown timeout expires, library MUST force-stop and return a timeout error
 
 #### Safety and Reliability
 
-- **FR-039**: Library MUST recover from handler panics and treat them as errors for the error handling strategy
-- **FR-040**: Library MUST handle temporary Kafka broker unavailability with automatic reconnection attempts
-- **FR-041**: Library MUST provide at-least-once delivery semantics (messages may be redelivered but never lost)
-- **FR-042**: Library MUST prevent offset commits for messages that failed processing (unless skip strategy is used)
-- **FR-043**: Library MUST log significant lifecycle events (startup, shutdown, rebalancing, errors) for observability
+- **FR-041**: Library MUST recover from handler panics and treat them as errors for the error handling strategy
+- **FR-042**: Library MUST handle temporary Kafka broker unavailability with automatic reconnection attempts
+- **FR-043**: Library MUST provide at-least-once delivery semantics (messages may be redelivered but never lost)
+- **FR-044**: Library MUST prevent offset commits for messages that failed processing (unless skip strategy is used)
+- **FR-045**: Library MUST log significant lifecycle events (startup, shutdown, rebalancing, errors) for observability
 
 #### Architecture Compliance
 
-- **FR-044**: Library MUST wrap confluent-kafka-go and NOT reimplement Kafka protocol operations
-- **FR-045**: Library MUST use confluent-kafka-go for all Kafka consumer operations (fetch, commit, group management)
-- **FR-046**: Library MUST expose only simplified APIs and hide confluent-kafka-go complexity from users
-- **FR-047**: Library MUST be usable by developers with zero Kafka knowledge
+- **FR-046**: Library MUST wrap confluent-kafka-go and NOT reimplement Kafka protocol operations
+- **FR-047**: Library MUST use confluent-kafka-go for all Kafka consumer operations (fetch, commit, group management)
+- **FR-048**: Library MUST expose only simplified APIs and hide confluent-kafka-go complexity from users
+- **FR-049**: Library MUST be usable by developers with zero Kafka knowledge
 
 ### Key Entities
 
