@@ -2,14 +2,15 @@
 
 **Feature Branch**: `001-consumer-api`  
 **Created**: 2026-02-09  
-**Status**: Draft  
+**Status**: Ready for Implementation  
+**Status Notes**: All remediation completed; spec, data-model, contracts, and tasks fully aligned on handler context-first signature, at-least-once semantics, and DLQ-only retry flow. 100% FR coverage mapping (49 FRs → 56 tasks).
 **Input**: User description: "Golang library for simple Kafka message consumption with handler-based interface, metadata-driven configuration, pluggable error strategies, and batch processing support"
 
 ## User Scenarios & Testing *(mandatory)*
 
 ### User Story 1 - Simple Handler Registration (Priority: P1)
 
-A developer wants to consume messages from a Kafka topic without learning Kafka internals. They write a simple handler function with signature `func([]byte) error`, provide metadata (topic name, brokers, consumer group), and start consuming. The library handles all Kafka complexity including connections, consumer group coordination, offset commits, and error recovery.
+A developer wants to consume messages from a Kafka topic without learning Kafka internals. They write a simple handler function with signature `func(context.Context, []byte) error`, provide metadata (topic name, brokers, consumer group), and start consuming. The library handles all Kafka complexity including connections, consumer group coordination, offset commits, and error recovery.
 
 **Why this priority**: This is the MVP - the absolute minimum functionality that delivers value. If this doesn't work, nothing else matters.
 
@@ -17,7 +18,7 @@ A developer wants to consume messages from a Kafka topic without learning Kafka 
 
 **Acceptance Scenarios**:
 
-1. **Given** a handler `func(msg []byte) error { return nil }` and metadata specifying topic "orders", brokers, and consumer group "processors", **When** the consumer starts, **Then** messages from "orders" topic are delivered as byte arrays to the handler
+1. **Given** a handler `func(ctx context.Context, msg []byte) error { return nil }` and metadata specifying topic "orders", brokers, and consumer group "processors", **When** the consumer starts, **Then** messages from "orders" topic are delivered as byte arrays to the handler
 2. **Given** the handler returns `nil`, **When** message processing completes, **Then** the offset is automatically committed and the next message is consumed
 3. **Given** the handler returns an error, **When** processing fails, **Then** the configured error handling strategy is applied (default: retry with exponential backoff)
 4. **Given** multiple consumer instances in the same group, **When** they start, **Then** Kafka partitions are automatically distributed across instances without user intervention
@@ -43,7 +44,7 @@ A developer wants to configure consumer behavior without writing configuration f
 
 ### User Story 3 - Pluggable Error Handling Strategies (Priority: P1)
 
-A developer needs different failure handling for different use cases. For critical order processing, they configure fail-fast to stop on any error. For analytics ingestion, they configure skip to log and continue. For user action tracking, they configure retry with exponential backoff and, after exhausting retries, either stop the consumer or write to a dead-letter queue and continue.
+A developer needs different failure handling for different use cases. For critical order processing, they configure fail-fast to stop on any error. For analytics ingestion, they configure skip to log and continue. For user action tracking, they configure retry with exponential backoff and, after exhausting retries, write to a dead-letter queue and continue.
 
 **Why this priority**: Error handling is not optional in production systems. Different domains require different failure semantics, making this a P1 requirement alongside basic consumption.
 
@@ -57,7 +58,6 @@ A developer needs different failure handling for different use cases. For critic
 4. **Given** retry strategy with SendToDLQ action and DLQ topic "orders-dlq", **When** handler fails after all retries, **Then** the failed message is written to the DLQ topic with error metadata and normal consumption continues
 5. **Given** retry strategy with JSON payload encoding configured, **When** a message fails and is written to retry or DLQ queue, **Then** the message contains the original payload as human-readable JSON rather than base64-encoded bytes
 6. **Given** retry strategy with base64 payload encoding configured, **When** a message fails and is written to retry or DLQ queue, **Then** the message contains the payload as base64-encoded string for binary-safe representation
-7. **Given** retry strategy with FailConsumer action, **When** handler fails after all retries, **Then** the consumer stops and returns an error
 8. **Given** circuit-breaker strategy with threshold of 5 failures, retry attempts of 2, and DLQ topic "orders-dlq", **When** 3 messages from the primary topic fail consecutively (each exhausting its 2 retries), **Then** each failed message is written to the DLQ, the circuit breaker failure counter increments by 3, and consumption continues normally because failure threshold not yet reached
 9. **Given** circuit-breaker strategy with threshold of 5 failures and cooldown of 30 seconds, **When** 5 consecutive messages from the primary topic fail (each exhausting retries and going to DLQ), **Then** the circuit breaker opens, all consumption pauses (primary topic and retry queue if configured) for 30 seconds, and after cooldown the circuit breaker transitions to half-open state
 10. **Given** circuit-breaker strategy in open state with retry queue configured, **When** circuit is open during cooldown, **Then** no messages are consumed from either the primary topic or the retry queue until the cooldown period expires and circuit transitions to half-open
@@ -216,7 +216,7 @@ A developer wants their service to shut down cleanly on SIGTERM. They pass a con
 ### Key Entities
 
 - **Consumer**: Main library type managing the consumption lifecycle, wrapping confluent-kafka-go consumer, coordinating strategy execution
-- **Handler**: User-provided function processing message payloads, with signature `func([]byte) error` or batch equivalent
+- **Handler**: User-provided function processing message payloads, with signature `func(context.Context, []byte) error` or batch equivalent
 - **HandlerMetadata**: Configuration struct containing topic, consumer group, Kafka brokers, error strategy, batch settings, and advanced options
 - **ErrorStrategy**: Interface defining failure handling behavior with implementations for fail-fast, skip, retry (with optional DLQ action), and circuit-breaker (which combines retry+DLQ with consumption pausing based on consecutive failure thresholds; single-message mode only)
 - **ConsumptionMode**: Configuration determining single-message vs batch processing behavior
@@ -239,7 +239,7 @@ A developer wants their service to shut down cleanly on SIGTERM. They pass a con
 - **SC-009**: Library introduces less than 5% performance overhead compared to direct use of confluent-kafka-go
 - **SC-010**: Documentation enables Kafka-unfamiliar developers to implement their first consumer in under 15 minutes
 - **SC-011**: Handler panics are recovered without crashing the consumer process in 100% of cases
-- **SC-012**: Offset commits maintain consistency such that zero duplicate processing occurs in normal operation
+- **SC-012**: Offset commits maintain consistency such that no messages are lost in normal operation (duplicates may occur under at-least-once semantics)
 
 ## Assumptions
 

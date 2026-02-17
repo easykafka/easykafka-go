@@ -64,7 +64,7 @@ Created -> Running -> ShuttingDown -> Stopped
 
 ### 3. Handler
 
-**Types**:
+**Types** (context is mandatory):
 - `Handler func(context.Context, []byte) error`
 - `BatchHandler func(context.Context, [][]byte) error`
 
@@ -72,6 +72,7 @@ Created -> Running -> ShuttingDown -> Stopped
 - `nil` error -> commit offsets.
 - `error` -> strategy handles failure.
 - Panics are recovered and treated as errors.
+- Context is always provided; cancelled during graceful shutdown.
 
 ---
 

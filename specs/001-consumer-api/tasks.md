@@ -148,13 +148,36 @@ description: "Task list for Easy Kafka Consumer Library"
 
 ---
 
-## Phase 8: Polish & Cross-Cutting Concerns
+## Phase 8: Cross-Cutting Concerns & Requirements Coverage
 
-**Purpose**: Improvements that affect multiple user stories
+**Purpose**: Implement connectivity, observability, and semantic guarantees across all modes
 
-- [ ] T045 [P] Add package-level documentation and examples in consumer.go
-- [ ] T046 [P] Update README with quickstart and strategy overview in README.md
-- [ ] T047 [P] Add integration test helper for Kafka container reuse in tests/integration/kafka_test_helper.go
+### FR-042: Automatic Reconnection on Broker Unavailability
+
+- [ ] T045 Add integration test for broker failure/recovery scenario in tests/integration/reconnection_test.go
+- [ ] T046 Implement reconnection backoff and retry logic in internal/kafka/adapter.go (wraps confluent-kafka-go's built-in reconnection)
+
+### FR-043: At-Least-Once Delivery Validation
+
+- [ ] T047 Add end-to-end test verifying at-least-once semantics (messages may repeat, never lost) in tests/integration/at_least_once_test.go
+- [ ] T048 Add test cases for rebalance scenarios ensuring duplicate processing is acceptable in tests/integration/rebalance_test.go
+
+### FR-044: Offset Commit Protection for Failed Messages
+
+- [ ] T049 Add unit tests for offset commit guard logic in tests/unit/offset_manager_test.go
+- [ ] T050 Implement offset commit prevention for failures (except skip strategy) in internal/engine/offset_manager.go
+
+### FR-045: Lifecycle & Error Logging
+
+- [ ] T051 [P] Add structured logging for startup/shutdown/rebalance events in consumer.go using zerolog
+- [ ] T052 [P] Add detailed error logging in strategy implementations (retry exhaustion, circuit breaker state changes) in strategy/*.go
+- [ ] T053 [P] Wire logger configuration option throughout consumer and engine in internal/engine/engine.go
+
+### Phase 8 Polish Tasks
+
+- [ ] T054 [P] Add package-level documentation and examples in consumer.go
+- [ ] T055 [P] Update README with quickstart and strategy overview in README.md
+- [ ] T056 [P] Add integration test helper for Kafka container reuse in tests/integration/kafka_test_helper.go
 
 ---
 
@@ -165,7 +188,8 @@ description: "Task list for Easy Kafka Consumer Library"
 - **Setup (Phase 1)**: No dependencies - can start immediately
 - **Foundational (Phase 2)**: Depends on Setup completion - BLOCKS all user stories
 - **User Stories (Phase 3+)**: All depend on Foundational phase completion
-- **Polish (Final Phase)**: Depends on all desired user stories being complete
+- **Cross-Cutting Concerns (Phase 8a)**: Depends on Foundational + at least one user story for context
+- **Polish (Phase 8b)**: Depends on all desired user stories being complete
 
 ### User Story Dependencies
 
@@ -174,6 +198,13 @@ description: "Task list for Easy Kafka Consumer Library"
 - **US3 (P1)**: Depends on US1 for handler execution and commit flow
 - **US4 (P2)**: Depends on US1 engine loop; integrates with US3 for error handling
 - **US5 (P2)**: Depends on US1 engine lifecycle
+
+### Cross-Cutting Requirement Coverage
+
+- **FR-042 (Reconnection)**: T045-T046 test and implement broker reconnection via adapter
+- **FR-043 (At-Least-Once)**: T047-T048 validate redelivery semantics across rebalance scenarios
+- **FR-044 (Offset Guard)**: T049-T050 prevent offset commits on handler failure (except skip)
+- **FR-045 (Lifecycle Logging)**: T051-T053 add structured logging across consumer, strategies, and engine
 
 ### Parallel Execution Examples
 
@@ -197,6 +228,10 @@ description: "Task list for Easy Kafka Consumer Library"
 - T041 and T042 can run in parallel (unit + integration tests)
 - T043 and T044 are sequential (consumer shutdown then engine coordination)
 
+**Cross-Cutting Concerns (Phase 8a)**
+- T045, T047, T049, T051, T052, T053 can run in parallel (independent feature implementations)
+- T046 and T050 can run in parallel (offset manager vs adapter reconnection logic)
+
 ---
 
 ## Implementation Strategy
@@ -208,18 +243,26 @@ description: "Task list for Easy Kafka Consumer Library"
 3. Complete Phase 3: User Story 1
 4. Validate with T017 and T018 before proceeding
 
-### Incremental Delivery
+### Multi-Story Delivery
 
-1. Deliver US1 (basic consumption)
+1. Deliver US1 + FR-043 validation (basic consumption + at-least-once guarantees)
 2. Deliver US2 (configuration and validation)
-3. Deliver US3 (error strategies)
+3. Deliver US3 + FR-042/044/045 (error strategies + reconnection, offset guard, logging)
 4. Deliver US4 (batch mode)
 5. Deliver US5 (graceful shutdown)
+6. Deliver Polish (documentation and test helpers)
 
 ---
 
 ## Notes
 
+- **Total Tasks**: 56 implementation tasks across 8 phases
+- **Requirement Coverage**: All 49 FRs now mapped to tasks (100% coverage)
+  - User Story tasks: T001-T044
+  - Cross-cutting requirements: T045-T053 (FR-042, 043, 044, 045)
+  - Polish tasks: T054-T056
 - Tasks are ordered by dependency; IDs reflect execution order.
 - [P] tasks target separate files and can be parallelized safely.
 - Each user story is independently testable via its integration test(s).
+- Phase 8a (requirements) can overlap with phase 7 (last user story) for efficiency.
+
