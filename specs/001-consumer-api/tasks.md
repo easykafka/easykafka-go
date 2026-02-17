@@ -29,8 +29,8 @@ description: "Task list for Easy Kafka Consumer Library"
 - [ ] T005 [P] Create engine skeleton in internal/engine/engine.go
 - [ ] T006 [P] Create Kafka adapter skeleton in internal/kafka/adapter.go
 - [ ] T007 [P] Create metadata context helpers stub in internal/metadata/context.go
-- [ ] T008 [P] Add tests directory marker in tests/README.md
-- [ ] T009 Add required dependencies and tooling notes in go.mod
+- [ ] T008 [P] Create tests/README.md with test organization structure (supports Constitution mandate SC-008: comprehensive unit/integration test coverage). Document testing pyramid: unit tests in tests/unit/, integration tests in tests/integration/, test helpers in tests/integration/helpers/. Include setup instructions for testcontainers-go and Kafka test cluster initialization strategy.
+- [ ] T009 Create/update go.mod with required dependencies for all phases (enables FR-046: wrap confluent-kafka-go, and supports Constitution testing mandate). Add core dependencies: confluent-kafka-go/v2 (Kafka client), testify (assertions/mocking), testcontainers-go (integration test infrastructure), zerolog (structured logging). Document version constraints and rationale.
 
 ---
 

@@ -131,18 +131,17 @@ A developer wants their service to shut down cleanly on SIGTERM. They pass a con
 
 #### Core Handler Interface
 
-- **FR-001**: Library MUST accept single-message handlers with signature `func(context.Context, []byte) error`
-- **FR-002**: Library MUST accept batch handlers with signature `func(context.Context, [][]byte) error`
-- **FR-003**: All handlers MUST receive context as first parameter to support cancellation during graceful shutdown and timeout operations
-- **FR-004**: Library MUST deliver message payloads as raw byte arrays without automatic deserialization
-- **FR-005**: Library MUST interpret `nil` error return as successful processing and commit the offset
-- **FR-006**: Library MUST interpret non-nil error return as processing failure and apply the configured error strategy
+- **FR-001**: Library MUST accept single-message handlers with signature `func(context.Context, []byte) error`, where context is first parameter to support cancellation during graceful shutdown and timeout operations
+- **FR-002**: Library MUST accept batch handlers with signature `func(context.Context, [][]byte) error` with context as first parameter for the same cancellation/timeout support
+- **FR-003**: Library MUST deliver message payloads as raw byte arrays without automatic deserialization
+- **FR-004**: Library MUST interpret `nil` error return as successful processing and commit the offset
+- **FR-005**: Library MUST interpret non-nil error return as processing failure and apply the configured error strategy
 
 #### Metadata-Driven Configuration
 
-- **FR-007**: Library MUST accept configuration via functional options pattern for consumer creation
-- **FR-008**: Library MUST require minimum configuration: Kafka broker addresses, topic name, consumer group ID
-- **FR-009**: Library MUST validate all configuration before connecting to Kafka and return clear errors for invalid values
+- **FR-006**: Library MUST accept configuration via functional options pattern for consumer creation
+- **FR-007**: Library MUST require minimum configuration: Kafka broker addresses, topic name, consumer group ID
+- **FR-008**: Library MUST validate all configuration before connecting to Kafka and return clear errors for invalid values
 - **FR-010**: Library MUST support optional configuration including batch size, batch timeout, error strategies, and custom offset behavior
 - **FR-011**: Library MUST provide passthrough access to confluent-kafka-go configuration for advanced users
 - **FR-012**: Library MUST NOT require configuration files or environment variable parsing
@@ -163,7 +162,7 @@ A developer wants their service to shut down cleanly on SIGTERM. They pass a con
 - **FR-021**: Retry strategy MUST use Kafka-based retry queue for message retries and dead-letter queue for failed messages after max attempts exhausted; both retry topic and DLQ topic are required configuration parameters
 - **FR-021a**: Retry strategy MUST automatically create and manage internal retry consumer that processes messages from retry queue topic
 - **FR-021b**: Retry strategy MUST write failed messages to retry queue topic with retry metadata headers (attempt count, retry time, error details)
-- **FR-021c**: After max retry attempts exhausted, retry strategy MUST send message to DLQ topic with full metadata and continue consumption (never stops consumer)
+- **FR-020c**: After max retry attempts exhausted, retry strategy MUST send message to DLQ topic with full metadata and continue consumption (never stops consumer)
 - **FR-022**: Library MUST provide a circuit-breaker strategy that combines retry+DLQ message handling with consumption pausing based on consecutive failure thresholds (single-message mode only; batch mode support deferred)
 - **FR-022a**: Circuit-breaker strategy MUST accept the same retry configuration as retry strategy (max attempts, backoff type, backoff parameters, DLQ topic, payload encoding)
 - **FR-022b**: Circuit-breaker strategy MUST track consecutive message failures from the primary topic only (where a failure means a message exhausted all retry attempts and was sent to DLQ); failures from retry queue topics do NOT increment the circuit breaker counter
@@ -200,7 +199,7 @@ A developer wants their service to shut down cleanly on SIGTERM. They pass a con
 
 #### Safety and Reliability
 
-- **FR-041**: Library MUST recover from handler panics and treat them as errors for the error handling strategy
+- **FR-041**: Library MUST recover from handler panics, log the panic, treat as error, and apply the error strategy
 - **FR-042**: Library MUST handle temporary Kafka broker unavailability with automatic reconnection attempts
 - **FR-043**: Library MUST provide at-least-once delivery semantics (messages may be redelivered but never lost)
 - **FR-044**: Library MUST prevent offset commits for messages that failed processing (unless skip strategy is used)
