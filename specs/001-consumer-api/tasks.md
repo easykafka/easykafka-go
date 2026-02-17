@@ -22,15 +22,15 @@ description: "Task list for Easy Kafka Consumer Library"
 
 **Purpose**: Project initialization and base structure
 
-- [ ] T001 Create consumer entrypoint stub in consumer.go
-- [ ] T002 [P] Create options scaffolding and config placeholder in options.go
-- [ ] T003 [P] Create handler type stubs in handler.go
-- [ ] T004 [P] Create ErrorStrategy interface stub in strategy/strategy.go
-- [ ] T005 [P] Create engine skeleton in internal/engine/engine.go
-- [ ] T006 [P] Create Kafka adapter skeleton in internal/kafka/adapter.go
-- [ ] T007 [P] Create metadata context helpers stub in internal/metadata/context.go
-- [ ] T008 [P] Create tests/README.md with test organization structure (supports Constitution mandate SC-008: comprehensive unit/integration test coverage). Document testing pyramid: unit tests in tests/unit/, integration tests in tests/integration/, test helpers in tests/integration/helpers/. Include setup instructions for testcontainers-go and Kafka test cluster initialization strategy.
-- [ ] T009 Create/update go.mod with required dependencies for all phases (enables FR-046: wrap confluent-kafka-go, and supports Constitution testing mandate). Add core dependencies: confluent-kafka-go/v2 (Kafka client), testify (assertions/mocking), testcontainers-go (integration test infrastructure), zerolog (structured logging). Document version constraints and rationale.
+- [x] T001 Create consumer entrypoint stub in consumer.go
+- [x] T002 [P] Create options scaffolding and config placeholder in options.go
+- [x] T003 [P] Create handler type stubs in handler.go
+- [x] T004 [P] Create ErrorStrategy interface stub in strategy/strategy.go
+- [x] T005 [P] Create engine skeleton in internal/engine/engine.go
+- [x] T006 [P] Create Kafka adapter skeleton in internal/kafka/adapter.go
+- [x] T007 [P] Create metadata context helpers stub in internal/metadata/context.go
+- [x] T008 [P] Create tests/README.md with test organization structure (supports Constitution mandate SC-008: comprehensive unit/integration test coverage). Document testing pyramid: unit tests in tests/unit/, integration tests in tests/integration/, test helpers in tests/integration/helpers/. Include setup instructions for testcontainers-go and Kafka test cluster initialization strategy.
+- [x] T009 Create/update go.mod with required dependencies for all phases (enables FR-046: wrap confluent-kafka-go, and supports Constitution testing mandate). Add core dependencies: confluent-kafka-go/v2 (Kafka client), testify (assertions/mocking), testcontainers-go (integration test infrastructure), zerolog (structured logging). Document version constraints and rationale.
 
 ---
 
@@ -38,13 +38,13 @@ description: "Task list for Easy Kafka Consumer Library"
 
 **Purpose**: Core infrastructure that MUST be complete before ANY user story can be implemented
 
-- [ ] T010 Implement Config struct, defaults, and option validation in options.go
-- [ ] T011 Implement Consumer struct and New() wiring in consumer.go
-- [ ] T012 [P] Implement internal Message model and context injection in internal/engine/message.go
-- [ ] T013 [P] Implement MessageFromContext helper in internal/metadata/context.go
-- [ ] T014 [P] Implement Kafka adapter interface + confluent wrapper in internal/kafka/adapter.go
-- [ ] T015 Implement engine run loop scaffold (poll, dispatch hooks, stop signals) in internal/engine/engine.go
-- [ ] T016 [P] Implement default no-op logger in internal/metadata/logger.go
+- [x] T010 Implement Config struct, defaults, and option validation in options.go
+- [x] T011 Implement Consumer struct and New() wiring in consumer.go
+- [x] T012 [P] Implement internal Message model and context injection in internal/engine/message.go
+- [x] T013 [P] Implement MessageFromContext helper in internal/metadata/context.go
+- [x] T014 [P] Implement Kafka adapter interface + confluent wrapper in internal/kafka/adapter.go
+- [x] T015 Implement engine run loop scaffold (poll, dispatch hooks, stop signals) in internal/engine/engine.go
+- [x] T016 [P] Implement default no-op logger in internal/metadata/logger.go
 
 **Checkpoint**: Foundation ready - user story implementation can now begin
 

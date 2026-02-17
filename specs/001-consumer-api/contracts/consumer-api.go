@@ -1,3 +1,6 @@
+//go:build ignore
+// +build ignore
+
 // Package easykafka provides a simplified Kafka consumer API with handler-based message processing.
 //
 // This file defines the public API contract for the EasyKafka consumer library.
