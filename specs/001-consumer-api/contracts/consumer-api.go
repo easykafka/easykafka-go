@@ -110,7 +110,7 @@ func WithBatchHandler(handler BatchHandler) Option
 // ============================================================================
 
 // WithErrorStrategy specifies how to handle message processing failures.
-// Default: Retry(WithMaxAttempts(3), WithOnMaxAttemptsExceeded(FailConsumer)) - retry up to 3 times then stop.
+// Default: Retry(WithMaxAttempts(3)) - retry up to 3 times then stop.
 //
 // Example:
 //
@@ -180,23 +180,15 @@ func FailFast() ErrorStrategy
 func Skip() ErrorStrategy
 
 // Retry returns an error strategy that retries failed messages with exponential backoff.
-// After max attempts are exhausted, executes the configured action (stop consumer or send to DLQ).
+// After max attempts are exhausted, stops the consumer.
 // Use for transient failures (network timeouts, temporary service unavailability).
 //
-// Example (stop consumer after retries):
+//	// Example:
 //
 //	easykafka.Retry(
 //	    easykafka.WithMaxAttempts(5),
 //	    easykafka.WithInitialDelay(1 * time.Second),
 //	    easykafka.WithMaxDelay(60 * time.Second),
-//	    easykafka.WithOnMaxAttemptsExceeded(easykafka.FailConsumer),
-//	)
-//
-// Example (send to DLQ after retries):
-//
-//	easykafka.Retry(
-//	    easykafka.WithMaxAttempts(3),
-//	    easykafka.WithOnMaxAttemptsExceeded(easykafka.SendToDLQ("orders-dlq")),
 //	)
 func Retry(options ...RetryOption) ErrorStrategy
 
@@ -242,16 +234,6 @@ func WithBackoffMultiplier(multiplier float64) RetryOption
 // The function receives the attempt number (1-based) and returns the delay.
 func WithCustomBackoff(fn func(attempt int) time.Duration) RetryOption
 
-// WithOnMaxAttemptsExceeded configures what happens after all retry attempts are exhausted.
-// Options:
-//   - FailConsumer: Stop the consumer and return error (default)
-//   - SendToDLQ("topic-name"): Write message to dead-letter queue and continue consumption
-//
-// Example:
-//
-//	easykafka.WithOnMaxAttemptsExceeded(easykafka.SendToDLQ("orders-dlq"))
-func WithOnMaxAttemptsExceeded(action MaxAttemptsAction) RetryOption
-
 // WithFailedMessagePayloadEncoding configures how message payloads are encoded when written to retry or dead-letter queues.
 // This encoding applies to any failed messages, whether retried or sent to DLQ.
 // Options:
@@ -262,7 +244,6 @@ func WithOnMaxAttemptsExceeded(action MaxAttemptsAction) RetryOption
 //
 //	easykafka.Retry(
 //	    easykafka.WithMaxAttempts(3),
-//	    easykafka.WithOnMaxAttemptsExceeded(easykafka.SendToDLQ("orders-dlq")),
 //	    easykafka.WithFailedMessagePayloadEncoding(easykafka.PayloadEncodingJSON),
 //	)
 func WithFailedMessagePayloadEncoding(encoding PayloadEncoding) RetryOption
