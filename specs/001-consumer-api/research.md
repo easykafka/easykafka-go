@@ -1,203 +1,97 @@
 # Phase 0: Research & Technology Decisions
 
 **Feature**: Easy Kafka Consumer Library  
-**Date**: 2026-02-09  
-**Purpose**: Document technology choices, best practices, and architectural patterns
+**Date**: 2026-02-17  
+**Purpose**: Document technology choices and implementation patterns used by the plan
 
 ## Technology Decisions
 
 ### 1. Go 1.19+ as Implementation Language
 
-**Decision**: Use Go 1.19 or later as the implementation language
+**Decision**: Use Go 1.19 or later for the library implementation.
 
 **Rationale**:
-- Native concurrency primitives (goroutines, channels) perfect for message consumption workload
-- Strong standard library for context management, error handling, and synchronization
-- Excellent performance characteristics for high-throughput scenarios
-- Native Kafka client (confluent-kafka-go) provides production-grade reliability
-- Generics support (1.19+) enables type-safe strategy patterns without reflection
-- Simple deployment model (single binary) beneficial for library users
+- Concurrency primitives fit polling + worker dispatch architecture.
+- Strong `context.Context` support for shutdown and cancellation semantics.
+- Performance targets (10k msg/s) are reachable with Go + librdkafka.
 
 **Alternatives Considered**:
-- **Java/Kotlin**: More mature Kafka ecosystem but violates simplicity principle with heavyweight runtime
-- **Python**: Easier prototyping but performance inadequate for 10k+ msg/sec target
-- **Rust**: Superior performance but steep learning curve would reduce library adoption
-
-**Best Practices Applied**:
-- Use `context.Context` for cancellation and timeout propagation
-- Follow Go Code Review Comments and Effective Go guidelines
-- Accept interfaces, return structs for API design
-- Use functional options pattern for optional configuration
-- Avoid `panic()` in library code; always return errors
+- Java/Kotlin: heavier runtime and less ergonomic for the target user base.
+- Python: throughput and latency risks for the performance goals.
+- Rust: steeper adoption curve for a developer-experience-focused library.
 
 ---
 
-### 2. confluent-kafka-go v2 as Kafka Client
+### 2. confluent-kafka-go v2.x for Kafka Operations
 
-**Decision**: Wrap confluent-kafka-go v2.x as the underlying Kafka protocol implementation
+**Decision**: Wrap `confluent-kafka-go` v2.x and delegate all Kafka protocol work to it.
 
 **Rationale**:
-- Production-proven with years of battle-testing in high-scale environments
-- Based on librdkafka C library - one of the fastest Kafka clients available
-- Excellent performance characteristics meet our <5% overhead target
-- Comprehensive feature support (consumer groups, rebalancing, offset management)
-- Active maintenance by Confluent ensures compatibility with new Kafka versions
-- Constitutional requirement (Principle V: Thin Wrapper Philosophy)
+- Aligns with Thin Wrapper Philosophy and existing dependencies in the spec.
+- Provides robust consumer group handling, rebalancing, and offset commits.
+- Production-grade performance via `librdkafka`.
 
 **Alternatives Considered**:
-- **sarama (Shopify)**: Pure Go but historically more bugs and slower performance
-- **segmentio/kafka-go**: Good pure-Go option but lacks feature parity with librdkafka
-- **franz-go**: Modern and fast but less ecosystem adoption
-
-**Integration Pattern**:
-- Wrap `kafka.Consumer` type from confluent-kafka-go
-- Expose passthrough for advanced `kafka.ConfigMap` options
-- Hide all Kafka-specific types from public API
-- Use adapter pattern to translate confluent-kafka-go events to internal events
+- `segmentio/kafka-go`, `sarama`, `franz-go`: less aligned with spec and constitution.
 
 **Best Practices Applied**:
-- Pin to major version (v2.x) for stability
-- Use consumer group protocol for load balancing
-- Enable auto-commit only when error strategy allows
-- Configure adequate poll timeout for responsive shutdown
+- Keep the poll loop responsive; dispatch handler work to workers.
+- Commit offsets only after successful processing or strategy-defined success.
+- On rebalance revoke, stop dispatching and complete in-flight work before commit.
+- Use pause/resume on partitions for backpressure while continuing to poll.
 
 ---
 
-### 3. github.com/rs/zerolog for Structured Logging
+### 3. Kafka Retry + DLQ Pattern
 
-**Decision**: Use zerolog for internal logging with minimal allocations
+**Decision**: Use a Kafka retry topic and DLQ with a dedicated internal retry consumer.
 
 **Rationale**:
-- Zero-allocation JSON logger critical for high-throughput scenarios
-- Structured logging enables better observability in production
-- Level-based logging (debug, info, warn, error) for operational control
-- Contextual logging with fields supports tracing message flow
-- Very small library footprint aligns with thin wrapper philosophy
+- Avoids head-of-line blocking on the primary topic.
+- Retry scheduling is durable across restarts.
+- Separation keeps retry lag from affecting primary consumption.
 
 **Alternatives Considered**:
-- **Go stdlib log**: Too basic, no structured logging or levels
-- **zap (Uber)**: Comparable performance but more complex API
-- **logrus**: Slower performance, allocates more
-
-**Logging Strategy**:
-- Log lifecycle events (startup, shutdown, rebalancing) at INFO level
-- Log handler errors at WARN/ERROR with message metadata
-- Log retry attempts at DEBUG with attempt count
-- Provide callback hooks for users to integrate custom observability
-- Never log sensitive message payloads by default
+- In-place retries within the primary consumer (risking poll timeouts).
+- Multi-tier retry topics (adds complexity without immediate need).
 
 **Best Practices Applied**:
-- Use logger chaining for contextual fields (consumer group, topic, partition)
-- Respect standard log level conventions
-- Make logging configurable (allow disabling or custom writer)
-- Log structured data, not concatenated strings
+- Store retry metadata in headers: `x-original-topic`, `x-original-offset`,
+  `x-retry-at`, `x-retry-attempt`, `x-error-message`, `x-payload-encoding`.
+- Exponential backoff with jitter; encode the next due time in `x-retry-at`.
+- Requeue early retry messages rather than sleeping in the retry consumer.
+- DLQ messages include original payload, error details, and attempt count.
 
 ---
 
-### 4. github.com/golang/mock for Interface Mocking
+### 4. Integration Testing with testcontainers-go
 
-**Decision**: Use gomock for generating mocks of internal interfaces
+**Decision**: Use `testcontainers-go` for Kafka integration tests.
 
 **Rationale**:
-- Official Go mocking framework with strong community adoption
-- Generates type-safe mocks from interface definitions
-- Supports expectation-based testing for complex interactions
-- Integrates with `go generate` for automated mock updates
-- Enables testing strategy implementations without real Kafka
+- Required by the constitution for real Kafka testing.
+- Provides clean setup/teardown and deterministic test environments.
 
 **Alternatives Considered**:
-- **testify/mock**: Manual mock creation, more boilerplate
-- **mockery**: Good alternative but gomock more widely adopted
-- **Hand-written mocks**: Too much maintenance burden
-
-**Mocking Strategy**:
-- Mock internal interfaces (ErrorStrategy, KafkaConsumer adapter)
-- Do NOT mock public API (test the real implementation)
-- Generate mocks via `//go:generate` directives
-- Store generated mocks in `tests/mocks/` directory
-
-**Interfaces to Mock**:
-```go
-// Internal Kafka client adapter (wraps confluent-kafka-go)
-type KafkaClient interface {
-    Poll(timeout time.Duration) Message
-    Commit(msg Message) error
-    Close() error
-}
-
-// Error strategy interface
-type ErrorStrategy interface {
-    HandleError(ctx context.Context, msgs []*Message, err error) error
-}
-```
+- Manual Docker Compose: brittle in CI and harder to clean up.
 
 **Best Practices Applied**:
-- Mock external dependencies (Kafka), test internal logic
-- Use table-driven tests with different mock behaviors
-- Verify mock expectations to catch incorrect usage
+- Use a fixed Kafka image version and wait on readiness + broker probe.
+- Reuse a container across tests via `TestMain` or `sync.Once`.
+- Use unique topics per test to avoid cross-test interference.
 
 ---
 
-### 5. testcontainers-go for Integration Testing
+### 5. Unit Testing with testify
 
-**Decision**: Use testcontainers-go to spin up real Kafka clusters for integration tests
+**Decision**: Use `testify` for assertions and helpers in unit tests.
 
 **Rationale**:
-- Tests against real Kafka behavior catch edge cases mocks miss
-- Eliminates manual Docker Compose management
-- Automatic cleanup prevents port conflicts and zombie containers
-- Constitutional testing requirement: integration tests must use real Kafka
-- Supports testing consumer group rebalancing, offset commits, broker failures
+- Already specified as a dev dependency.
+- Improves readability and reduces boilerplate in table-driven tests.
 
 **Alternatives Considered**:
-- **Manual Docker Compose**: Brittle, hard to parallelize, no automatic cleanup
-- **Embedded Kafka**: Doesn't exist for Go, would be impractical
-- **Mock-only testing**: Insufficient for wrapper library correctness
-
-**Integration Test Strategy**:
-```go
-// Test lifecycle: Start container → Produce messages → Start consumer → Verify
-func TestSingleMessageConsumption(t *testing.T) {
-    // Start Kafka container
-    kafka := testcontainers.StartKafka(ctx)
-    defer kafka.Terminate(ctx)
-    
-    // Produce test message
-    producer := kafka.Producer()
-    producer.Produce("test-topic", []byte("message"))
-    
-    // Test consumer receives message
-    received := make(chan []byte, 1)
-    consumer := easykafka.New(
-        easykafka.WithHandler(func(msg []byte) error {
-            received <- msg
-            return nil
-        }),
-        easykafka.WithTopic("test-topic"),
-        easykafka.WithBrokers(kafka.Brokers()),
-    )
-    
-    consumer.Start(ctx)
-    assert.Equal(t, "message", <-received)
-}
-```
-
-**Integration Test Coverage**:
-1. Basic consumption (single-message and batch)
-2. Error strategy behaviors (retry, skip, DLQ, fail-fast)
-3. Consumer group rebalancing
-4. Graceful shutdown and offset commits
-5. Handler panic recovery
-6. Broker connection failures and reconnection
-
-**Best Practices Applied**:
-- Tag integration tests: `//go:build integration`
-- Run in CI with `go test -tags=integration`
-- Use parallel test execution where possible
-- Clean up resources in deferred functions
-- Use short timeouts to fail fast on issues
-
----
+- Standard library `testing` only: more verbose assertions.
 
 ### 6. Functional Options Pattern for Configuration
 

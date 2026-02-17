@@ -1,203 +1,139 @@
 # Phase 1: Data Model & Core Entities
 
 **Feature**: Easy Kafka Consumer Library  
-**Date**: 2026-02-09  
-**Purpose**: Define core entities, relationships, and interactions
+**Date**: 2026-02-17  
+**Purpose**: Define core entities, fields, and validation rules
 
 ## Entity Overview
 
-The EasyKafka consumer library is structured around 7 core entities:
-
-1. **Consumer** - Main orchestrator managing consumption lifecycle
-2. **Config** - Configuration data structure with validation
-3. **Handler** - User-provided message processing function
-4. **ErrorStrategy** - Interface for pluggable failure handling
-5. **Message** - Internal representation of Kafka messages
-6. **Engine** - Internal consumption loop coordinator
-7. **KafkaClient** - Abstraction over confluent-kafka-go
+1. **Consumer**: Public API surface and lifecycle coordinator.
+2. **Config (HandlerMetadata)**: Immutable configuration built from options.
+3. **Handler**: User-provided single-message or batch handler.
+4. **ErrorStrategy**: Pluggable strategy interface (fail-fast, skip, retry, circuit breaker).
+5. **ConsumptionMode**: Single vs batch.
+6. **Message**: Internal message representation + metadata.
+7. **StrategyContext**: Context provided to strategies (message(s), attempt, error).
+8. **CircuitBreakerState**: Closed/Open/Half-Open state machine.
 
 ## Entity Definitions
 
-### 1. Consumer (Public API)
+### 1. Consumer
 
-**Purpose**: Primary entry point for users, manages consumer lifecycle
+**Purpose**: Creates and runs the consumption engine.
 
-**Responsibilities**:
-- Accept configuration via functional options
-- Validate configuration before connecting to Kafka
-- Initialize Kafka client and internal engine
-- Provide Start() and Shutdown() methods
-- Coordinate graceful shutdown with timeout
-
-**State**:
-- Configuration (topic, brokers, consumer group, error strategy)
-- Kafka client adapter
-- Internal engine reference
-- Shutdown signal channel
-- Running state flag
+**Fields**:
+- `config Config`
+- `engine *Engine`
+- `strategy ErrorStrategy`
+- `state` (Created/Running/ShuttingDown/Stopped)
 
 **State Transitions**:
 ```
-Created → Started → Running → ShuttingDown → Stopped
-                                    ↓
-                                 Error
+Created -> Running -> ShuttingDown -> Stopped
+                   -> Error
 ```
-
-**Relationships**:
-- Has-one Config (immutable after creation)
-- Has-one KafkaClient (lifecycle managed)
-- Has-one Engine (lifecycle managed)
-- Has-one ErrorStrategy (pluggable)
-- Has-one Handler (user-provided)
 
 **Validation Rules**:
-- Topic name must be non-empty
-- At least one broker address required
-- Consumer group ID must be non-empty
-- Handler function must be non-nil
-- Batch size must be positive if batch mode enabled
-- Batch timeout must be positive if batch mode enabled
-- CircuitBreaker error strategy cannot be used with batch mode (single-message mode only)
-
-**Concurrency**:
-- Start() can only be called once
-- Shutdown() is idempotent (safe to call multiple times)
-- Internal state protected by mutex
+- Topic, brokers, and consumer group are required.
+- Exactly one of `Handler` or `BatchHandler` must be set.
+- Batch mode requires positive batch size and timeout.
+- Circuit breaker cannot be used with batch mode.
 
 ---
 
-### 2. Config (Public API)
+### 2. Config (HandlerMetadata)
 
-**Purpose**: Immutable configuration container built via functional options
+**Purpose**: Immutable configuration derived from functional options.
 
 **Fields**:
-```go
-type Config struct {
-    // Required fields
-    Topic         string              // Kafka topic to consume
-    Brokers       []string            // Kafka broker addresses
-    ConsumerGroup string              // Consumer group ID
-    Handler       Handler             // Message processing function
-    
-    // Optional fields with defaults
-    ErrorStrategy ErrorStrategy       // Default: ExponentialRetry(3 attempts)
-    BatchMode     bool                // Default: false (single-message)
-    BatchSize     int                 // Default: 100 (if batch mode)
-    BatchTimeout  time.Duration       // Default: 5 seconds (if batch mode)
-    PollTimeout   time.Duration       // Default: 100ms
-    ShutdownTimeout time.Duration     // Default: 30 seconds
-    Logger        zerolog.Logger      // Default: zerolog.Nop()
-    
-    // Advanced passthrough to confluent-kafka-go
-    KafkaConfig   map[string]any      // Default: empty
-}
-```
-
-**Validation**:
-- Perform validation in Option functions, not in Consumer.New()
-- Return descriptive errors for invalid configurations
-- Fail fast on invalid config before connecting to Kafka
-
-**Defaults Strategy**:
-- Use sensible production-ready defaults
-- Document all defaults in godoc
-- Allow disabling defaults where appropriate (e.g., WithNoRetry())
-
-**Immutability**:
-- Config cannot be changed after Consumer creation
-- Want different config? Create a new Consumer instance
-- Rationale: Thread-safety without locking, clear semantics
+- `Topic string`
+- `Brokers []string`
+- `ConsumerGroup string`
+- `Handler Handler`
+- `BatchHandler BatchHandler`
+- `Mode ConsumptionMode`
+- `BatchSize int`
+- `BatchTimeout time.Duration`
+- `PollTimeout time.Duration`
+- `ShutdownTimeout time.Duration`
+- `ErrorStrategy ErrorStrategy`
+- `KafkaConfig map[string]any`
+- `Logger Logger`
 
 ---
 
-### 3. Handler (Public API)
+### 3. Handler
 
-**Purpose**: User-provided function that processes message payloads
-
-**Function Signatures**:
-```go
-// Single-message handler (context always provided)
-type Handler func(ctx context.Context, payload []byte) error
-
-// Batch handler (context always provided)
-type BatchHandler func(ctx context.Context, payloads [][]byte) error
-```
+**Types**:
+- `Handler func(context.Context, []byte) error`
+- `BatchHandler func(context.Context, [][]byte) error`
 
 **Contracts**:
-- Return `nil` for successful processing → offset committed
-- Return `error` for failed processing → error strategy applied
-- Must not panic (but library recovers if they do)
-- Should respect context cancellation for graceful shutdown
-- Should not retain references to `[]byte` slices (may be reused)
-- Context is always provided and cancelled during shutdown
+- `nil` error -> commit offsets.
+- `error` -> strategy handles failure.
+- Panics are recovered and treated as errors.
 
-**Batch Processing Atomicity**:
-- Batches are atomic units for handler execution: BatchHandler processes all messages together
-- If BatchHandler returns error, error strategy receives entire batch but behavior depends on strategy:
-  - **Skip**: All messages in batch are skipped together (all offsets committed)
-  - **FailFast**: Consumer stops immediately (atomic)
-  - **Retry**: Each message in batch is retried individually (see RetryStrategy details)
-  - **CircuitBreaker**: NOT SUPPORTED in batch mode (validation error at consumer creation)
-- Handler success: all offsets in batch are committed together
-- Handler failure: strategy determines granularity (batch-level or message-level)
+---
 
-**Note**: CircuitBreaker strategy is only supported with single-message handlers. Attempting to use CircuitBreaker with batch mode will return a validation error during consumer creation. This limitation may be addressed in future releases.
+### 4. ErrorStrategy
 
-**Processing Guarantees**:
-- At-least-once delivery: message may be redelivered on failure
-- No message loss: offset only committed after successful processing
-- Ordering: messages from same partition processed in order
+**Interface**:
+- `HandleError(ctx context.Context, msgs []*Message, err error) error`
+- `Name() string`
 
-**Performance Expectations**:
-- Should complete quickly (seconds, not minutes)
-- Long-running handlers should check context cancellation
-- Blocking indefinitely prevents graceful shutdown
+**Implementations**:
+- FailFast
+- Skip
+- Retry (retry topic + DLQ + internal retry consumer)
+- CircuitBreaker (retry + DLQ + pause/resume)
 
-**Context Usage**:
-- Check `ctx.Done()` for cancellation during long operations
-- Use context for timeouts: `ctx, cancel := context.WithTimeout(ctx, 5*time.Second)`
-- Access message metadata via `easykafka.MessageFromContext(ctx)`
+---
 
-**Multi-Step Handler Pattern** (for non-idempotent operations):
+### 5. ConsumptionMode
 
-Handlers that perform multiple non-idempotent steps (e.g., separate database writes, external API calls) can use the `RetryStep` mechanism to resume processing from a failed step rather than restarting from the beginning.
+**Values**:
+- `SingleMessage`
+- `Batch`
 
-**Use Case Example**:
-```go
-// Handler performs 3 non-idempotent steps
-func processOrder(ctx context.Context, payload []byte) error {
-    msg := easykafka.MessageFromContext(ctx)
-    retryStep := easykafka.GetRetryStep(msg) // 0 = start from beginning
-    
-    // Step 1: Create order record (idempotency key could prevent duplicates)
-    if retryStep == 0 {
-        if err := db.CreateOrder(order); err != nil {
-            return easykafka.SetRetryStep(msg, 1, err) // Retry from step 1
-        }
-    }
-    
-    // Step 2: Charge payment (non-idempotent - cannot retry)
-    if retryStep <= 1 {
-        if err := payment.Charge(order); err != nil {
-            return easykafka.SetRetryStep(msg, 2, err) // Skip step 1, retry from step 2
-        }
-    }
-    
-    // Step 3: Send confirmation email
-    if retryStep <= 2 {
-        if err := email.Send(order); err != nil {
-            return easykafka.SetRetryStep(msg, 3, err) // Skip steps 1-2, retry from step 3
-        }
-    }
-    
-    return nil // All steps completed
-}
-```
+**Rules**:
+- Batch mode uses atomic batches for commit and error handling.
+- Circuit breaker restricted to single-message mode.
 
-**How It Works**:
-1. Handler reads current `RetryStep` from message context (0 = first attempt or restart from beginning)
-2. Handler executes steps conditionally based on `retryStep` value
-3. On failure, handler calls `easykafka.SetRetryStep(msg, stepNumber, err)` to indicate which step to resume from
+---
+
+### 6. Message
+
+**Fields**:
+- `Topic string`
+- `Partition int32`
+- `Offset int64`
+- `Timestamp time.Time`
+- `Headers map[string]string`
+- `Payload []byte`
+
+---
+
+### 7. StrategyContext
+
+**Fields**:
+- `Messages []*Message`
+- `Attempt int`
+- `HandlerError error`
+- `IsRetryQueue bool`
+
+---
+
+### 8. CircuitBreakerState
+
+**States**:
+- Closed (normal processing, track consecutive primary failures)
+- Open (pause all consumption for cooldown)
+- Half-Open (process one test message from primary topic)
+
+**Transitions**:
+- Closed -> Open when failure threshold reached
+- Open -> Half-Open after cooldown
+- Half-Open -> Closed on success; -> Open on failure
 4. Library persists `RetryStep` in retry queue headers
 5. When message is retried, handler receives `RetryStep` and skips already-completed steps
 

@@ -18,12 +18,10 @@ import (
 type Consumer interface {
 	// Start begins consuming messages from the configured topic.
 	// Blocks until context is cancelled or a fatal error occurs.
-	// Returns error on configuration validation failure or unrecoverable Kafka errors.
 	Start(ctx context.Context) error
 
 	// Shutdown gracefully stops the consumer within the configured timeout.
 	// Completes in-flight message processing and commits final offsets.
-	// Returns error if shutdown timeout is exceeded.
 	Shutdown(ctx context.Context) error
 }
 
@@ -32,16 +30,38 @@ type Consumer interface {
 // ============================================================================
 
 // Handler processes a single message payload with context for cancellation support.
-// The context is cancelled during graceful shutdown to allow handlers to abort.
 // Return nil for successful processing (offset will be committed).
 // Return error for failed processing (error strategy will be applied).
 type Handler func(ctx context.Context, payload []byte) error
 
 // BatchHandler processes multiple messages together as a batch with context support.
-// The context is cancelled during graceful shutdown.
 // Return nil to commit all message offsets in the batch.
 // Return error to apply error strategy to the entire batch.
 type BatchHandler func(ctx context.Context, payloads [][]byte) error
+
+// ============================================================================
+// MESSAGE METADATA
+// ============================================================================
+
+// Message is the public metadata representation available to handlers.
+type Message struct {
+	Topic     string
+	Partition int32
+	Offset    int64
+	Timestamp time.Time
+	Headers   map[string]string
+}
+
+// MessageFromContext extracts message metadata from a handler context.
+func MessageFromContext(ctx context.Context) (*Message, bool)
+
+// PayloadEncoding defines how payloads are encoded for retry and DLQ messages.
+type PayloadEncoding string
+
+const (
+	PayloadEncodingJSON   PayloadEncoding = "json"
+	PayloadEncodingBase64 PayloadEncoding = "base64"
+)
 
 // ============================================================================
 // CONFIGURATION (FUNCTIONAL OPTIONS)
@@ -50,21 +70,10 @@ type BatchHandler func(ctx context.Context, payloads [][]byte) error
 // Option configures a Consumer. Options are applied during New().
 type Option func(*consumerConfig) error
 
-// NEW creates a new Consumer with the provided options.
+// New creates a new Consumer with the provided options.
 // Returns error if required options are missing or invalid.
 //
-// Required options: WithTopic, WithBrokers, WithConsumerGroup, WithHandler
-//
-// Example:
-//
-//	consumer, err := easykafka.New(
-//	    easykafka.WithTopic("orders"),
-//	    easykafka.WithBrokers("localhost:9092"),
-//	    easykafka.WithConsumerGroup("order-processors"),
-//	    easykafka.WithHandler(func(ctx context.Context, msg []byte) error {
-//	        return processOrder(ctx, msg)
-//	    }),
-//	)
+// Required options: WithTopic, WithBrokers, WithConsumerGroup, and exactly one of WithHandler/WithBatchHandler.
 func New(options ...Option) (Consumer, error)
 
 // ============================================================================
@@ -77,7 +86,6 @@ func WithTopic(topic string) Option
 
 // WithBrokers specifies the Kafka broker addresses.
 // Required. Must provide at least one broker.
-// Example: WithBrokers("localhost:9092", "localhost:9093")
 func WithBrokers(brokers ...string) Option
 
 // WithConsumerGroup specifies the consumer group ID.
@@ -85,24 +93,11 @@ func WithBrokers(brokers ...string) Option
 func WithConsumerGroup(groupID string) Option
 
 // WithHandler specifies the message processing function (single-message mode).
-// Required (unless WithBatchHandler is used).
-// The handler receives context and message payload.
-// Context is cancelled during graceful shutdown.
+// Required unless WithBatchHandler is used.
 func WithHandler(handler Handler) Option
 
 // WithBatchHandler specifies a batch processing function.
-// Required (unless WithHandler is used).
-// The handler receives context and multiple message payloads.
-// Context is cancelled during graceful shutdown.
-// Enables batch mode - see WithBatchSize and WithBatchTimeout.
-//
-// IMPORTANT: Batch processing is ATOMIC. If the batch handler returns an error,
-// the entire batch is subject to the error strategy:
-//   - Retry: all messages in batch are re-processed together
-//   - Skip: all messages in batch are skipped (all offsets committed)
-//   - DLQ: entire batch is written to dead-letter queue
-//
-// No partial batch success/failure tracking.
+// Required unless WithHandler is used. Enables batch mode.
 func WithBatchHandler(handler BatchHandler) Option
 
 // ============================================================================
@@ -110,28 +105,20 @@ func WithBatchHandler(handler BatchHandler) Option
 // ============================================================================
 
 // WithErrorStrategy specifies how to handle message processing failures.
-// Default: Retry(WithMaxAttempts(3)) - retry up to 3 times then stop.
-//
-// Example:
-//
-//	easykafka.WithErrorStrategy(easykafka.FailFast())
+// Default: Retry(WithMaxAttempts(3), WithRetryTopic("<topic>.retry"), WithDLQTopic("<topic>.dlq")).
 func WithErrorStrategy(strategy ErrorStrategy) Option
 
 // WithBatchSize specifies the maximum number of messages per batch.
 // Only applies when using WithBatchHandler.
-// When batch size is reached, the batch is immediately processed.
-// If handler returns error, entire batch is retried/skipped together (atomic).
 // Default: 100
 func WithBatchSize(size int) Option
 
 // WithBatchTimeout specifies how long to wait before processing a partial batch.
 // Only applies when using WithBatchHandler.
-// Ensures low latency even when message rate is low.
 // Default: 5 seconds
 func WithBatchTimeout(timeout time.Duration) Option
 
 // WithPollTimeout specifies the Kafka poll timeout.
-// Lower values improve shutdown responsiveness but increase CPU usage.
 // Default: 100ms
 func WithPollTimeout(timeout time.Duration) Option
 
@@ -139,19 +126,19 @@ func WithPollTimeout(timeout time.Duration) Option
 // Default: 30 seconds
 func WithShutdownTimeout(timeout time.Duration) Option
 
-// WithLogger specifies a custom zerolog logger.
-// Default: zerolog.Nop() (no logging)
+// Logger allows users to plug in their own logging implementation.
+type Logger interface {
+	Debug(msg string, keyvals ...any)
+	Info(msg string, keyvals ...any)
+	Warn(msg string, keyvals ...any)
+	Error(msg string, keyvals ...any)
+}
+
+// WithLogger specifies a custom logger. Default is no-op.
 func WithLogger(logger Logger) Option
 
 // WithKafkaConfig passes advanced configuration to confluent-kafka-go.
 // Use this to set low-level Kafka consumer properties.
-//
-// Example:
-//
-//	easykafka.WithKafkaConfig(map[string]any{
-//	    "session.timeout.ms": 6000,
-//	    "auto.offset.reset": "earliest",
-//	})
 func WithKafkaConfig(config map[string]any) Option
 
 // ============================================================================
@@ -159,7 +146,6 @@ func WithKafkaConfig(config map[string]any) Option
 // ============================================================================
 
 // ErrorStrategy defines how message processing failures are handled.
-// Implement this interface to create custom error handling behavior.
 type ErrorStrategy interface {
 	// HandleError is called when a handler returns an error.
 	// In single-message mode, msgs contains one message.
@@ -171,48 +157,34 @@ type ErrorStrategy interface {
 	Name() string
 }
 
-// FailFast returns an error strategy that stops the consumer immediately on any handler error.
-// Use for critical processing where errors require manual intervention.
+// FailFast stops the consumer immediately on any handler error.
 func FailFast() ErrorStrategy
 
-// Skip returns an error strategy that logs errors and continues processing.
-// Use for best-effort processing where message loss is acceptable.
+// Skip logs errors, commits offsets, and continues consumption.
 func Skip() ErrorStrategy
 
-// Retry returns an error strategy that retries failed messages with exponential backoff.
-// After max attempts are exhausted, stops the consumer.
-// Use for transient failures (network timeouts, temporary service unavailability).
-//
-//	// Example:
-//
-//	easykafka.Retry(
-//	    easykafka.WithMaxAttempts(5),
-//	    easykafka.WithInitialDelay(1 * time.Second),
-//	    easykafka.WithMaxDelay(60 * time.Second),
-//	)
+// Retry retries failed messages with Kafka-based retry topics and a DLQ.
+// RetryTopic and DLQTopic are required options.
+// After max attempts are exhausted, the message is sent to the DLQ and consumption continues.
 func Retry(options ...RetryOption) ErrorStrategy
 
-// CircuitBreaker returns an error strategy that pauses consumption after consecutive failures.
-// Use to protect downstream services from overload during incidents.
-//
-// IMPORTANT: CircuitBreaker is only supported in single-message mode (WithHandler).
-// Using CircuitBreaker with batch mode (WithBatchHandler) will return an error at consumer creation.
-// Batch mode support is planned for future releases.
-//
-// Example:
-//
-//	easykafka.CircuitBreaker(
-//	    easykafka.WithFailureThreshold(10),
-//	    easykafka.WithCooldownPeriod(60 * time.Second),
-//	)
+// CircuitBreaker pauses consumption after consecutive failures.
+// CircuitBreaker uses the retry + DLQ flow and adds pause/resume behavior.
+// Only supported in single-message mode.
 func CircuitBreaker(options ...CircuitBreakerOption) ErrorStrategy
 
 // ============================================================================
 // ERROR STRATEGY OPTIONS
 // ============================================================================
 
-// RetryOption configures a retry error strategy.
+// RetryOption configures the retry error strategy.
 type RetryOption func(*retryConfig) error
+
+// WithRetryTopic sets the Kafka retry topic. Required for Retry and CircuitBreaker.
+func WithRetryTopic(topic string) RetryOption
+
+// WithDLQTopic sets the Kafka dead-letter topic. Required for Retry and CircuitBreaker.
+func WithDLQTopic(topic string) RetryOption
 
 // WithMaxAttempts sets the maximum number of retry attempts.
 // Default: 3
@@ -222,42 +194,35 @@ func WithMaxAttempts(attempts int) RetryOption
 // Default: 1 second
 func WithInitialDelay(delay time.Duration) RetryOption
 
-// WithMaxDelay sets the maximum delay between retries (for exponential backoff).
+// WithMaxDelay sets the maximum delay between retries.
 // Default: 30 seconds
 func WithMaxDelay(delay time.Duration) RetryOption
 
 // WithBackoffMultiplier sets the exponential backoff multiplier.
-// Default: 2.0 (delays: 1s, 2s, 4s, 8s, ...)
+// Default: 2.0
 func WithBackoffMultiplier(multiplier float64) RetryOption
 
 // WithCustomBackoff provides a custom backoff function.
 // The function receives the attempt number (1-based) and returns the delay.
 func WithCustomBackoff(fn func(attempt int) time.Duration) RetryOption
 
-// WithFailedMessagePayloadEncoding configures how message payloads are encoded when written to retry or dead-letter queues.
-// This encoding applies to any failed messages, whether retried or sent to DLQ.
-// Options:
-//   - PayloadEncodingJSON: Write payload as human-readable JSON string (default for better debugging)
-//   - PayloadEncodingBase64: Write payload as base64-encoded string (binary-safe for all payloads)
-//
-// Example:
-//
-//	easykafka.Retry(
-//	    easykafka.WithMaxAttempts(3),
-//	    easykafka.WithFailedMessagePayloadEncoding(easykafka.PayloadEncodingJSON),
-//	)
+// WithFailedMessagePayloadEncoding configures how message payloads are encoded
+// when written to retry or dead-letter queues.
 func WithFailedMessagePayloadEncoding(encoding PayloadEncoding) RetryOption
 
-// MaxAttemptsAction defines what happens when retry attempts are exhausted.
-type MaxAttemptsAction interface {
-	isMaxAttemptsAction()
-}
+// CircuitBreakerOption configures the circuit-breaker error strategy.
+type CircuitBreakerOption func(*circuitBreakerConfig) error
 
-// FailConsumer stops the consumer when max attempts are exceeded.
-// This is the default behavior.
-var FailConsumer MaxAttemptsAction
+// WithFailureThreshold sets the consecutive failure threshold before opening the circuit.
+func WithFailureThreshold(threshold int) CircuitBreakerOption
 
-// SendToDLQ returns an action that writes failed messages to a dead-letter queue.
+// WithCooldownPeriod sets the cooldown period before transitioning to half-open.
+func WithCooldownPeriod(cooldown time.Duration) CircuitBreakerOption
+
+// WithRetryOptions configures the retry behavior used by circuit breaker.
+// Includes retry topic, DLQ topic, and backoff settings.
+func WithRetryOptions(options ...RetryOption) CircuitBreakerOption
+
 // The message is written to the specified topic with error metadata, then consumption continues.
 //
 // Example:

@@ -1,16 +1,13 @@
 # EasyKafka Go - Quick Start Guide
 
 **Feature**: Easy Kafka Consumer Library  
-**Date**: 2026-02-09  
+**Date**: 2026-02-17  
 **For**: Developers getting started with the library
 
 ## Prerequisites
 
 - Go 1.19 or later
-- Running Kafka cluster (for testing, see [Local Development](#local-development))
-- Basic understanding of Go functions and error handling
-
-**NO Kafka knowledge required!** This library hides all Kafka complexity.
+- Running Kafka cluster
 
 ## Installation
 
@@ -20,185 +17,136 @@ go get github.com/yourusername/easykafka-go
 
 ## 5-Minute Quick Start
 
-### 1. Simple Message Consumer (Bare Minimum)
+### 1. Simple Message Consumer
 
 ```go
 package main
 
 import (
-    "context"
-    "fmt"
-    "log"
-    
-    "github.com/yourusername/easykafka-go"
+	"context"
+	"fmt"
+	"log"
+
+	"github.com/yourusername/easykafka-go"
 )
 
 func main() {
-    // Create consumer with minimal configuration
-    consumer, err := easykafka.New(
-        easykafka.WithTopic("orders"),
-        easykafka.WithBrokers("localhost:9092"),
-        easykafka.WithConsumerGroup("order-processors"),
-        easykafka.WithHandler(processOrder),
-    )
-    if err != nil {
-        log.Fatal(err)
-    }
-    
-    // Start consuming (blocks until context cancelled)
-    ctx := context.Background()
-    if err := consumer.Start(ctx); err != nil {
-        log.Fatal(err)
-    }
+	consumer, err := easykafka.New(
+		easykafka.WithTopic("orders"),
+		easykafka.WithBrokers("localhost:9092"),
+		easykafka.WithConsumerGroup("order-processors"),
+		easykafka.WithHandler(processOrder),
+	)
+	if err != nil {
+		log.Fatal(err)
+	}
+
+	ctx := context.Background()
+	if err := consumer.Start(ctx); err != nil {
+		log.Fatal(err)
+	}
 }
 
-// Handler: receives context and bytes, returns an error
-func processOrder(ctx context.Context, orderData []byte) error {
-    fmt.Printf("Processing order: %s\n", string(orderData))
-    // Your business logic here
-    return nil
+func processOrder(ctx context.Context, payload []byte) error {
+	fmt.Printf("processing order: %s\n", string(payload))
+	return nil
 }
 ```
 
-**That's it!** The library handles:
-- ✅ Connecting to Kafka
-- ✅ Joining consumer group
-- ✅ Polling for messages
-- ✅ Committing offsets
-- ✅ Rebalancing partitions
-- ✅ Error recovery
-
----
-
-## Common Patterns
-
-### 2. With Graceful Shutdown
+### 2. Graceful Shutdown
 
 ```go
+package main
+
+import (
+	"context"
+	"log"
+	"os"
+	"os/signal"
+	"syscall"
+
+	"github.com/yourusername/easykafka-go"
+)
+
 func main() {
-    consumer, err := easykafka.New(
-        easykafka.WithTopic("orders"),
-        easykafka.WithBrokers("localhost:9092"),
-        easykafka.WithConsumerGroup("order-processors"),
-        easykafka.WithHandler(processOrder),
-    )
-    if err != nil {
-        log.Fatal(err)
-    }
-    
-    // Create cancellable context
-    ctx, cancel := context.WithCancel(context.Background())
-    defer cancel()
-    
-    // Handle SIGINT/SIGTERM for graceful shutdown
-    go func() {
-        sigCh := make(chan os.Signal, 1)
-        signal.Notify(sigCh, syscall.SIGINT, syscall.SIGTERM)
-        <-sigCh
-        
-        log.Println("Shutting down gracefully...")
-        cancel() // Triggers graceful shutdown
-    }()
-    
-    // Start consuming
-    if err := consumer.Start(ctx); err != nil {
-        log.Fatal(err)
-    }
+	consumer, err := easykafka.New(
+		easykafka.WithTopic("orders"),
+		easykafka.WithBrokers("localhost:9092"),
+		easykafka.WithConsumerGroup("order-processors"),
+		easykafka.WithHandler(processOrder),
+	)
+	if err != nil {
+		log.Fatal(err)
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	go func() {
+		sigCh := make(chan os.Signal, 1)
+		signal.Notify(sigCh, syscall.SIGINT, syscall.SIGTERM)
+		<-sigCh
+		cancel()
+	}()
+
+	if err := consumer.Start(ctx); err != nil {
+		log.Fatal(err)
+	}
+}
+
+func processOrder(ctx context.Context, payload []byte) error {
+	return nil
 }
 ```
 
----
-
-### 3. Accessing Message Metadata
+### 3. Retry + DLQ
 
 ```go
+package main
+
+import (
+	"context"
+	"log"
+	"time"
+
+	"github.com/yourusername/easykafka-go"
+)
+
 func main() {
-    consumer, err := easykafka.New(
-        easykafka.WithTopic("orders"),
-        easykafka.WithBrokers("localhost:9092"),
-        easykafka.WithConsumerGroup("order-processors"),
-        easykafka.WithHandler(processOrderWithMetadata),
-    )
-    if err != nil {
-        log.Fatal(err)
-    }
-    
-    ctx, cancel := context.WithCancel(context.Background())
-    defer cancel()
-    
-    if err := consumer.Start(ctx); err != nil {
-        log.Fatal(err)
-    }
+	consumer, err := easykafka.New(
+		easykafka.WithTopic("orders"),
+		easykafka.WithBrokers("localhost:9092"),
+		easykafka.WithConsumerGroup("order-processors"),
+		easykafka.WithHandler(processOrder),
+		easykafka.WithErrorStrategy(
+			easykafka.Retry(
+				easykafka.WithRetryTopic("orders.retry"),
+				easykafka.WithDLQTopic("orders.dlq"),
+				easykafka.WithMaxAttempts(3),
+				easykafka.WithInitialDelay(1*time.Second),
+				easykafka.WithMaxDelay(30*time.Second),
+				easykafka.WithFailedMessagePayloadEncoding(easykafka.PayloadEncodingJSON),
+			),
+		),
+	)
+	if err != nil {
+		log.Fatal(err)
+	}
+
+	if err := consumer.Start(context.Background()); err != nil {
+		log.Fatal(err)
+	}
 }
 
-// Handler can access message metadata and check context cancellation
-func processOrderWithMetadata(ctx context.Context, orderData []byte) error {
-    // Access message metadata
-    msg := easykafka.MessageFromContext(ctx)
-    fmt.Printf("Processing offset %d from partition %d\n", msg.Offset, msg.Partition)
-    
-    // Your business logic with context support
-    return processWithTimeout(ctx, orderData)
+func processOrder(ctx context.Context, payload []byte) error {
+	return nil
 }
 ```
 
----
-
-### 4. With Retry Queue + Dead-Letter Queue
-
-```go
-func main() {
-    consumer, err := easykafka.New(
-        easykafka.WithTopic("orders"),
-        easykafka.WithBrokers("localhost:9092"),
-        easykafka.WithConsumerGroup("order-processors"),
-        easykafka.WithHandler(processOrder),
-        
-        // Configure retry queue and DLQ for failed messages
-        easykafka.WithErrorStrategy(
-            easykafka.Retry(
-                easykafka.WithRetryTopic("orders.retry"),    // Kafka retry queue
-                easykafka.WithDLQTopic("orders.dlq"),        // Dead-letter queue
-                easykafka.WithMaxAttempts(3),                  // Retry up to 3 times
-                easykafka.WithInitialDelay(1 * time.Second),
-                easykafka.WithMaxDelay(30 * time.Second),
-            ),
-        ),
-    )
-    if err != nil {
-        log.Fatal(err)
-    }
-    
-    // ... rest of the code
-}
-```
-
-**Effect**: If `processOrder` fails:
-1. Message is written to `orders.retry` Kafka topic with retry headers
-2. Library automatically creates internal retry consumer for `orders.retry`
-3. Message is retried up to 3 times with exponential backoff (1s, 2s, 4s)
-4. After max attempts exhausted, message goes to `orders.dlq` with error metadata
-5. Processing continues with next message (no consumer stop)
-
-**How It Works**:
-- User creates **ONE consumer** - library internally spawns TWO consumers (main + retry)
-- Main consumer: processes `orders` topic, writes failures to retry queue
-- Retry consumer: processes `orders.retry` topic, respects retry delay headers
-- Both use the same handler function
-- Stateless: retry metadata stored in Kafka headers (survives restarts)
-
-**DLQ Message Format**:
-```json
-{
-  "originalTopic": "orders",
-  "originalPartition": 3,
-  "originalOffset": 12345,
-  "payload": "{\"orderId\":\"123\"}",
-  "payloadEncoding": "json",
-  "error": "database connection failed",
-  "timestamp": "2026-02-09T10:30:00Z",
-  "attemptCount": 3
-}
+**Behavior**:
+- Failures go to `orders.retry` with retry headers and attempt metadata.
+- An internal retry consumer reprocesses messages after backoff.
+- After max attempts, messages are written to `orders.dlq` and consumption continues.
 ```
 
 **Payload Encoding Options**:
