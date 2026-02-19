@@ -6,6 +6,8 @@ import (
 	"time"
 
 	kfk "github.com/confluentinc/confluent-kafka-go/v2/kafka"
+	"github.com/rs/zerolog"
+
 	"github.com/easykafka/easykafka-go/internal/types"
 )
 
@@ -16,11 +18,11 @@ type Adapter struct {
 	brokers  []string
 	topic    string
 	groupID  string
-	logger   types.Logger
+	logger   zerolog.Logger
 }
 
 // NewAdapter creates a new Kafka adapter from configuration.
-func NewAdapter(brokers []string, topic string, groupID string, kafkaConfig map[string]any, logger types.Logger) (*Adapter, error) {
+func NewAdapter(brokers []string, topic string, groupID string, kafkaConfig map[string]any, logger zerolog.Logger) (*Adapter, error) {
 	if len(brokers) == 0 {
 		return nil, fmt.Errorf("at least one broker is required")
 	}
@@ -68,9 +70,7 @@ func (a *Adapter) Connect(ctx context.Context) error {
 
 	a.consumer = consumer
 
-	if a.logger != nil {
-		a.logger.Info("kafka consumer connected", "brokers", fmt.Sprint(a.brokers), "topic", a.topic, "group", a.groupID)
-	}
+	a.logger.Info().Strs("brokers", a.brokers).Str("topic", a.topic).Str("group", a.groupID).Msg("kafka consumer connected")
 
 	return nil
 }
@@ -86,9 +86,7 @@ func (a *Adapter) SubscribeToTopic(ctx context.Context) error {
 		return fmt.Errorf("failed to subscribe to topic %s: %w", a.topic, err)
 	}
 
-	if a.logger != nil {
-		a.logger.Info("subscribed to topic", "topic", a.topic)
-	}
+	a.logger.Info().Str("topic", a.topic).Msg("subscribed to topic")
 
 	return nil
 }
@@ -161,9 +159,7 @@ func (a *Adapter) Close(ctx context.Context) error {
 		return fmt.Errorf("failed to close kafka consumer: %w", err)
 	}
 
-	if a.logger != nil {
-		a.logger.Info("kafka consumer closed")
-	}
+	a.logger.Info().Msg("kafka consumer closed")
 
 	return nil
 }

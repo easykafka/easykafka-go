@@ -8,4 +8,13 @@ go 1.24.3
 // - testcontainers-go: Latest for Kafka integration tests
 // - zerolog: Latest for structured logging across consumer, strategies, and engine
 
-require github.com/confluentinc/confluent-kafka-go/v2 v2.13.0
+require (
+	github.com/confluentinc/confluent-kafka-go/v2 v2.13.0
+	github.com/rs/zerolog v1.33.0
+)
+
+require (
+	github.com/mattn/go-colorable v0.1.13 // indirect
+	github.com/mattn/go-isatty v0.0.20 // indirect
+	golang.org/x/sys v0.25.0 // indirect
+)

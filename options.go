@@ -6,6 +6,7 @@ import (
 	"time"
 
 	"github.com/easykafka/easykafka-go/internal/types"
+	"github.com/rs/zerolog"
 )
 
 // Config holds the consumer configuration derived from functional options.
@@ -22,7 +23,7 @@ type Config struct {
 	ShutdownTimeout time.Duration
 	ErrorStrategy   types.ErrorStrategy
 	KafkaConfig     map[string]any
-	Logger          types.Logger
+	Logger          zerolog.Logger
 }
 
 // ConsumptionMode represents single-message or batch consumption mode.
@@ -41,10 +42,7 @@ func (c *Config) ApplyDefaults() {
 	if c.ShutdownTimeout == 0 {
 		c.ShutdownTimeout = 30 * time.Second
 	}
-	if c.Logger == nil {
-		// Use no-op logger by default
-		c.Logger = &noOpLogger{}
-	}
+
 	if c.Mode == ModeSingleMessage && c.ErrorStrategy == nil {
 		// Default error strategy is skip for single message mode
 		c.ErrorStrategy = &defaultSkipStrategy{logger: c.Logger}
@@ -54,23 +52,13 @@ func (c *Config) ApplyDefaults() {
 	}
 }
 
-// noOpLogger is a minimal logger that discards all messages.
-type noOpLogger struct{}
-
-func (n *noOpLogger) Debug(msg string, keyvals ...any) {}
-func (n *noOpLogger) Info(msg string, keyvals ...any)  {}
-func (n *noOpLogger) Warn(msg string, keyvals ...any)  {}
-func (n *noOpLogger) Error(msg string, keyvals ...any) {}
-
 // defaultSkipStrategy is the default strategy that logs and continues.
 type defaultSkipStrategy struct {
-	logger types.Logger
+	logger zerolog.Logger
 }
 
 func (s *defaultSkipStrategy) HandleError(ctx context.Context, msgs []*types.Message, handlerErr error) error {
-	if s.logger != nil {
-		s.logger.Warn("skipping failed message", "count", len(msgs), "error", handlerErr.Error())
-	}
+	s.logger.Warn().Int("count", len(msgs)).Err(handlerErr).Msg("skipping failed message")
 	return nil // Continue consumption
 }
 
@@ -239,12 +227,9 @@ func WithShutdownTimeout(timeout time.Duration) Option {
 	}
 }
 
-// WithLogger specifies a custom logger. Default is no-op.
-func WithLogger(logger types.Logger) Option {
+// WithLogger specifies a custom zerolog logger. Default uses global log.Logger.
+func WithLogger(logger zerolog.Logger) Option {
 	return func(c *Config) error {
-		if logger == nil {
-			return errors.New("logger cannot be nil")
-		}
 		c.Logger = logger
 		return nil
 	}

@@ -37,14 +37,6 @@ type ErrorStrategy interface {
 	Name() string
 }
 
-// Logger allows users to plug in their own logging implementation.
-type Logger interface {
-	Debug(msg string, keyvals ...any)
-	Info(msg string, keyvals ...any)
-	Warn(msg string, keyvals ...any)
-	Error(msg string, keyvals ...any)
-}
-
 // PayloadEncoding defines how payloads are encoded for retry and DLQ messages.
 type PayloadEncoding string
 
