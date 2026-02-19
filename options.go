@@ -1,11 +1,11 @@
 package easykafka
 
 import (
-	"context"
 	"errors"
 	"time"
 
 	"github.com/easykafka/easykafka-go/internal/types"
+	"github.com/easykafka/easykafka-go/strategy"
 	"github.com/rs/zerolog"
 )
 
@@ -45,25 +45,11 @@ func (c *Config) ApplyDefaults() {
 
 	if c.Mode == ModeSingleMessage && c.ErrorStrategy == nil {
 		// Default error strategy is skip for single message mode
-		c.ErrorStrategy = &defaultSkipStrategy{logger: c.Logger}
+		c.ErrorStrategy = strategy.NewSkipStrategy(c.Logger)
 	}
 	if c.KafkaConfig == nil {
 		c.KafkaConfig = make(map[string]any)
 	}
-}
-
-// defaultSkipStrategy is the default strategy that logs and continues.
-type defaultSkipStrategy struct {
-	logger zerolog.Logger
-}
-
-func (s *defaultSkipStrategy) HandleError(ctx context.Context, msgs []*types.Message, handlerErr error) error {
-	s.logger.Warn().Int("count", len(msgs)).Err(handlerErr).Msg("skipping failed message")
-	return nil // Continue consumption
-}
-
-func (s *defaultSkipStrategy) Name() string {
-	return "default-skip"
 }
 
 // Validate checks that required configuration is set correctly.

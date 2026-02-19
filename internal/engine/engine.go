@@ -106,6 +106,7 @@ func (e *Engine) Start(ctx context.Context) error {
 				e.state = engineStateStopping
 				break
 			}
+			// TODO: review this laters, seems kind of strange to me
 			// Strategy decided to continue, don't commit offset
 			continue
 		}
