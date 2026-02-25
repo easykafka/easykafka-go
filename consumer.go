@@ -5,8 +5,10 @@ import (
 	"errors"
 	"fmt"
 	"sync/atomic"
+	"time"
 
 	"github.com/easykafka/easykafka-go/internal/engine"
+	"github.com/easykafka/easykafka-go/internal/kafka"
 )
 
 // Consumer manages the lifecycle of Kafka message consumption.
@@ -26,6 +28,7 @@ type consumerImpl struct {
 	config Config
 	eng    *engine.Engine
 	state  atomic.Value // State (Created, Running, ShuttingDown, Stopped)
+	cancel context.CancelFunc
 }
 
 // ConsumerState represents the lifecycle state of a consumer.
@@ -76,22 +79,69 @@ func (c *consumerImpl) Start(ctx context.Context) error {
 		return errors.New("consumer already started or stopped")
 	}
 
+	// Create Kafka adapter
+	adapter, err := kafka.NewAdapter(
+		c.config.Brokers,
+		c.config.Topic,
+		c.config.ConsumerGroup,
+		c.config.KafkaConfig,
+		c.config.Logger,
+	)
+	if err != nil {
+		c.state.Store(StateError)
+		return fmt.Errorf("failed to create kafka adapter: %w", err)
+	}
+
+	// Compute poll timeout in milliseconds
+	pollTimeoutMs := int(c.config.PollTimeout / time.Millisecond)
+	if pollTimeoutMs < 1 {
+		pollTimeoutMs = 100
+	}
+
+	// Create the engine
+	c.eng = engine.NewEngine(
+		adapter,
+		c.config.Handler,
+		c.config.ErrorStrategy,
+		c.config.Logger,
+		pollTimeoutMs,
+	)
+
 	c.state.Store(StateRunning)
 
-	// TODO: Initialize engine and start polling
-	return nil
+	// Create a cancellable context for shutdown support
+	engineCtx, cancel := context.WithCancel(ctx)
+	c.cancel = cancel
+
+	// Run the engine (blocks until cancelled or fatal error)
+	err = c.eng.Start(engineCtx)
+
+	c.state.Store(StateStopped)
+
+	return err
 }
 
 // Shutdown gracefully stops the consumer within the configured timeout.
 // Completes in-flight message processing and commits final offsets.
 func (c *consumerImpl) Shutdown(ctx context.Context) error {
-	if c.state.Load().(ConsumerState) != StateRunning {
+	state := c.state.Load().(ConsumerState)
+	if state != StateRunning {
 		return errors.New("consumer is not running")
 	}
 
 	c.state.Store(StateShuttingDown)
 
-	// TODO: Implement graceful shutdown
-	c.state.Store(StateStopped)
+	// Signal the engine to stop
+	if c.eng != nil {
+		if err := c.eng.Stop(ctx); err != nil {
+			return fmt.Errorf("engine stop error: %w", err)
+		}
+	}
+
+	// Cancel the engine context to break the poll loop
+	if c.cancel != nil {
+		c.cancel()
+	}
+
 	return nil
 }

@@ -58,15 +58,15 @@ description: "Task list for Easy Kafka Consumer Library"
 
 ### Tests for User Story 1
 
-- [ ] T017 [P] [US1] Add unit test for engine dispatch/commit flow in tests/unit/engine_dispatch_test.go
-- [ ] T018 [P] [US1] Add integration test for basic consumption in tests/integration/consumer_basic_test.go
+- [x] T017 [P] [US1] Add unit test for engine dispatch/commit flow in tests/unit/engine_dispatch_test.go
+- [x] T018 [P] [US1] Add integration test for basic consumption in tests/integration/consumer_basic_test.go
 
 ### Implementation for User Story 1
 
-- [ ] T019 [US1] Implement Start() to run engine and poll loop in consumer.go
-- [ ] T020 [US1] Implement handler invocation + panic recovery in internal/engine/engine.go
-- [ ] T021 [US1] Implement explicit offset commits on handler success in internal/kafka/adapter.go
-- [ ] T022 [US1] Implement rebalance handling (assign/revoke) in internal/kafka/adapter.go
+- [x] T019 [US1] Implement Start() to run engine and poll loop in consumer.go
+- [x] T020 [US1] Implement handler invocation + panic recovery in internal/engine/engine.go
+- [x] T021 [US1] Implement explicit offset commits on handler success in internal/kafka/adapter.go
+- [x] T022 [US1] Implement rebalance handling (assign/revoke) in internal/kafka/adapter.go
 
 ---
 
