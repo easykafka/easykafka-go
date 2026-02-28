@@ -121,6 +121,16 @@ func (c *consumerImpl) Start(ctx context.Context) error {
 	return err
 }
 
+// GetConfig returns the Config of a Consumer for testing/inspection purposes.
+// Panics if the consumer is not a *consumerImpl.
+func GetConfig(c Consumer) Config {
+	impl, ok := c.(*consumerImpl)
+	if !ok {
+		panic("consumer is not a *consumerImpl")
+	}
+	return impl.config
+}
+
 // Shutdown gracefully stops the consumer within the configured timeout.
 // Completes in-flight message processing and commits final offsets.
 func (c *consumerImpl) Shutdown(ctx context.Context) error {

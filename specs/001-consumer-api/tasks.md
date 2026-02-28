@@ -78,14 +78,14 @@ description: "Task list for Easy Kafka Consumer Library"
 
 ### Tests for User Story 2
 
-- [ ] T023 [P] [US2] Add unit tests for option validation in tests/unit/options_validation_test.go
-- [ ] T024 [P] [US2] Add integration test for KafkaConfig passthrough in tests/integration/config_passthrough_test.go
+- [x] T023 [P] [US2] Add unit tests for option validation in tests/unit/options_validation_test.go
+- [x] T024 [P] [US2] Add integration test for KafkaConfig passthrough in tests/integration/config_passthrough_test.go
 
 ### Implementation for User Story 2
 
-- [ ] T025 [US2] Implement required/optional options and validation errors in options.go
-- [ ] T026 [US2] Wire KafkaConfig passthrough into adapter config in internal/kafka/adapter.go
-- [ ] T027 [US2] Add consumer config defaults (poll/shutdown/logging) in options.go
+- [x] T025 [US2] Implement required/optional options and validation errors in options.go
+- [x] T026 [US2] Wire KafkaConfig passthrough into adapter config in internal/kafka/adapter.go
+- [x] T027 [US2] Add consumer config defaults (poll/shutdown/logging) in options.go
 
 ---
 

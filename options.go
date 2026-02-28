@@ -2,6 +2,7 @@ package easykafka
 
 import (
 	"errors"
+	"fmt"
 	"time"
 
 	"github.com/easykafka/easykafka-go/internal/types"
@@ -96,11 +97,16 @@ func WithTopic(topic string) Option {
 }
 
 // WithBrokers specifies the Kafka broker addresses.
-// Required. Must provide at least one broker.
+// Required. Must provide at least one broker. Empty strings are rejected.
 func WithBrokers(brokers ...string) Option {
 	return func(c *Config) error {
 		if len(brokers) == 0 {
 			return errors.New("at least one broker must be provided")
+		}
+		for _, b := range brokers {
+			if b == "" {
+				return errors.New("broker address cannot be empty")
+			}
 		}
 		c.Brokers = brokers
 		return nil
@@ -221,12 +227,29 @@ func WithLogger(logger zerolog.Logger) Option {
 	}
 }
 
+// managedKafkaKeys are Kafka configuration keys that are managed by the library
+// and cannot be overridden via WithKafkaConfig. These are set automatically
+// based on other functional options (WithBrokers, WithConsumerGroup, etc.).
+var managedKafkaKeys = map[string]string{
+	"bootstrap.servers":  "managed by WithBrokers",
+	"group.id":           "managed by WithConsumerGroup",
+	"enable.auto.commit": "managed by the library for explicit offset control",
+}
+
 // WithKafkaConfig passes advanced configuration to confluent-kafka-go.
 // Use this to set low-level Kafka consumer properties.
+// Keys managed by the library (bootstrap.servers, group.id, enable.auto.commit)
+// cannot be set via this option and will return an error.
 func WithKafkaConfig(config map[string]any) Option {
 	return func(c *Config) error {
 		if config == nil {
 			return errors.New("kafka config cannot be nil")
+		}
+		// Reject managed keys
+		for key := range config {
+			if reason, ok := managedKafkaKeys[key]; ok {
+				return fmt.Errorf("kafka config key %q is managed by the library (%s) and cannot be overridden", key, reason)
+			}
 		}
 		c.KafkaConfig = config
 		return nil
