@@ -9,6 +9,7 @@ import (
 
 	"github.com/easykafka/easykafka-go/internal/engine"
 	"github.com/easykafka/easykafka-go/internal/kafka"
+	"github.com/easykafka/easykafka-go/internal/types"
 )
 
 // Consumer manages the lifecycle of Kafka message consumption.
@@ -79,6 +80,20 @@ func (c *consumerImpl) Start(ctx context.Context) error {
 		return errors.New("consumer already started or stopped")
 	}
 
+	// Initialize error strategy if it implements Initializable (e.g., retry, circuit breaker)
+	if init, ok := c.config.ErrorStrategy.(types.Initializable); ok {
+		initCfg := types.InitConfig{
+			Brokers:       c.config.Brokers,
+			ConsumerGroup: c.config.ConsumerGroup,
+			Handler:       c.config.Handler,
+			Logger:        c.config.Logger,
+		}
+		if err := init.Initialize(initCfg); err != nil {
+			c.state.Store(StateError)
+			return fmt.Errorf("failed to initialize error strategy: %w", err)
+		}
+	}
+
 	// Create Kafka adapter
 	adapter, err := kafka.NewAdapter(
 		c.config.Brokers,
@@ -89,6 +104,10 @@ func (c *consumerImpl) Start(ctx context.Context) error {
 	)
 	if err != nil {
 		c.state.Store(StateError)
+		// Clean up strategy if initialized
+		if init, ok := c.config.ErrorStrategy.(types.Initializable); ok {
+			_ = init.Close()
+		}
 		return fmt.Errorf("failed to create kafka adapter: %w", err)
 	}
 
@@ -115,6 +134,11 @@ func (c *consumerImpl) Start(ctx context.Context) error {
 
 	// Run the engine (blocks until cancelled or fatal error)
 	err = c.eng.Start(engineCtx)
+
+	// Clean up strategy resources
+	if init, ok := c.config.ErrorStrategy.(types.Initializable); ok {
+		_ = init.Close()
+	}
 
 	c.state.Store(StateStopped)
 

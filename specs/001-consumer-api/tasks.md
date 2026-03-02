@@ -97,18 +97,18 @@ description: "Task list for Easy Kafka Consumer Library"
 
 ### Tests for User Story 3
 
-- [ ] T028 [P] [US3] Add unit tests for fail-fast and skip strategies in tests/unit/strategy_basic_test.go
-- [ ] T029 [P] [US3] Add unit tests for retry headers/backoff in tests/unit/strategy_retry_test.go
-- [ ] T030 [P] [US3] Add integration test for retry + DLQ flow in tests/integration/retry_dlq_test.go
-- [ ] T031 [P] [US3] Add integration test for circuit breaker pause/resume in tests/integration/circuit_breaker_test.go
+- [x] T028 [P] [US3] Add unit tests for fail-fast and skip strategies in tests/unit/strategy_basic_test.go
+- [x] T029 [P] [US3] Add unit tests for retry headers/backoff in tests/unit/strategy_retry_test.go
+- [x] T030 [P] [US3] Add integration test for retry + DLQ flow in tests/integration/retry_dlq_test.go
+- [x] T031 [P] [US3] Add integration test for circuit breaker pause/resume in tests/integration/circuit_breaker_test.go
 
 ### Implementation for User Story 3
 
-- [ ] T032 [US3] Implement fail-fast and skip strategies in strategy/skip_failfast.go
-- [ ] T033 [US3] Implement retry strategy with retry/DLQ producers in strategy/retry.go
-- [ ] T034 [US3] Implement retry header encoding helpers in internal/metadata/headers.go
-- [ ] T035 [US3] Implement internal retry consumer for retry topic in internal/kafka/retry_consumer.go
-- [ ] T036 [US3] Implement circuit-breaker strategy state machine in strategy/circuit_breaker.go
+- [x] T032 [US3] Implement fail-fast and skip strategies in strategy/skip_failfast.go
+- [x] T033 [US3] Implement retry strategy with retry/DLQ producers in strategy/retry.go
+- [x] T034 [US3] Implement retry header encoding helpers in internal/metadata/headers.go
+- [x] T035 [US3] Implement internal retry consumer for retry topic in internal/kafka/retry_consumer.go
+- [x] T036 [US3] Implement circuit-breaker strategy state machine in strategy/circuit_breaker.go
 
 ---
 

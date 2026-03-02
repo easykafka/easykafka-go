@@ -13,6 +13,8 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
+// todo: when running this suite's tests one by one they all pass, when running suite as a whole, some will always fail. investigate why is that
+
 // TestKafkaConfigPassthrough verifies that custom KafkaConfig values are passed
 // through to confluent-kafka-go and affect consumer behavior.
 func TestKafkaConfigPassthrough(t *testing.T) {

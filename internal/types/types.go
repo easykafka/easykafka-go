@@ -3,6 +3,8 @@ package types
 import (
 	"context"
 	"time"
+
+	"github.com/rs/zerolog"
 )
 
 // Handler processes a single message payload with context for cancellation support.
@@ -35,6 +37,37 @@ type ErrorStrategy interface {
 
 	// Name returns strategy name for logging/debugging.
 	Name() string
+}
+
+// Initializable is implemented by error strategies that need access to
+// consumer configuration (e.g., broker addresses) before they can operate.
+// Consumer.Start() calls Initialize() if the strategy implements this interface.
+type Initializable interface {
+	Initialize(config InitConfig) error
+	Close() error
+}
+
+// InitConfig provides consumer configuration to strategies during initialization.
+type InitConfig struct {
+	Brokers       []string
+	ConsumerGroup string
+	Handler       Handler
+	Logger        zerolog.Logger
+}
+
+// KafkaProducer abstracts producing messages to Kafka topics.
+type KafkaProducer interface {
+	Produce(ctx context.Context, msg *ProduceMessage) error
+	Flush(timeoutMs int) int
+	Close()
+}
+
+// ProduceMessage represents a message to be produced to Kafka.
+type ProduceMessage struct {
+	Topic   string
+	Key     []byte
+	Value   []byte
+	Headers map[string]string
 }
 
 // PayloadEncoding defines how payloads are encoded for retry and DLQ messages.

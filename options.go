@@ -158,7 +158,6 @@ func WithBatchHandler(handler BatchHandler) Option {
 }
 
 // WithErrorStrategy specifies how to handle message processing failures.
-// Default: Skip strategy (log and continue).
 func WithErrorStrategy(strategy types.ErrorStrategy) Option {
 	return func(c *Config) error {
 		if strategy == nil {

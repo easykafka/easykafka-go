@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"testing"
+	"time"
 
 	kfk "github.com/confluentinc/confluent-kafka-go/v2/kafka"
 	"github.com/testcontainers/testcontainers-go/modules/kafka"
@@ -116,6 +117,63 @@ func (k *KafkaTestCluster) ProduceMessages(ctx context.Context, t *testing.T, to
 	}
 
 	t.Logf("Produced %d messages to topic %s", len(messages), topic)
+}
+
+// ConsumeMessages reads up to expectedCount messages from a topic within a timeout.
+// Returns the raw Kafka messages read from the topic.
+func (k *KafkaTestCluster) ConsumeMessages(ctx context.Context, t *testing.T, topic, group string, expectedCount int, timeout time.Duration) []*kfk.Message {
+	t.Helper()
+
+	consumer, err := kfk.NewConsumer(&kfk.ConfigMap{
+		"bootstrap.servers":  k.Brokers[0],
+		"group.id":           group,
+		"auto.offset.reset":  "earliest",
+		"enable.auto.commit": "false",
+	})
+	if err != nil {
+		t.Fatalf("failed to create consumer for topic %s: %v", topic, err)
+	}
+	defer consumer.Close()
+
+	if err := consumer.Subscribe(topic, nil); err != nil {
+		t.Fatalf("failed to subscribe to topic %s: %v", topic, err)
+	}
+
+	var messages []*kfk.Message
+	deadline := time.After(timeout)
+
+	for len(messages) < expectedCount {
+		select {
+		case <-deadline:
+			t.Logf("ConsumeMessages: timed out after %v, got %d of %d messages from %s", timeout, len(messages), expectedCount, topic)
+			return messages
+		default:
+			ev := consumer.Poll(200)
+			if ev == nil {
+				continue
+			}
+			switch m := ev.(type) {
+			case *kfk.Message:
+				messages = append(messages, m)
+				t.Logf("ConsumeMessages: received message %d from %s [%d] @ %v",
+					len(messages), topic, m.TopicPartition.Partition, m.TopicPartition.Offset)
+			case kfk.Error:
+				t.Logf("ConsumeMessages: kafka error: %v", m)
+			}
+		}
+	}
+
+	return messages
+}
+
+// GetHeader extracts a header value from a Kafka message by key.
+func GetHeader(msg *kfk.Message, key string) string {
+	for _, h := range msg.Headers {
+		if h.Key == key {
+			return string(h.Value)
+		}
+	}
+	return ""
 }
 
 // UniqueTopicName generates a unique topic name for a test.
