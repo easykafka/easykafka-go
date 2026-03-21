@@ -203,7 +203,7 @@ func TestEngineDispatchSuccess(t *testing.T) {
 }
 
 // TestEngineDispatchHandlerError verifies the error strategy is called on handler failure
-// and offset is NOT committed.
+// and offset is committed even for failed message.
 func TestEngineDispatchHandlerError(t *testing.T) {
 	handlerErr := errors.New("processing failed")
 
@@ -233,9 +233,10 @@ func TestEngineDispatchHandlerError(t *testing.T) {
 
 	// Verify only good messages had their offsets committed
 	commits := client.getCommittedOffsets()
-	require.Len(t, commits, 2)
+	require.Len(t, commits, 3)
 	assert.Equal(t, int64(0), commits[0].Offset) // good-msg
-	assert.Equal(t, int64(2), commits[1].Offset) // good-msg-2
+	assert.Equal(t, int64(1), commits[1].Offset) // bad-msg
+	assert.Equal(t, int64(2), commits[2].Offset) // good-msg-2
 
 	// Verify strategy was called once with the bad message
 	calls := strat.getHandleCalls()
@@ -313,11 +314,12 @@ func TestEngineDispatchPanicRecovery(t *testing.T) {
 	assert.Contains(t, calls[0].HandlerErr.Error(), "handler panic")
 	assert.Contains(t, calls[0].HandlerErr.Error(), "unexpected crash!")
 
-	// Verify only non-panic messages were committed
+	// Verify all messages were committed (even failed ones since error strategy does not commit by itself!)
 	commits := client.getCommittedOffsets()
-	require.Len(t, commits, 2)
+	require.Len(t, commits, 3)
 	assert.Equal(t, int64(0), commits[0].Offset)
-	assert.Equal(t, int64(2), commits[1].Offset)
+	assert.Equal(t, int64(1), commits[1].Offset)
+	assert.Equal(t, int64(2), commits[2].Offset)
 }
 
 // TestEngineContextCancellation verifies the engine exits cleanly on context cancellation.
