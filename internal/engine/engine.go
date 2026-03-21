@@ -265,14 +265,28 @@ func (e *Engine) dispatchBatch(ctx context.Context, msgs []*types.Message) error
 		}
 	}
 
-	// todo: this is wrong! we might receive messages from different paritions, we must commit here highest offset for each partition
-	// Commit the highest offset in the batch atomically
-	last := msgs[len(msgs)-1]
-	if err := e.adapter.CommitOffset(last.Topic, last.Partition, last.Offset); err != nil {
-		e.logger.Error().Err(err).
-			Int64("offset", last.Offset).
-			Int32("partition", last.Partition).
-			Msg("failed to commit batch offset")
+	// Commit the highest offset per topic-partition in the batch.
+	// A batch may contain messages from multiple partitions, so we
+	// find the maximum offset for each (topic, partition) pair and
+	// commit each one individually.
+	type tpKey struct {
+		Topic     string
+		Partition int32
+	}
+	highest := make(map[tpKey]int64)
+	for _, m := range msgs {
+		key := tpKey{Topic: m.Topic, Partition: m.Partition}
+		if off, ok := highest[key]; !ok || m.Offset > off {
+			highest[key] = m.Offset
+		}
+	}
+	for key, offset := range highest {
+		if err := e.adapter.CommitOffset(key.Topic, key.Partition, offset); err != nil {
+			e.logger.Error().Err(err).
+				Int64("offset", offset).
+				Int32("partition", key.Partition).
+				Msg("failed to commit batch offset")
+		}
 	}
 
 	return nil

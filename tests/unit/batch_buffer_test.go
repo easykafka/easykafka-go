@@ -350,3 +350,84 @@ func TestBatchEngine_CommitsAfterStrategySuccess(t *testing.T) {
 	require.Len(t, commits, 1)
 	assert.Equal(t, int64(2), commits[0].Offset)
 }
+
+// TestBatchEngine_CommitsHighestOffsetPerPartition verifies that when a batch
+// contains messages from multiple partitions, the engine commits the highest
+// offset for each partition independently.
+func TestBatchEngine_CommitsHighestOffsetPerPartition(t *testing.T) {
+	batchHandler := func(ctx context.Context, payloads [][]byte) error {
+		return nil
+	}
+
+	// Batch with interleaved messages from 3 partitions
+	messages := []*types.Message{
+		newTestMessage("topic", 0, 0, "p0-a"),
+		newTestMessage("topic", 1, 0, "p1-a"),
+		newTestMessage("topic", 2, 0, "p2-a"),
+		newTestMessage("topic", 0, 1, "p0-b"),
+		newTestMessage("topic", 1, 1, "p1-b"),
+		newTestMessage("topic", 0, 2, "p0-c"),
+	}
+
+	client := &mockKafkaClient{messages: messages}
+	strat := &mockStrategy{}
+
+	eng := engine.NewBatchEngine(client, batchHandler, strat, testLogger(), 100, 6, 5*time.Second)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+
+	err := eng.Start(ctx)
+	require.NoError(t, err)
+
+	commits := client.getCommittedOffsets()
+	// Should have exactly 3 commits — one per partition
+	require.Len(t, commits, 3)
+
+	// Build a map of partition -> committed offset for easy assertion
+	commitMap := make(map[int32]int64)
+	for _, c := range commits {
+		commitMap[c.Partition] = c.Offset
+	}
+
+	assert.Equal(t, int64(2), commitMap[0], "partition 0 should commit highest offset 2")
+	assert.Equal(t, int64(1), commitMap[1], "partition 1 should commit highest offset 1")
+	assert.Equal(t, int64(0), commitMap[2], "partition 2 should commit highest offset 0")
+}
+
+// TestBatchEngine_CommitsHighestOffsetPerPartitionOnError verifies per-partition
+// commits work correctly even when the handler fails and the strategy continues.
+func TestBatchEngine_CommitsHighestOffsetPerPartitionOnError(t *testing.T) {
+	batchHandler := func(ctx context.Context, payloads [][]byte) error {
+		return errors.New("handler error")
+	}
+
+	messages := []*types.Message{
+		newTestMessage("topic", 0, 5, "p0-x"),
+		newTestMessage("topic", 1, 3, "p1-x"),
+		newTestMessage("topic", 0, 10, "p0-y"),
+		newTestMessage("topic", 1, 7, "p1-y"),
+	}
+
+	client := &mockKafkaClient{messages: messages}
+	strat := &mockStrategy{} // returns nil => continue
+
+	eng := engine.NewBatchEngine(client, batchHandler, strat, testLogger(), 100, 4, 5*time.Second)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+
+	err := eng.Start(ctx)
+	require.NoError(t, err)
+
+	commits := client.getCommittedOffsets()
+	require.Len(t, commits, 2)
+
+	commitMap := make(map[int32]int64)
+	for _, c := range commits {
+		commitMap[c.Partition] = c.Offset
+	}
+
+	assert.Equal(t, int64(10), commitMap[0], "partition 0 should commit highest offset 10")
+	assert.Equal(t, int64(7), commitMap[1], "partition 1 should commit highest offset 7")
+}
