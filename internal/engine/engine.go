@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"runtime/debug"
+	"time"
 
 	"github.com/easykafka/easykafka-go/internal/metadata"
 	"github.com/easykafka/easykafka-go/internal/types"
@@ -21,12 +22,18 @@ type KafkaClient interface {
 
 // Engine manages the Kafka polling loop and message dispatch.
 type Engine struct {
-	adapter     KafkaClient
-	handler     types.Handler
-	strategy    types.ErrorStrategy
-	logger      zerolog.Logger
-	pollTimeout int
-	state       engineState
+	adapter      KafkaClient
+	handler      types.Handler
+	batchHandler types.BatchHandler
+	strategy     types.ErrorStrategy
+	logger       zerolog.Logger
+	pollTimeout  int
+	state        engineState
+
+	// Batch mode fields (nil/zero when in single-message mode)
+	batchBuffer  *BatchBuffer
+	batchSize    int
+	batchTimeout time.Duration
 }
 
 type engineState int
@@ -38,7 +45,7 @@ const (
 	engineStateStopped
 )
 
-// NewEngine creates a new Engine instance.
+// NewEngine creates a new Engine instance for single-message mode.
 func NewEngine(
 	adapter KafkaClient,
 	handler types.Handler,
@@ -53,6 +60,28 @@ func NewEngine(
 		logger:      logger,
 		pollTimeout: pollTimeoutMs,
 		state:       engineStateCreated,
+	}
+}
+
+// NewBatchEngine creates a new Engine instance for batch mode.
+func NewBatchEngine(
+	adapter KafkaClient,
+	batchHandler types.BatchHandler,
+	strategy types.ErrorStrategy,
+	logger zerolog.Logger,
+	pollTimeoutMs int,
+	batchSize int,
+	batchTimeout time.Duration,
+) *Engine {
+	return &Engine{
+		adapter:      adapter,
+		batchHandler: batchHandler,
+		strategy:     strategy,
+		logger:       logger,
+		pollTimeout:  pollTimeoutMs,
+		state:        engineStateCreated,
+		batchSize:    batchSize,
+		batchTimeout: batchTimeout,
 	}
 }
 
@@ -78,6 +107,28 @@ func (e *Engine) Start(ctx context.Context) error {
 		return fmt.Errorf("failed to subscribe: %w", err)
 	}
 
+	var loopErr error
+
+	if e.batchHandler != nil {
+		loopErr = e.runBatchLoop(ctx)
+	} else {
+		loopErr = e.runSingleLoop(ctx)
+	}
+
+	// Cleanup
+	if err := e.adapter.Close(ctx); err != nil {
+		e.logger.Error().Err(err).Msg("error closing adapter")
+	}
+
+	e.state = engineStateStopped
+
+	e.logger.Info().Msg("engine stopped")
+
+	return loopErr
+}
+
+// runSingleLoop runs the single-message polling loop.
+func (e *Engine) runSingleLoop(ctx context.Context) error {
 	var loopErr error
 
 	// Main polling loop
@@ -135,16 +186,113 @@ func (e *Engine) Start(ctx context.Context) error {
 		}
 	}
 
-	// Cleanup
-	if err := e.adapter.Close(ctx); err != nil {
-		e.logger.Error().Err(err).Msg("error closing adapter")
+	return loopErr
+}
+
+// runBatchLoop runs the batch-mode polling loop.
+// Messages are accumulated in a buffer and dispatched when the batch is
+// full or the batch timeout expires. Offsets are committed atomically
+// for the highest offset in each batch.
+func (e *Engine) runBatchLoop(ctx context.Context) error {
+	buf := NewBatchBuffer(e.batchSize, e.batchTimeout)
+	var loopErr error
+
+	for e.state == engineStateRunning {
+		select {
+		case <-ctx.Done():
+			e.state = engineStateStopping
+			// Flush any remaining buffered messages before stopping
+			if msgs := buf.Flush(); msgs != nil {
+				if err := e.dispatchBatch(ctx, msgs); err != nil {
+					loopErr = err
+				}
+			}
+			continue
+		default:
+		}
+
+		if e.state != engineStateRunning {
+			break
+		}
+
+		// Poll for messages
+		msg, err := e.adapter.Poll(ctx, e.pollTimeout)
+		if err != nil {
+			e.logger.Error().Err(err).Msg("fatal polling error")
+			loopErr = fmt.Errorf("polling error: %w", err)
+			e.state = engineStateStopping
+			break
+		}
+
+		if msg != nil {
+			buf.Add(msg)
+		}
+
+		// Dispatch batch when full or timed out
+		if buf.Ready() || buf.TimedOut() {
+			msgs := buf.Flush()
+			if msgs != nil {
+				if err := e.dispatchBatch(ctx, msgs); err != nil {
+					loopErr = err
+					e.state = engineStateStopping
+					break
+				}
+			}
+		}
 	}
 
-	e.state = engineStateStopped
-
-	e.logger.Info().Msg("engine stopped")
-
 	return loopErr
+}
+
+// dispatchBatch calls the batch handler with panic recovery,
+// applies the error strategy on failure, and commits offsets atomically.
+func (e *Engine) dispatchBatch(ctx context.Context, msgs []*types.Message) error {
+	// Build payloads slice
+	payloads := make([][]byte, len(msgs))
+	for i, m := range msgs {
+		payloads[i] = m.Payload
+	}
+
+	// Call batch handler with panic recovery
+	handlerErr := e.invokeBatchHandler(ctx, payloads)
+
+	if handlerErr != nil {
+		// Apply error strategy to the entire batch
+		strategyErr := e.strategy.HandleError(ctx, msgs, handlerErr)
+		if strategyErr != nil {
+			e.logger.Error().Err(strategyErr).Msg("error strategy returned fatal error, stopping")
+			return fmt.Errorf("error strategy: %w", strategyErr)
+		}
+	}
+
+	// todo: this is wrong! we might receive messages from different paritions, we must commit here highest offset for each partition
+	// Commit the highest offset in the batch atomically
+	last := msgs[len(msgs)-1]
+	if err := e.adapter.CommitOffset(last.Topic, last.Partition, last.Offset); err != nil {
+		e.logger.Error().Err(err).
+			Int64("offset", last.Offset).
+			Int32("partition", last.Partition).
+			Msg("failed to commit batch offset")
+	}
+
+	return nil
+}
+
+// invokeBatchHandler calls the batch handler with panic recovery.
+func (e *Engine) invokeBatchHandler(ctx context.Context, payloads [][]byte) (err error) {
+	defer func() {
+		if r := recover(); r != nil {
+			stack := string(debug.Stack())
+			err = fmt.Errorf("handler panic: %v", r)
+			e.logger.Error().
+				Err(err).
+				Str("stack", stack).
+				Int("batch_size", len(payloads)).
+				Msg("batch handler panic recovered")
+		}
+	}()
+
+	return e.batchHandler(ctx, payloads)
 }
 
 // dispatchMessage calls the handler with panic recovery.

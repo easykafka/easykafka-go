@@ -117,14 +117,26 @@ func (c *consumerImpl) Start(ctx context.Context) error {
 		pollTimeoutMs = 100
 	}
 
-	// Create the engine
-	c.eng = engine.NewEngine(
-		adapter,
-		c.config.Handler,
-		c.config.ErrorStrategy,
-		c.config.Logger,
-		pollTimeoutMs,
-	)
+	// Create the engine based on consumption mode
+	if c.config.Mode == ModeBatch {
+		c.eng = engine.NewBatchEngine(
+			adapter,
+			c.config.BatchHandler,
+			c.config.ErrorStrategy,
+			c.config.Logger,
+			pollTimeoutMs,
+			c.config.BatchSize,
+			c.config.BatchTimeout,
+		)
+	} else {
+		c.eng = engine.NewEngine(
+			adapter,
+			c.config.Handler,
+			c.config.ErrorStrategy,
+			c.config.Logger,
+			pollTimeoutMs,
+		)
+	}
 
 	c.state.Store(StateRunning)
 

@@ -48,6 +48,10 @@ func (c *Config) ApplyDefaults() {
 		// Default error strategy is skip for single message mode
 		c.ErrorStrategy = strategy.NewSkipStrategy(c.Logger)
 	}
+	if c.Mode == ModeBatch && c.ErrorStrategy == nil {
+		// Default error strategy is skip for batch mode
+		c.ErrorStrategy = strategy.NewSkipStrategy(c.Logger)
+	}
 	if c.KafkaConfig == nil {
 		c.KafkaConfig = make(map[string]any)
 	}

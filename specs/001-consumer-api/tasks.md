@@ -120,13 +120,13 @@ description: "Task list for Easy Kafka Consumer Library"
 
 ### Tests for User Story 4
 
-- [ ] T037 [P] [US4] Add unit tests for batch buffer behavior in tests/unit/batch_buffer_test.go
-- [ ] T038 [P] [US4] Add integration test for batch size/timeout in tests/integration/batch_processing_test.go
+- [x] T037 [P] [US4] Add unit tests for batch buffer behavior in tests/unit/batch_buffer_test.go
+- [x] T038 [P] [US4] Add integration test for batch size/timeout in tests/integration/batch_processing_test.go
 
 ### Implementation for User Story 4
 
-- [ ] T039 [US4] Implement batch buffer and timers in internal/engine/batch.go
-- [ ] T040 [US4] Wire batch mode execution and atomic commit in internal/engine/engine.go
+- [x] T039 [US4] Implement batch buffer and timers in internal/engine/batch.go
+- [x] T040 [US4] Wire batch mode execution and atomic commit in internal/engine/engine.go
 
 ---
 
