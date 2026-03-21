@@ -123,13 +123,11 @@ func (e *Engine) Start(ctx context.Context) error {
 				e.state = engineStateStopping
 				break
 			}
-			// Strategy handled the error (e.g., skip) — do NOT commit offset
-			// TODO: is this correct? I don't think so, we should commit
-			continue
 		}
 
-		// Handler succeeded — commit the offset
+		// (Handler succeeded) or (handler failed and error strategy succeeded) => commit the offset
 		if err := e.adapter.CommitOffset(msg.Topic, msg.Partition, msg.Offset); err != nil {
+			// todo: can we afford to continue if offset is not commited?
 			e.logger.Error().Err(err).
 				Int64("offset", msg.Offset).
 				Int32("partition", msg.Partition).
