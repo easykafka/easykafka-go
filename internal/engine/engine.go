@@ -30,6 +30,9 @@ type Engine struct {
 	pollTimeout  int
 	state        engineState
 
+	// done is closed when the engine has fully stopped (poll loop exited, adapter closed).
+	done chan struct{}
+
 	// Batch mode fields (nil/zero when in single-message mode)
 	batchBuffer  *BatchBuffer
 	batchSize    int
@@ -60,6 +63,7 @@ func NewEngine(
 		logger:      logger,
 		pollTimeout: pollTimeoutMs,
 		state:       engineStateCreated,
+		done:        make(chan struct{}),
 	}
 }
 
@@ -80,6 +84,7 @@ func NewBatchEngine(
 		logger:       logger,
 		pollTimeout:  pollTimeoutMs,
 		state:        engineStateCreated,
+		done:         make(chan struct{}),
 		batchSize:    batchSize,
 		batchTimeout: batchTimeout,
 	}
@@ -121,6 +126,7 @@ func (e *Engine) Start(ctx context.Context) error {
 	}
 
 	e.state = engineStateStopped
+	close(e.done)
 
 	e.logger.Info().Msg("engine stopped")
 
@@ -328,10 +334,30 @@ func (e *Engine) dispatchMessage(ctx context.Context, msg *types.Message) (err e
 	return e.handler(ctx, msg.Payload)
 }
 
-// Stop gracefully stops the engine.
+// Stop gracefully stops the engine by transitioning to stopping state.
+// Returns error if the engine is not currently running.
 func (e *Engine) Stop(ctx context.Context) error {
-	if e.state == engineStateRunning {
-		e.state = engineStateStopping
+	if e.state != engineStateRunning {
+		return fmt.Errorf("engine is not running (state: %d)", e.state)
 	}
+	e.state = engineStateStopping
 	return nil
+}
+
+// WaitForDone blocks until the engine has fully stopped or the context expires.
+// Returns nil if the engine stopped cleanly, or ctx.Err() if the deadline/cancellation
+// fires before the engine finishes.
+func (e *Engine) WaitForDone(ctx context.Context) error {
+	select {
+	case <-e.done:
+		return nil
+	case <-ctx.Done():
+		return fmt.Errorf("shutdown timeout: %w", ctx.Err())
+	}
+}
+
+// Done returns a channel that is closed when the engine has fully stopped.
+// Useful for callers that need to select on engine completion.
+func (e *Engine) Done() <-chan struct{} {
+	return e.done
 }

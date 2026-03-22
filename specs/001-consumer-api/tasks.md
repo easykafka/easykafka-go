@@ -138,13 +138,13 @@ description: "Task list for Easy Kafka Consumer Library"
 
 ### Tests for User Story 5
 
-- [ ] T041 [P] [US5] Add unit tests for shutdown timeout logic in tests/unit/shutdown_test.go
-- [ ] T042 [P] [US5] Add integration test for graceful shutdown in tests/integration/graceful_shutdown_test.go
+- [x] T041 [P] [US5] Add unit tests for shutdown timeout logic in tests/unit/shutdown_test.go
+- [x] T042 [P] [US5] Add integration test for graceful shutdown in tests/integration/graceful_shutdown_test.go
 
 ### Implementation for User Story 5
 
-- [ ] T043 [US5] Implement Shutdown() orchestration in consumer.go
-- [ ] T044 [US5] Implement engine shutdown coordination and context cancellation in internal/engine/shutdown.go
+- [x] T043 [US5] Implement Shutdown() orchestration in consumer.go
+- [x] T044 [US5] Implement engine shutdown coordination and context cancellation in internal/engine/shutdown.go
 
 ---
 
