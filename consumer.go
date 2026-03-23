@@ -80,6 +80,19 @@ func (c *consumerImpl) Start(ctx context.Context) error {
 		return errors.New("consumer already started or stopped")
 	}
 
+	c.config.Logger.Info().
+		Str("topic", c.config.Topic).
+		Strs("brokers", c.config.Brokers).
+		Str("group", c.config.ConsumerGroup).
+		Str("mode", string(c.config.Mode)).
+		Str("error_strategy", c.config.ErrorStrategy.Name()).
+		Msg("consumer starting")
+
+	// Wire logger into error strategy if it supports it (FR-045)
+	if la, ok := c.config.ErrorStrategy.(types.LoggerAware); ok {
+		la.SetLogger(c.config.Logger)
+	}
+
 	// Initialize error strategy if it implements Initializable (e.g., retry, circuit breaker)
 	if init, ok := c.config.ErrorStrategy.(types.Initializable); ok {
 		initCfg := types.InitConfig{
@@ -139,6 +152,7 @@ func (c *consumerImpl) Start(ctx context.Context) error {
 	}
 
 	c.state.Store(StateRunning)
+	c.config.Logger.Info().Msg("consumer running")
 
 	// Create a cancellable context for shutdown support
 	engineCtx, cancel := context.WithCancel(ctx)
@@ -153,6 +167,7 @@ func (c *consumerImpl) Start(ctx context.Context) error {
 	}
 
 	c.state.Store(StateStopped)
+	c.config.Logger.Info().Err(err).Msg("consumer stopped")
 
 	return err
 }
@@ -178,6 +193,7 @@ func (c *consumerImpl) Shutdown(ctx context.Context) error {
 	}
 
 	c.state.Store(StateShuttingDown)
+	c.config.Logger.Info().Msg("consumer shutdown initiated")
 
 	// Signal the engine to stop fetching new messages (FR-036)
 	if c.eng != nil {
@@ -197,9 +213,11 @@ func (c *consumerImpl) Shutdown(ctx context.Context) error {
 		defer waitCancel()
 
 		if err := c.eng.WaitForDone(waitCtx); err != nil {
+			c.config.Logger.Error().Err(err).Dur("timeout", c.config.ShutdownTimeout).Msg("consumer shutdown timed out")
 			return fmt.Errorf("shutdown timeout: %w", err)
 		}
 	}
 
+	c.config.Logger.Info().Msg("consumer shutdown complete")
 	return nil
 }

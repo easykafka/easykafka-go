@@ -176,6 +176,11 @@ func NewRetryStrategyWithProducers(cfg RetryConfig, retryProducer, dlqProducer t
 	}
 }
 
+// SetLogger sets the logger for the retry strategy.
+func (r *RetryStrategy) SetLogger(logger zerolog.Logger) {
+	r.logger = logger
+}
+
 // Initialize creates Kafka producers using broker addresses from the consumer.
 func (r *RetryStrategy) Initialize(config types.InitConfig) error {
 	r.logger = config.Logger

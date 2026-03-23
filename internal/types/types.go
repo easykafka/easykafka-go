@@ -55,6 +55,13 @@ type InitConfig struct {
 	Logger        zerolog.Logger
 }
 
+// LoggerAware can be implemented by error strategies that accept a logger
+// after construction. The consumer wires the configured logger into strategies
+// implementing this interface before starting the engine (FR-045).
+type LoggerAware interface {
+	SetLogger(zerolog.Logger)
+}
+
 // KafkaProducer abstracts producing messages to Kafka topics.
 type KafkaProducer interface {
 	Produce(ctx context.Context, msg *ProduceMessage) error

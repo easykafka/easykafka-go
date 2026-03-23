@@ -140,6 +140,11 @@ func NewCircuitBreakerStrategy(opts ...CircuitBreakerOption) (*CircuitBreakerStr
 	}, nil
 }
 
+// SetLogger sets the logger for the circuit breaker strategy.
+func (cb *CircuitBreakerStrategy) SetLogger(logger zerolog.Logger) {
+	cb.logger = logger
+}
+
 // Initialize sets up the circuit breaker and its underlying retry strategy.
 func (cb *CircuitBreakerStrategy) Initialize(config types.InitConfig) error {
 	cb.logger = config.Logger

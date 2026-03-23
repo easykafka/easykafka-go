@@ -167,13 +167,13 @@ description: "Task list for Easy Kafka Consumer Library"
 - [x] T049 Add unit tests for offset commit guard logic in tests/unit/offset_manager_test.go
 - [x] T050 Implement offset commit prevention for failures (except skip strategy) in internal/engine/offset_manager.go
 
-NOTE: we don't need this to be implemented. Error strategy comits the offsets if error handler succeeds. If error handler fails, engine stops.
+NOTE: we don't need this to be implemented. Error strategy commits the offsets if error handler succeeds. If error handler fails, engine stops.
 
 ### FR-045: Lifecycle & Error Logging
 
-- [ ] T051 [P] Add structured logging for startup/shutdown/rebalance events in consumer.go using zerolog
-- [ ] T052 [P] Add detailed error logging in strategy implementations (retry exhaustion, circuit breaker state changes) in strategy/*.go
-- [ ] T053 [P] Wire logger configuration option throughout consumer and engine in internal/engine/engine.go
+- [x] T051 [P] Add structured logging for startup/shutdown/rebalance events in consumer.go using zerolog
+- [x] T052 [P] Add detailed error logging in strategy implementations (retry exhaustion, circuit breaker state changes) in strategy/*.go
+- [x] T053 [P] Wire logger configuration option throughout consumer and engine in internal/engine/engine.go
 
 ### Phase 8 Polish Tasks
 
