@@ -164,8 +164,10 @@ description: "Task list for Easy Kafka Consumer Library"
 
 ### FR-044: Offset Commit Protection for Failed Messages
 
-- [ ] T049 Add unit tests for offset commit guard logic in tests/unit/offset_manager_test.go
-- [ ] T050 Implement offset commit prevention for failures (except skip strategy) in internal/engine/offset_manager.go
+- [x] T049 Add unit tests for offset commit guard logic in tests/unit/offset_manager_test.go
+- [x] T050 Implement offset commit prevention for failures (except skip strategy) in internal/engine/offset_manager.go
+
+NOTE: we don't need this to be implemented. Error strategy comits the offsets if error handler succeeds. If error handler fails, engine stops.
 
 ### FR-045: Lifecycle & Error Logging
 
