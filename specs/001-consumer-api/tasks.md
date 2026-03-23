@@ -159,8 +159,8 @@ description: "Task list for Easy Kafka Consumer Library"
 
 ### FR-043: At-Least-Once Delivery Validation
 
-- [ ] T047 Add end-to-end test verifying at-least-once semantics (messages may repeat, never lost) in tests/integration/at_least_once_test.go
-- [ ] T048 Add test cases for rebalance scenarios ensuring duplicate processing is acceptable in tests/integration/rebalance_test.go
+- [x] T047 Add end-to-end test verifying at-least-once semantics (messages may repeat, never lost) in tests/integration/at_least_once_test.go
+- [x] T048 Add test cases for rebalance scenarios ensuring duplicate processing is acceptable in tests/integration/rebalance_test.go
 
 ### FR-044: Offset Commit Protection for Failed Messages
 
