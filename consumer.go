@@ -1,3 +1,63 @@
+// Package easykafka provides a simplified, handler-based Kafka consumer library
+// built on top of confluent-kafka-go.
+//
+// It exposes a minimal public API: create a Consumer with functional options,
+// supply a message handler, and call Start. The library manages polling, offset
+// commits, rebalancing, and error handling internally so callers can focus on
+// business logic.
+//
+// # Quick Start
+//
+//	consumer, err := easykafka.New(
+//	    easykafka.WithTopic("orders"),
+//	    easykafka.WithBrokers("localhost:9092"),
+//	    easykafka.WithConsumerGroup("order-processors"),
+//	    easykafka.WithHandler(func(ctx context.Context, payload []byte) error {
+//	        fmt.Printf("received: %s\n", payload)
+//	        return nil
+//	    }),
+//	)
+//	if err != nil {
+//	    log.Fatal(err)
+//	}
+//	if err := consumer.Start(ctx); err != nil {
+//	    log.Fatal(err)
+//	}
+//
+// # Batch Processing
+//
+// For high-throughput scenarios, use WithBatchHandler to process multiple
+// messages at once:
+//
+//	consumer, _ := easykafka.New(
+//	    easykafka.WithTopic("events"),
+//	    easykafka.WithBrokers("localhost:9092"),
+//	    easykafka.WithConsumerGroup("event-processors"),
+//	    easykafka.WithBatchHandler(func(ctx context.Context, payloads [][]byte) error {
+//	        return bulkInsert(ctx, payloads)
+//	    }),
+//	    easykafka.WithBatchSize(100),
+//	    easykafka.WithBatchTimeout(5*time.Second),
+//	)
+//
+// # Error Strategies
+//
+// Pluggable error strategies control what happens when a handler returns an
+// error:
+//
+//   - [NewFailFastStrategy]: stops the consumer immediately (default).
+//   - [NewSkipStrategy]: logs the error and continues.
+//   - [NewRetryStrategy]: retries via a Kafka retry topic with exponential
+//     backoff, then routes to a dead-letter queue (DLQ).
+//   - [NewCircuitBreakerStrategy]: wraps retry with pause/resume behaviour to
+//     protect downstream services.
+//
+// # Graceful Shutdown
+//
+// Cancel the context passed to Start, or call Shutdown to allow in-flight
+// messages to complete within the configured timeout:
+//
+//	consumer.Shutdown(ctx)
 package easykafka
 
 import (

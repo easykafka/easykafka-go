@@ -177,9 +177,9 @@ NOTE: we don't need this to be implemented. Error strategy commits the offsets i
 
 ### Phase 8 Polish Tasks
 
-- [ ] T054 [P] Add package-level documentation and examples in consumer.go
-- [ ] T055 [P] Update README with quickstart and strategy overview in README.md
-- [ ] T056 [P] Add integration test helper for Kafka container reuse in tests/integration/kafka_test_helper.go
+- [x] T054 [P] Add package-level documentation and examples in consumer.go
+- [x] T055 [P] Update README with quickstart and strategy overview in README.md
+- [x] T056 [P] Add integration test helper for Kafka container reuse in tests/integration/kafka_test_helper.go
 
 ---
 
