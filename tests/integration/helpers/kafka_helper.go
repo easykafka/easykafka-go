@@ -3,10 +3,14 @@ package helpers
 import (
 	"context"
 	"fmt"
+	"strconv"
 	"testing"
 	"time"
 
 	kfk "github.com/confluentinc/confluent-kafka-go/v2/kafka"
+	"github.com/docker/docker/api/types/container"
+	"github.com/docker/go-connections/nat"
+	"github.com/testcontainers/testcontainers-go"
 	"github.com/testcontainers/testcontainers-go/modules/kafka"
 )
 
@@ -14,6 +18,7 @@ import (
 type KafkaTestCluster struct {
 	Container *kafka.KafkaContainer
 	Brokers   []string
+	hostPort  string // preserved across stop/start for reconnection tests
 }
 
 // StartKafkaCluster starts a Kafka container using confluentinc/cp-kafka.
@@ -32,17 +37,28 @@ func StartKafkaCluster(ctx context.Context, t *testing.T) *KafkaTestCluster {
 		t.Fatalf("failed to get broker addresses: %v", err)
 	}
 
+	// Extract and store the host port for potential restart with same port
+	mappedPort, err := container.MappedPort(ctx, "9093/tcp")
+	if err != nil {
+		t.Fatalf("failed to get mapped port: %v", err)
+	}
+	hostPort := mappedPort.Port()
+
 	t.Logf("Kafka container started, brokers: %v", brokers)
 
 	return &KafkaTestCluster{
 		Container: container,
 		Brokers:   brokers,
+		hostPort:  hostPort,
 	}
 }
 
 // Stop terminates the Kafka container.
 func (k *KafkaTestCluster) Stop(ctx context.Context, t *testing.T) {
 	t.Helper()
+	if k.Container == nil {
+		return
+	}
 	if err := k.Container.Terminate(ctx); err != nil {
 		t.Logf("warning: failed to terminate kafka container: %v", err)
 	}
@@ -174,6 +190,99 @@ func GetHeader(msg *kfk.Message, key string) string {
 		}
 	}
 	return ""
+}
+
+// StopBroker terminates the Kafka container to simulate broker failure.
+// Use StartBroker to create a new container on the same port.
+func (k *KafkaTestCluster) StopBroker(ctx context.Context, t *testing.T) {
+	t.Helper()
+	if err := k.Container.Terminate(ctx); err != nil {
+		t.Fatalf("failed to terminate kafka container: %v", err)
+	}
+	k.Container = nil
+	t.Logf("Kafka container terminated (port %s preserved for restart)", k.hostPort)
+}
+
+// StartBroker creates a new Kafka container bound to the same host port as the
+// original container. This preserves the broker address so existing consumers
+// can reconnect automatically.
+func (k *KafkaTestCluster) StartBroker(ctx context.Context, t *testing.T) {
+	t.Helper()
+
+	portNum, err := strconv.Atoi(k.hostPort)
+	if err != nil {
+		t.Fatalf("invalid host port %q: %v", k.hostPort, err)
+	}
+
+	// Bind to the same host port so consumers reconnect to the same address
+	withFixedPort := func(req *testcontainers.GenericContainerRequest) error {
+		req.HostConfigModifier = func(hc *container.HostConfig) {
+			hc.PortBindings = nat.PortMap{
+				"9093/tcp": []nat.PortBinding{
+					{HostIP: "0.0.0.0", HostPort: strconv.Itoa(portNum)},
+				},
+			}
+		}
+		return nil
+	}
+
+	container, err := kafka.Run(ctx, "confluentinc/cp-kafka:7.5.0",
+		kafka.WithClusterID("test-cluster"),
+		testcontainers.CustomizeRequestOption(withFixedPort),
+	)
+	if err != nil {
+		t.Fatalf("failed to start kafka container on port %s: %v", k.hostPort, err)
+	}
+
+	k.Container = container
+
+	brokers, err := container.Brokers(ctx)
+	if err != nil {
+		t.Fatalf("failed to get broker addresses after restart: %v", err)
+	}
+	k.Brokers = brokers
+	t.Logf("Kafka container restarted, brokers: %v (same port %s)", brokers, k.hostPort)
+}
+
+// WaitForBrokerReady waits until the Kafka broker is ready to accept connections.
+func (k *KafkaTestCluster) WaitForBrokerReady(ctx context.Context, t *testing.T, timeout time.Duration) {
+	t.Helper()
+	deadline := time.After(timeout)
+	attempt := 0
+	for {
+		select {
+		case <-deadline:
+			t.Fatalf("timed out waiting for kafka broker to be ready after %d attempts", attempt)
+		default:
+		}
+
+		attempt++
+		admin, err := kfk.NewAdminClient(&kfk.ConfigMap{
+			"bootstrap.servers": k.Brokers[0],
+			"socket.timeout.ms": 2000,
+		})
+		if err != nil {
+			t.Logf("WaitForBrokerReady: attempt %d - admin client create failed: %v", attempt, err)
+			time.Sleep(1 * time.Second)
+			continue
+		}
+
+		// Try to get cluster metadata as a readiness check
+		md, err := admin.GetMetadata(nil, true, 3000)
+		admin.Close()
+		if err != nil {
+			t.Logf("WaitForBrokerReady: attempt %d - GetMetadata failed: %v", attempt, err)
+			time.Sleep(1 * time.Second)
+			continue
+		}
+		if len(md.Brokers) > 0 {
+			t.Logf("WaitForBrokerReady: broker ready after %d attempts, brokers: %v", attempt, md.Brokers)
+			return
+		}
+
+		t.Logf("WaitForBrokerReady: attempt %d - no brokers in metadata", attempt)
+		time.Sleep(1 * time.Second)
+	}
 }
 
 // UniqueTopicName generates a unique topic name for a test.

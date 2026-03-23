@@ -24,6 +24,9 @@ type Adapter struct {
 	// Rebalance tracking
 	mu                 sync.Mutex
 	assignedPartitions []kfk.TopicPartition
+
+	// Reconnection tracking (FR-042)
+	brokerConnected bool
 }
 
 // NewAdapter creates a new Kafka adapter from configuration.
@@ -55,7 +58,20 @@ func NewAdapter(brokers []string, topic string, groupID string, kafkaConfig map[
 		return nil, fmt.Errorf("setting enable.auto.commit: %w", err)
 	}
 
-	// Apply any additional Kafka configuration (user can override defaults)
+	// FR-042: Configure reconnection backoff defaults.
+	// confluent-kafka-go (librdkafka) handles automatic reconnection natively.
+	// These defaults ensure reasonable backoff with exponential increase.
+	reconnectDefaults := map[string]any{
+		"reconnect.backoff.ms":     100,   // initial backoff
+		"reconnect.backoff.max.ms": 10000, // max backoff (10s)
+	}
+	for key, value := range reconnectDefaults {
+		if err := config.SetKey(key, value); err != nil {
+			return nil, fmt.Errorf("setting %s: %w", key, err)
+		}
+	}
+
+	// Apply any additional Kafka configuration (user can override defaults including reconnect settings)
 	if kafkaConfig != nil {
 		for key, value := range kafkaConfig {
 			if err := config.SetKey(key, value); err != nil {
@@ -85,6 +101,10 @@ func (a *Adapter) Connect(ctx context.Context) error {
 	}
 
 	a.consumer = consumer
+
+	a.mu.Lock()
+	a.brokerConnected = true
+	a.mu.Unlock()
 
 	a.logger.Info().
 		Strs("brokers", a.brokers).
@@ -182,6 +202,15 @@ func (a *Adapter) Poll(ctx context.Context, timeoutMs int) (*types.Message, erro
 
 	switch e := ev.(type) {
 	case *kfk.Message:
+		// FR-042: Detect reconnection — receiving a message means broker is available
+		a.mu.Lock()
+		wasDisconnected := !a.brokerConnected
+		a.brokerConnected = true
+		a.mu.Unlock()
+		if wasDisconnected {
+			a.logger.Info().Msg("broker connection restored, resuming message consumption")
+		}
+
 		// Convert confluent message to our Message type
 		headers := make(map[string]string)
 		for _, h := range e.Headers {
@@ -202,8 +231,29 @@ func (a *Adapter) Poll(ctx context.Context, timeoutMs int) (*types.Message, erro
 		if e.IsFatal() {
 			return nil, fmt.Errorf("fatal kafka error: %w", e)
 		}
-		// Non-fatal errors (e.g., broker disconnects) are logged but not returned
-		a.logger.Warn().Err(e).Int("code", int(e.Code())).Msg("non-fatal kafka error")
+
+		// FR-042: Reconnection-aware logging for broker transport errors.
+		// confluent-kafka-go handles reconnection automatically via librdkafka;
+		// we log state transitions so operators can observe disconnect/reconnect cycles.
+		a.mu.Lock()
+		wasConnected := a.brokerConnected
+		a.mu.Unlock()
+
+		switch e.Code() {
+		case kfk.ErrTransport, kfk.ErrAllBrokersDown:
+			if wasConnected {
+				a.mu.Lock()
+				a.brokerConnected = false
+				a.mu.Unlock()
+				a.logger.Warn().Err(e).Int("code", int(e.Code())).
+					Msg("broker connection lost, librdkafka will reconnect automatically")
+			} else {
+				a.logger.Debug().Err(e).Int("code", int(e.Code())).
+					Msg("broker still unavailable, reconnection in progress")
+			}
+		default:
+			a.logger.Warn().Err(e).Int("code", int(e.Code())).Msg("non-fatal kafka error")
+		}
 		return nil, nil
 
 	default:

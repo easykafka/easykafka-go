@@ -154,8 +154,8 @@ description: "Task list for Easy Kafka Consumer Library"
 
 ### FR-042: Automatic Reconnection on Broker Unavailability
 
-- [ ] T045 Add integration test for broker failure/recovery scenario in tests/integration/reconnection_test.go
-- [ ] T046 Implement reconnection backoff and retry logic in internal/kafka/adapter.go (wraps confluent-kafka-go's built-in reconnection)
+- [x] T045 Add integration test for broker failure/recovery scenario in tests/integration/reconnection_test.go
+- [x] T046 Implement reconnection backoff and retry logic in internal/kafka/adapter.go (wraps confluent-kafka-go's built-in reconnection)
 
 ### FR-043: At-Least-Once Delivery Validation
 
