@@ -114,12 +114,12 @@ whichever comes first. Offsets are committed atomically per batch.
 
 Pluggable strategies control what happens when a handler returns an error:
 
-| Strategy | Behaviour | Use Case |
-|---|---|---|
-| **FailFast** | Stop consumer immediately | Critical processing, manual intervention |
-| **Skip** | Log error, commit offset, continue | Best-effort / analytics pipelines |
-| **Retry + DLQ** | Retry via Kafka topic with exponential backoff; route to DLQ after max attempts | Production systems with automatic recovery |
-| **CircuitBreaker** | Retry + DLQ with pause/resume on consecutive failures | Protect downstream services during outages |
+| Strategy | Behaviour | Use Case | Production Readiness |
+|---|---|---|---|
+| **FailFast** | Stop consumer immediately | Critical processing, manual intervention | ✅ Stable |
+| **Skip** | Log error, commit offset, continue | Best-effort / analytics pipelines | ✅ Stable |
+| **Retry + DLQ** | Retry via Kafka topic with exponential backoff; route to DLQ after max attempts | Production systems with automatic recovery | ✅ Stable |
+| **CircuitBreaker** | Retry + DLQ with pause/resume on consecutive failures | Protect downstream services during outages | ⚠️ Experimental — design fine-tuning & additional testing needed. PRs welcome! |
 
 ### Retry + DLQ
 
