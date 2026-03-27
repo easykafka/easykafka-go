@@ -14,8 +14,8 @@ tests/
 │   ├── strategy_basic_test.go
 │   ├── strategy_retry_test.go
 │   ├── batch_buffer_test.go
-│   ├── shutdown_test.go
-│   └── offset_manager_test.go
+│   └── shutdown_test.go
+│   
 ├── integration/          # Integration tests (~30% of tests)
 │   ├── consumer_basic_test.go
 │   ├── config_passthrough_test.go
