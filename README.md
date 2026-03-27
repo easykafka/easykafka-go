@@ -1,5 +1,12 @@
 # 🔀 easykafka-go
 
+[![Unit Tests](https://github.com/easykafka/easykafka-go/actions/workflows/unit-tests.yml/badge.svg)](https://github.com/easykafka/easykafka-go/actions/workflows/unit-tests.yml)
+[![Integration Tests](https://github.com/easykafka/easykafka-go/actions/workflows/integration-tests.yml/badge.svg)](https://github.com/easykafka/easykafka-go/actions/workflows/integration-tests.yml)
+[![codecov](https://codecov.io/gh/easykafka/easykafka-go/branch/main/graph/badge.svg)](https://codecov.io/gh/easykafka/easykafka-go)
+[![Go Reference](https://pkg.go.dev/badge/github.com/easykafka/easykafka-go.svg)](https://pkg.go.dev/github.com/easykafka/easykafka-go)
+[![Go Report Card](https://goreportcard.com/badge/github.com/easykafka/easykafka-go)](https://goreportcard.com/report/github.com/easykafka/easykafka-go)
+[![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](https://opensource.org/licenses/MIT)
+
 A minimal, handler-based Kafka consumer library for Go, built on top of
 [confluent-kafka-go](https://github.com/confluentinc/confluent-kafka-go).
 
