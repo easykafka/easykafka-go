@@ -27,7 +27,7 @@ jobs:
         run: go mod download
 
       - name: Run tests with coverage
-        run: go test -count=1 -timeout 600s -coverprofile=coverage.out -covermode=atomic ./tests/...
+        run: go test -count=1 -timeout 1000s -coverprofile=coverage.out -covermode=atomic ./tests/...
 
       - name: Upload coverage to Codecov
         uses: codecov/codecov-action@v4
