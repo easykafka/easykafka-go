@@ -18,6 +18,9 @@ import (
 // context is cancelled, in-flight handlers complete and offsets are committed
 // before the consumer exits (FR-036, FR-037, FR-038).
 func TestGracefulShutdownCompletesInFlight(t *testing.T) {
+	t.Log("TestGracefulShutdownCompletesInFlight started")
+	defer t.Log("TestGracefulShutdownCompletesInFlight finished")
+
 	if testing.Short() {
 		t.Skip("skipping integration test in short mode")
 	}
@@ -98,6 +101,9 @@ func TestGracefulShutdownCompletesInFlight(t *testing.T) {
 // TestGracefulShutdownViaMethod verifies that calling Shutdown() on a running
 // consumer triggers a clean shutdown that completes within the timeout (FR-034).
 func TestGracefulShutdownViaMethod(t *testing.T) {
+	t.Log("TestGracefulShutdownViaMethod started")
+	defer t.Log("TestGracefulShutdownViaMethod finished")
+
 	if testing.Short() {
 		t.Skip("skipping integration test in short mode")
 	}
@@ -163,6 +169,9 @@ func TestGracefulShutdownViaMethod(t *testing.T) {
 // TestGracefulShutdownNoNewMessages verifies that after shutdown is triggered,
 // no new messages are fetched from the topic (FR-036).
 func TestGracefulShutdownNoNewMessages(t *testing.T) {
+	t.Log("TestGracefulShutdownNoNewMessages started")
+	defer t.Log("TestGracefulShutdownNoNewMessages finished")
+
 	if testing.Short() {
 		t.Skip("skipping integration test in short mode")
 	}

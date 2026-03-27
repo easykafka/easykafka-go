@@ -1,10 +1,10 @@
-# Easy Kafka Consumer Library - Test Organization
+# 🧪 Easy Kafka Consumer Library - Test Organization
 
-## Overview
+## 📋 Overview
 
 This directory contains comprehensive unit and integration tests for the Easy Kafka Consumer Library, organized following the Testing Pyramid with emphasis on realistic Kafka integration scenarios.
 
-## Test Organization
+## 📂 Test Organization
 
 ```
 tests/
@@ -31,7 +31,7 @@ tests/
 │       └── testcontainers.go
 ```
 
-## Unit Tests
+## 🔬 Unit Tests
 
 Unit tests focus on individual components in isolation with mocked dependencies.
 
@@ -47,7 +47,7 @@ go test -v ./tests/unit -run "^TestUnit"
 go test -cover ./tests/unit
 ```
 
-## Integration Tests
+## 🔗 Integration Tests
 
 Integration tests use `testcontainers-go` to spin up a real Kafka instance and verify end-to-end behavior.
 
@@ -98,7 +98,7 @@ func TestMain(m *testing.M) {
 }
 ```
 
-## Test Helpers
+## 🧰 Test Helpers
 
 ### Kafka Test Helper (`kafka_test_helper.go`)
 
@@ -117,7 +117,7 @@ Low-level testcontainers utilities:
 - Readiness checks and container probes
 - Network configuration for Docker environments
 
-## Execution Requirements
+## 💻 Execution Requirements
 
 ### Supported Platforms
 
@@ -130,19 +130,19 @@ Low-level testcontainers utilities:
 - Minimum 2GB RAM for Kafka container
 - Docker socket access (`/var/run/docker.sock`)
 
-## Test Naming Convention
+## 📝 Test Naming Convention
 
 - Unit tests: `TestUnit<Component><Scenario>` (e.g., `TestUnitEngineDispatch`)
 - Integration tests: `TestIntegration<Feature><Scenario>` (e.g., `TestIntegrationConsumerBasic`)
 
-## Coverage Goals
+## 🎯 Coverage Goals
 
 - **Overall Coverage**: ≥80%
 - **Core Components** (consumer, engine, strategies): ≥85%
 - **Integration Paths**: ≥70% (realistic scenario coverage)
 - **Error Handling**: ≥80% (all error strategies tested)
 
-## Running All Tests
+## ▶️ Running All Tests
 
 ```bash
 # Unit tests only
@@ -156,7 +156,7 @@ go test -v ./tests/... -timeout 5m -coverprofile=coverage.out
 go tool cover -html coverage.out
 ```
 
-## CI/CD Integration
+## 🔄 CI/CD Integration
 
 In CI environments, ensure:
 

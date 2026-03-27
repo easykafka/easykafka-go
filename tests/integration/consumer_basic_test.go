@@ -20,6 +20,9 @@ import (
 // 3. Commit offsets after successful processing
 // 4. Access message metadata via context
 func TestBasicConsumption(t *testing.T) {
+	t.Log("TestBasicConsumption started")
+	defer t.Log("TestBasicConsumption finished")
+
 	if testing.Short() {
 		t.Skip("skipping integration test in short mode")
 	}
@@ -123,6 +126,9 @@ func TestBasicConsumption(t *testing.T) {
 // TestBasicConsumptionWithErrorStrategy verifies that when a handler returns an error,
 // the error strategy is invoked and the consumer continues (skip strategy).
 func TestBasicConsumptionWithErrorStrategy(t *testing.T) {
+	t.Log("TestBasicConsumptionWithErrorStrategy started")
+	defer t.Log("TestBasicConsumptionWithErrorStrategy finished")
+
 	if testing.Short() {
 		t.Skip("skipping integration test in short mode")
 	}
@@ -207,6 +213,9 @@ func TestBasicConsumptionWithErrorStrategy(t *testing.T) {
 // TestBasicConsumptionPanicRecovery verifies that handler panics are recovered
 // and treated as errors via the error strategy.
 func TestBasicConsumptionPanicRecovery(t *testing.T) {
+	t.Log("TestBasicConsumptionPanicRecovery started")
+	defer t.Log("TestBasicConsumptionPanicRecovery finished")
+
 	if testing.Short() {
 		t.Skip("skipping integration test in short mode")
 	}

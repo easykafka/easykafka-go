@@ -17,6 +17,9 @@ import (
 // opens after consecutive handler failures reach the threshold, causing the
 // consumer to stop with a circuit breaker error.
 func TestCircuitBreakerStopsConsumerAfterThreshold(t *testing.T) {
+	t.Log("TestCircuitBreakerStopsConsumerAfterThreshold started")
+	defer t.Log("TestCircuitBreakerStopsConsumerAfterThreshold finished")
+
 	if testing.Short() {
 		t.Skip("skipping integration test in short mode")
 	}
@@ -82,6 +85,9 @@ func TestCircuitBreakerStopsConsumerAfterThreshold(t *testing.T) {
 // TestCircuitBreakerAllowsCleanShutdownBeforeThreshold verifies that a consumer
 // with a circuit breaker strategy can be cleanly shut down before the threshold is reached.
 func TestCircuitBreakerAllowsCleanShutdownBeforeThreshold(t *testing.T) {
+	t.Log("TestCircuitBreakerAllowsCleanShutdownBeforeThreshold started")
+	defer t.Log("TestCircuitBreakerAllowsCleanShutdownBeforeThreshold finished")
+
 	if testing.Short() {
 		t.Skip("skipping integration test in short mode")
 	}

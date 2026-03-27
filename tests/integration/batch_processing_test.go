@@ -16,6 +16,9 @@ import (
 // TestBatchProcessing_SizeTrigger verifies that when enough messages accumulate
 // to fill the batch size, the batch handler is called with the full batch.
 func TestBatchProcessing_SizeTrigger(t *testing.T) {
+	t.Log("TestBatchProcessing_SizeTrigger started")
+	defer t.Log("TestBatchProcessing_SizeTrigger finished")
+
 	if testing.Short() {
 		t.Skip("skipping integration test in short mode")
 	}
@@ -107,6 +110,9 @@ func TestBatchProcessing_SizeTrigger(t *testing.T) {
 // TestBatchProcessing_TimeoutTrigger verifies that a partial batch is delivered
 // when the batch timeout expires, even if batch size is not reached.
 func TestBatchProcessing_TimeoutTrigger(t *testing.T) {
+	t.Log("TestBatchProcessing_TimeoutTrigger started")
+	defer t.Log("TestBatchProcessing_TimeoutTrigger finished")
+
 	if testing.Short() {
 		t.Skip("skipping integration test in short mode")
 	}
@@ -198,6 +204,9 @@ func TestBatchProcessing_TimeoutTrigger(t *testing.T) {
 // after the batch handler succeeds. A second consumer on the same group should
 // not receive already-committed messages.
 func TestBatchProcessing_AtomicCommit(t *testing.T) {
+	t.Log("TestBatchProcessing_AtomicCommit started")
+	defer t.Log("TestBatchProcessing_AtomicCommit finished")
+
 	if testing.Short() {
 		t.Skip("skipping integration test in short mode")
 	}

@@ -21,6 +21,9 @@ import (
 // to another consumer. At-least-once semantics guarantee every message is
 // processed, but duplicates across consumers are acceptable.
 func TestRebalanceDuplicateProcessingAcceptable(t *testing.T) {
+	t.Log("TestRebalanceDuplicateProcessingAcceptable started")
+	defer t.Log("TestRebalanceDuplicateProcessingAcceptable finished")
+
 	if testing.Short() {
 		t.Skip("skipping integration test in short mode")
 	}
@@ -151,6 +154,9 @@ func TestRebalanceDuplicateProcessingAcceptable(t *testing.T) {
 // its partitions are reassigned and remaining messages are still consumed.
 // No messages are lost during the rebalance.
 func TestRebalanceOnConsumerLeave(t *testing.T) {
+	t.Log("TestRebalanceOnConsumerLeave started")
+	defer t.Log("TestRebalanceOnConsumerLeave finished")
+
 	if testing.Short() {
 		t.Skip("skipping integration test in short mode")
 	}
@@ -286,6 +292,9 @@ stopC1:
 // new partition owner does not re-process already committed messages beyond
 // what at-least-once allows.
 func TestRebalanceCommitsBeforeRevocation(t *testing.T) {
+	t.Log("TestRebalanceCommitsBeforeRevocation started")
+	defer t.Log("TestRebalanceCommitsBeforeRevocation finished")
+
 	if testing.Short() {
 		t.Skip("skipping integration test in short mode")
 	}
@@ -385,6 +394,9 @@ func TestRebalanceCommitsBeforeRevocation(t *testing.T) {
 // before the rebalance should be committed; the slow in-flight message may
 // be duplicated to the new owner - that is acceptable under at-least-once.
 func TestRebalanceWithSlowHandler(t *testing.T) {
+	t.Log("TestRebalanceWithSlowHandler started")
+	defer t.Log("TestRebalanceWithSlowHandler finished")
+
 	if testing.Short() {
 		t.Skip("skipping integration test in short mode")
 	}
@@ -505,6 +517,9 @@ func TestRebalanceWithSlowHandler(t *testing.T) {
 // so the new owner starts from the committed offset rather than replaying
 // the entire partition.
 func TestRebalanceNoDataLossWithDirectConsumer(t *testing.T) {
+	t.Log("TestRebalanceNoDataLossWithDirectConsumer started")
+	defer t.Log("TestRebalanceNoDataLossWithDirectConsumer finished")
+
 	if testing.Short() {
 		t.Skip("skipping integration test in short mode")
 	}

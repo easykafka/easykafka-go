@@ -1,4 +1,4 @@
-# easykafka-go
+# 📦 easykafka-go
 
 A minimal, handler-based Kafka consumer library for Go, built on top of
 [confluent-kafka-go](https://github.com/confluentinc/confluent-kafka-go).
@@ -6,7 +6,7 @@ A minimal, handler-based Kafka consumer library for Go, built on top of
 Write a function, point it at a topic, and let the library handle polling,
 offset commits, rebalancing, and error recovery.
 
-## Installation
+## 🛠 Installation
 
 ```bash
 go get github.com/easykafka/easykafka-go
@@ -15,7 +15,7 @@ go get github.com/easykafka/easykafka-go
 Requires Go 1.19+ and a C toolchain for `librdkafka` (see the confluent-kafka-go
 docs for platform-specific instructions).
 
-## Quick Start
+## 🚀 Quick Start
 
 ```go
 package main
@@ -51,7 +51,7 @@ func main() {
 That's it — the consumer connects, polls messages, calls your handler, and
 commits offsets on success.
 
-## Graceful Shutdown
+## 🛑 Graceful Shutdown
 
 Cancel the context or call `Shutdown` to let in-flight work complete:
 
@@ -70,7 +70,7 @@ if err := consumer.Start(ctx); err != nil {
 }
 ```
 
-## Batch Processing
+## 📦 Batch Processing
 
 For high-throughput workloads, switch to batch mode:
 
@@ -90,7 +90,7 @@ consumer, err := easykafka.New(
 Batches are delivered when the size limit is hit **or** the timeout fires,
 whichever comes first. Offsets are committed atomically per batch.
 
-## Error Strategies
+## ⚡ Error Strategies
 
 Pluggable strategies control what happens when a handler returns an error:
 
@@ -139,7 +139,7 @@ cbStrategy, err := easykafka.NewCircuitBreakerStrategy(
 )
 ```
 
-## Configuration Reference
+## ⚙️ Configuration Reference
 
 ### Required Options
 
@@ -176,7 +176,7 @@ easykafka.WithKafkaConfig(map[string]any{
 Keys managed by the library (`bootstrap.servers`, `group.id`,
 `enable.auto.commit`) cannot be overridden.
 
-## Testing
+## 🧪 Testing
 
 Unit and integration tests live under `tests/`:
 
@@ -199,13 +199,30 @@ Run integration tests (requires Docker):
 go test -v -count=1 ./tests/integration/...
 ```
 
-## Built With
+or (to get a more readable output):
+```bash
+go install gotest.tools/gotestsum@latest
+gotestsum --format testdox -- -count=1 -timeout 600s ./tests/integration/...
+```
+
+format options:
+* testdox
+  * Human-readable test names with ✓/✗
+* pkgname
+  * One line per package + failures
+* standard-verbose
+  * Like -v but with a summary at the end
+* dots
+  * Minimal dots during run, failures at end
+
+
+## 🔧 Built With
 
 - [confluent-kafka-go](https://github.com/confluentinc/confluent-kafka-go) — Kafka client
 - [zerolog](https://github.com/rs/zerolog) — Structured logging
 - [testcontainers-go](https://github.com/testcontainers/testcontainers-go) — Integration test infrastructure
 
-## Built Using speckit
+## 🤖 Built Using speckit
 
 - https://github.com/github/spec-kit
 - https://www.youtube.com/watch?v=a9eR1xsfvHg

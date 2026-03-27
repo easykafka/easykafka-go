@@ -18,6 +18,9 @@ import (
 // TestKafkaConfigPassthrough verifies that custom KafkaConfig values are passed
 // through to confluent-kafka-go and affect consumer behavior.
 func TestKafkaConfigPassthrough(t *testing.T) {
+	t.Log("TestKafkaConfigPassthrough started")
+	defer t.Log("TestKafkaConfigPassthrough finished")
+
 	if testing.Short() {
 		t.Skip("skipping integration test in short mode")
 	}
@@ -108,6 +111,9 @@ func TestKafkaConfigPassthrough(t *testing.T) {
 // TestKafkaConfigSessionTimeout verifies that session.timeout.ms is properly
 // passed through to confluent-kafka-go.
 func TestKafkaConfigSessionTimeout(t *testing.T) {
+	t.Log("TestKafkaConfigSessionTimeout started")
+	defer t.Log("TestKafkaConfigSessionTimeout finished")
+
 	if testing.Short() {
 		t.Skip("skipping integration test in short mode")
 	}
@@ -186,6 +192,9 @@ func TestKafkaConfigSessionTimeout(t *testing.T) {
 // TestKafkaConfigManagedKeyRejection verifies that managed keys are rejected
 // when passed via WithKafkaConfig.
 func TestKafkaConfigManagedKeyRejection(t *testing.T) {
+	t.Log("TestKafkaConfigManagedKeyRejection started")
+	defer t.Log("TestKafkaConfigManagedKeyRejection finished")
+
 	tests := []struct {
 		name   string
 		key    string

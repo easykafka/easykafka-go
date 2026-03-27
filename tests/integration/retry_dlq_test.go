@@ -18,6 +18,9 @@ import (
 // TestRetryStrategyWritesToRetryTopic verifies that when a handler fails,
 // the retry strategy writes the message to the retry topic with correct headers.
 func TestRetryStrategyWritesToRetryTopic(t *testing.T) {
+	t.Log("TestRetryStrategyWritesToRetryTopic started")
+	defer t.Log("TestRetryStrategyWritesToRetryTopic finished")
+
 	if testing.Short() {
 		t.Skip("skipping integration test in short mode")
 	}
@@ -124,6 +127,9 @@ func TestRetryStrategyWritesToRetryTopic(t *testing.T) {
 // TestRetryStrategyWritesToDLQAfterMaxAttempts verifies that when max retry attempts
 // are exhausted, the message is written to the DLQ topic with a JSON envelope.
 func TestRetryStrategyWritesToDLQAfterMaxAttempts(t *testing.T) {
+	t.Log("TestRetryStrategyWritesToDLQAfterMaxAttempts started")
+	defer t.Log("TestRetryStrategyWritesToDLQAfterMaxAttempts finished")
+
 	if testing.Short() {
 		t.Skip("skipping integration test in short mode")
 	}

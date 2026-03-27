@@ -17,6 +17,9 @@ import (
 // All produced messages must be received by the handler. Duplicates are
 // acceptable (at-least-once), but no message may be lost.
 func TestAtLeastOnceDelivery(t *testing.T) {
+	t.Log("TestAtLeastOnceDelivery started")
+	defer t.Log("TestAtLeastOnceDelivery finished")
+
 	if testing.Short() {
 		t.Skip("skipping integration test in short mode")
 	}
@@ -105,6 +108,9 @@ func TestAtLeastOnceDelivery(t *testing.T) {
 // all be delivered to the handler. Duplicates caused by the restart are
 // acceptable.
 func TestAtLeastOnceAfterBrokerRestart(t *testing.T) {
+	t.Log("TestAtLeastOnceAfterBrokerRestart started")
+	defer t.Log("TestAtLeastOnceAfterBrokerRestart finished")
+
 	if testing.Short() {
 		t.Skip("skipping integration test in short mode")
 	}
@@ -203,6 +209,9 @@ func TestAtLeastOnceAfterBrokerRestart(t *testing.T) {
 // by default) and the consumer continues processing remaining messages.
 // No message is silently dropped.
 func TestAtLeastOnceWithHandlerErrors(t *testing.T) {
+	t.Log("TestAtLeastOnceWithHandlerErrors started")
+	defer t.Log("TestAtLeastOnceWithHandlerErrors finished")
+
 	if testing.Short() {
 		t.Skip("skipping integration test in short mode")
 	}

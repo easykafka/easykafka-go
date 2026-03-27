@@ -20,6 +20,9 @@ import (
 // 3. Restarts the container on the same port
 // 4. Produces new messages and verifies the consumer reconnects and resumes processing
 func TestBrokerReconnectionAfterRestart(t *testing.T) {
+	t.Log("TestBrokerReconnectionAfterRestart started")
+	defer t.Log("TestBrokerReconnectionAfterRestart finished")
+
 	if testing.Short() {
 		t.Skip("skipping integration test in short mode")
 	}
@@ -147,6 +150,9 @@ func TestBrokerReconnectionAfterRestart(t *testing.T) {
 // TestConsumerSurvivesTransientErrors verifies that transient Kafka errors
 // (non-fatal broker errors) do not crash the consumer.
 func TestConsumerSurvivesTransientErrors(t *testing.T) {
+	t.Log("TestConsumerSurvivesTransientErrors started")
+	defer t.Log("TestConsumerSurvivesTransientErrors finished")
+
 	if testing.Short() {
 		t.Skip("skipping integration test in short mode")
 	}
