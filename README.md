@@ -1,10 +1,23 @@
-# 📦 easykafka-go
+# 🔀 easykafka-go
 
 A minimal, handler-based Kafka consumer library for Go, built on top of
 [confluent-kafka-go](https://github.com/confluentinc/confluent-kafka-go).
 
 Write a function, point it at a topic, and let the library handle polling,
 offset commits, rebalancing, and error recovery.
+
+## 💡 Why easykafka?
+
+Great low-level Kafka clients already exist for Go, but they leave you to
+wire up the same boilerplate every time: retry loops, dead-letter queues,
+circuit breakers, graceful shutdown, batch accumulation, and offset
+management. Business logic ends up tangled with infrastructure concerns.
+
+**easykafka** was created to decouple message processing from error handling
+and operational plumbing. You write a plain handler function; the library
+provides high-level, composable blueprints — like retry-with-DLQ or
+circuit-breaker strategies — so you can focus on *what* to do with a message
+instead of *how* to survive when things go wrong.
 
 ## 🛠 Installation
 
