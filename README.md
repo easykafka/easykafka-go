@@ -190,13 +190,13 @@ tests/
 Run unit tests:
 
 ```bash
-go test ./tests/unit/...
+go test -v -count=1 ./tests/unit/...
 ```
 
 Run integration tests (requires Docker):
 
 ```bash
-go test ./tests/integration/...
+go test -v -count=1 ./tests/integration/...
 ```
 
 ## Built With
