@@ -34,8 +34,6 @@ type Engine struct {
 	// done is closed when the engine has fully stopped (poll loop exited, adapter closed).
 	done chan struct{}
 
-	// Batch mode fields (nil/zero when in single-message mode)
-	batchBuffer  *BatchBuffer
 	batchSize    int
 	batchTimeout time.Duration
 }

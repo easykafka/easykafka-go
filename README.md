@@ -1,5 +1,6 @@
 # 🔀 easykafka-go
 
+[![Build & Lint](https://github.com/easykafka/easykafka-go/actions/workflows/build-lint.yml/badge.svg)](https://github.com/easykafka/easykafka-go/actions/workflows/build-lint.yml)
 [![Unit Tests](https://github.com/easykafka/easykafka-go/actions/workflows/unit-tests.yml/badge.svg)](https://github.com/easykafka/easykafka-go/actions/workflows/unit-tests.yml)
 [![Integration Tests](https://github.com/easykafka/easykafka-go/actions/workflows/integration-tests.yml/badge.svg)](https://github.com/easykafka/easykafka-go/actions/workflows/integration-tests.yml)
 [![codecov](https://codecov.io/gh/easykafka/easykafka-go/branch/main/graph/badge.svg)](https://codecov.io/gh/easykafka/easykafka-go)

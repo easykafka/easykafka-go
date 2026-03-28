@@ -72,11 +72,9 @@ func NewAdapter(brokers []string, topic string, groupID string, kafkaConfig map[
 	}
 
 	// Apply any additional Kafka configuration (user can override defaults including reconnect settings)
-	if kafkaConfig != nil {
-		for key, value := range kafkaConfig {
-			if err := config.SetKey(key, value); err != nil {
-				return nil, fmt.Errorf("setting kafka config %s: %w", key, err)
-			}
+	for key, value := range kafkaConfig {
+		if err := config.SetKey(key, value); err != nil {
+			return nil, fmt.Errorf("setting kafka config %s: %w", key, err)
 		}
 	}
 
