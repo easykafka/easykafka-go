@@ -222,27 +222,19 @@ go test -v -count=1 ./tests/integration/...
 or (to get a more readable output):
 ```bash
 go install gotest.tools/gotestsum@latest
-gotestsum --format testdox -- -count=1 -timeout 600s ./tests/integration/...
+gotestsum --format testdox -- -count=1 -timeout 1000s ./tests/integration/...
 ```
-
-format options:
-* testdox
-  * Human-readable test names with ✓/✗
-* pkgname
-  * One line per package + failures
-* standard-verbose
-  * Like -v but with a summary at the end
-* dots
-  * Minimal dots during run, failures at end
-
-
 ## 🔧 Built With
 
 - [confluent-kafka-go](https://github.com/confluentinc/confluent-kafka-go) — Kafka client
 - [zerolog](https://github.com/rs/zerolog) — Structured logging
 - [testcontainers-go](https://github.com/testcontainers/testcontainers-go) — Integration test infrastructure
 
-## 🤖 Built Using speckit
+### 🤖 Built Using speckit
+
+Spec driven development with AI (speckit) was used to generate the initial consumer implementation.
+
+For details see:
 
 - https://github.com/github/spec-kit
 - https://www.youtube.com/watch?v=a9eR1xsfvHg

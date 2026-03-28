@@ -62,6 +62,22 @@ Integration tests use `testcontainers-go` to spin up a real Kafka instance and v
 go test -v ./tests/integration -run "^TestIntegration" -timeout 5m
 ```
 
+or (to get a more readable output):
+```bash
+go install gotest.tools/gotestsum@latest
+gotestsum --format testdox -- -count=1 -timeout 1000s ./tests/integration/...
+```
+
+format options:
+* testdox
+    * Human-readable test names with ✓/✗
+* pkgname
+    * One line per package + failures
+* standard-verbose
+    * Like -v but with a summary at the end
+* dots
+    * Minimal dots during run, failures at end
+
 ### Test Isolation
 
 - Each integration test uses unique topic names to avoid cross-test interference
