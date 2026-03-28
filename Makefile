@@ -1,4 +1,4 @@
-.PHONY: build lint test test-unit test-integration coverage clean help
+.PHONY: build lint test test-unit test-integration coverage clean doc-refresh help
 
 ## ——— Build ————————————————————————————————————————————
 
@@ -47,6 +47,16 @@ tools: ## Install dev tools (gotestsum, golangci-lint)
 
 clean: ## Remove generated files
 	rm -f coverage.out
+
+## Auto-detect latest git tag
+## make doc-refresh
+## Or specify explicitly
+## make doc-refresh VERSION=v0.1.0
+VERSION ?= $(shell git describe --tags --abbrev=0 2>/dev/null)
+doc-refresh: ## Refresh pkg.go.dev docs (use VERSION=v0.1.0 or auto-detects latest tag)
+	@test -n "$(VERSION)" || { echo "No git tag found. Usage: make doc-refresh VERSION=v0.1.0"; exit 1; }
+	@echo "Refreshing pkg.go.dev for $(VERSION) ..."
+	GOPROXY=proxy.golang.org go list -m github.com/easykafka/easykafka-go@$(VERSION)
 
 help: ## Show this help
 	@grep -E '^[a-zA-Z_-]+:.*?## .*$$' $(MAKEFILE_LIST) | \
