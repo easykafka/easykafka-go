@@ -167,8 +167,8 @@ go test -v ./tests/unit
 # Integration tests only  
 go test -v ./tests/integration -timeout 5m
 
-# All tests with coverage
-go test -v ./tests/... -timeout 5m -coverprofile=coverage.out
+# All tests with coverage (-coverpkg=./... instruments all library packages)
+go test -v -coverpkg=./... ./tests/... -timeout 5m -coverprofile=coverage.out
 go tool cover -html coverage.out
 ```
 
