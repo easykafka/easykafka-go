@@ -25,7 +25,7 @@ jobs:
       - name: Mirror cp-kafka to GHCR
         run: |
           src="${{ env.KAFKA_IMAGE }}"
-          # Flatten the image name: confluentinc/cp-kafka:7.5.0 -> mirror-confluentinc-cp-kafka:7.5.0. sed repalces every / with -
+          # Flatten the image name: confluentinc/cp-kafka:7.5.0 -> mirror-confluentinc-cp-kafka:7.5.0. (sed replaces every / with -)
           target="ghcr.io/${{ github.repository_owner }}/mirror-$(echo "$src" | sed 's|/|-|g')"
           echo "Mirroring $src -> $target"
           docker pull "$src"
