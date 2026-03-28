@@ -3,6 +3,7 @@ package helpers
 import (
 	"context"
 	"fmt"
+	"os"
 	"strconv"
 	"sync"
 	"testing"
@@ -14,6 +15,17 @@ import (
 	"github.com/testcontainers/testcontainers-go"
 	"github.com/testcontainers/testcontainers-go/modules/kafka"
 )
+
+const defaultKafkaImage = "confluentinc/cp-kafka:7.5.0"
+
+// kafkaImage returns the Kafka Docker image to use.
+// In CI this is set to the GHCR mirror; locally it falls back to Docker Hub.
+func kafkaImage() string {
+	if img := os.Getenv("KAFKA_IMAGE"); img != "" {
+		return img
+	}
+	return defaultKafkaImage
+}
 
 var (
 	sharedCluster     *KafkaTestCluster
@@ -31,7 +43,7 @@ type KafkaTestCluster struct {
 func StartKafkaCluster(ctx context.Context, t *testing.T) *KafkaTestCluster {
 	t.Helper()
 
-	container, err := kafka.Run(ctx, "confluentinc/cp-kafka:7.5.0",
+	container, err := kafka.Run(ctx, kafkaImage(),
 		kafka.WithClusterID("test-cluster"),
 	)
 	if err != nil {
@@ -232,7 +244,7 @@ func (k *KafkaTestCluster) StartBroker(ctx context.Context, t *testing.T) {
 		return nil
 	}
 
-	container, err := kafka.Run(ctx, "confluentinc/cp-kafka:7.5.0",
+	container, err := kafka.Run(ctx, kafkaImage(),
 		kafka.WithClusterID("test-cluster"),
 		testcontainers.CustomizeRequestOption(withFixedPort),
 	)
