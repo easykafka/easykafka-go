@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"runtime/debug"
+	"sync/atomic"
 	"time"
 
 	"github.com/easykafka/easykafka-go/internal/metadata"
@@ -28,7 +29,7 @@ type Engine struct {
 	strategy     types.ErrorStrategy
 	logger       zerolog.Logger
 	pollTimeout  int
-	state        engineState
+	state        atomic.Int32 // protected; use Load()/Store() everywhere
 
 	// done is closed when the engine has fully stopped (poll loop exited, adapter closed).
 	done chan struct{}
@@ -39,10 +40,8 @@ type Engine struct {
 	batchTimeout time.Duration
 }
 
-type engineState int
-
 const (
-	engineStateCreated engineState = iota
+	engineStateCreated int32 = iota
 	engineStateRunning
 	engineStateStopping
 	engineStateStopped
@@ -62,8 +61,8 @@ func NewEngine(
 		strategy:    strategy,
 		logger:      logger,
 		pollTimeout: pollTimeoutMs,
-		state:       engineStateCreated,
-		done:        make(chan struct{}),
+		// state defaults to 0 i.e. engineStateCreated
+		done: make(chan struct{}),
 	}
 }
 
@@ -83,7 +82,7 @@ func NewBatchEngine(
 		strategy:     strategy,
 		logger:       logger,
 		pollTimeout:  pollTimeoutMs,
-		state:        engineStateCreated,
+		// state defaults to 0 i.e. engineStateCreated
 		done:         make(chan struct{}),
 		batchSize:    batchSize,
 		batchTimeout: batchTimeout,
@@ -93,11 +92,11 @@ func NewBatchEngine(
 // Start begins the polling loop.
 // Blocks until context is cancelled or a fatal error occurs.
 func (e *Engine) Start(ctx context.Context) error {
-	if e.state != engineStateCreated {
+	if e.state.Load() != engineStateCreated {
 		return fmt.Errorf("engine already started")
 	}
 
-	e.state = engineStateRunning
+	e.state.Store(engineStateRunning)
 
 	e.logger.Info().Int("poll_timeout_ms", e.pollTimeout).Msg("engine starting")
 
@@ -125,7 +124,7 @@ func (e *Engine) Start(ctx context.Context) error {
 		e.logger.Error().Err(err).Msg("error closing adapter")
 	}
 
-	e.state = engineStateStopped
+	e.state.Store(engineStateStopped)
 	close(e.done)
 
 	e.logger.Info().Msg("engine stopped")
@@ -138,15 +137,15 @@ func (e *Engine) runSingleLoop(ctx context.Context) error {
 	var loopErr error
 
 	// Main polling loop
-	for e.state == engineStateRunning {
+	for e.state.Load() == engineStateRunning {
 		select {
 		case <-ctx.Done():
-			e.state = engineStateStopping
+			e.state.Store(engineStateStopping)
 			continue
 		default:
 		}
 
-		if e.state != engineStateRunning {
+		if e.state.Load() != engineStateRunning {
 			break
 		}
 
@@ -155,7 +154,7 @@ func (e *Engine) runSingleLoop(ctx context.Context) error {
 		if err != nil {
 			e.logger.Error().Err(err).Msg("fatal polling error")
 			loopErr = fmt.Errorf("polling error: %w", err)
-			e.state = engineStateStopping
+			e.state.Store(engineStateStopping)
 			break
 		}
 
@@ -177,7 +176,7 @@ func (e *Engine) runSingleLoop(ctx context.Context) error {
 				// Strategy says stop consumer (e.g., fail-fast)
 				e.logger.Error().Err(strategyErr).Msg("error strategy returned fatal error, stopping")
 				loopErr = fmt.Errorf("error strategy: %w", strategyErr)
-				e.state = engineStateStopping
+				e.state.Store(engineStateStopping)
 				break
 			}
 		}
@@ -203,10 +202,10 @@ func (e *Engine) runBatchLoop(ctx context.Context) error {
 	buf := NewBatchBuffer(e.batchSize, e.batchTimeout)
 	var loopErr error
 
-	for e.state == engineStateRunning {
+	for e.state.Load() == engineStateRunning {
 		select {
 		case <-ctx.Done():
-			e.state = engineStateStopping
+			e.state.Store(engineStateStopping)
 			// Flush any remaining buffered messages before stopping
 			if msgs := buf.Flush(); msgs != nil {
 				if err := e.dispatchBatch(ctx, msgs); err != nil {
@@ -217,7 +216,7 @@ func (e *Engine) runBatchLoop(ctx context.Context) error {
 		default:
 		}
 
-		if e.state != engineStateRunning {
+		if e.state.Load() != engineStateRunning {
 			break
 		}
 
@@ -226,7 +225,7 @@ func (e *Engine) runBatchLoop(ctx context.Context) error {
 		if err != nil {
 			e.logger.Error().Err(err).Msg("fatal polling error")
 			loopErr = fmt.Errorf("polling error: %w", err)
-			e.state = engineStateStopping
+			e.state.Store(engineStateStopping)
 			break
 		}
 
@@ -240,7 +239,7 @@ func (e *Engine) runBatchLoop(ctx context.Context) error {
 			if msgs != nil {
 				if err := e.dispatchBatch(ctx, msgs); err != nil {
 					loopErr = err
-					e.state = engineStateStopping
+					e.state.Store(engineStateStopping)
 					break
 				}
 			}
@@ -337,10 +336,10 @@ func (e *Engine) dispatchMessage(ctx context.Context, msg *types.Message) (err e
 // Stop gracefully stops the engine by transitioning to stopping state.
 // Returns error if the engine is not currently running.
 func (e *Engine) Stop(ctx context.Context) error {
-	if e.state != engineStateRunning {
-		return fmt.Errorf("engine is not running (state: %d)", e.state)
+	if e.state.Load() != engineStateRunning {
+		return fmt.Errorf("engine is not running (state: %d)", e.state.Load())
 	}
-	e.state = engineStateStopping
+	e.state.Store(engineStateStopping)
 	return nil
 }
 
