@@ -805,7 +805,7 @@ func TestCircuitBreakerHalfOpenToOpenOnFailure(t *testing.T) {
 	})
 
 	err = cb.HandleError(context.Background(), []*types.Message{msg}, errors.New("still failing"))
-	assert.NoError(t, err)
+	assert.Error(t, err)
 	// The state should reflect that the circuit was reopened
 	assert.Equal(t, strategy.CircuitOpen, cb.State())
 }
