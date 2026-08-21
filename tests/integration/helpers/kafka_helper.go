@@ -3,6 +3,7 @@ package helpers
 import (
 	"context"
 	"fmt"
+	"net/netip"
 	"os"
 	"strconv"
 	"sync"
@@ -10,8 +11,8 @@ import (
 	"time"
 
 	kfk "github.com/confluentinc/confluent-kafka-go/v2/kafka"
-	"github.com/docker/docker/api/types/container"
-	"github.com/docker/go-connections/nat"
+	"github.com/moby/moby/api/types/container"
+	"github.com/moby/moby/api/types/network"
 	"github.com/testcontainers/testcontainers-go"
 	"github.com/testcontainers/testcontainers-go/modules/kafka"
 )
@@ -232,12 +233,17 @@ func (k *KafkaTestCluster) StartBroker(ctx context.Context, t *testing.T) {
 		t.Fatalf("invalid host port %q: %v", k.hostPort, err)
 	}
 
+	brokerPort, err := network.ParsePort("9093/tcp")
+	if err != nil {
+		t.Fatalf("invalid broker port: %v", err)
+	}
+
 	// Bind to the same host port so consumers reconnect to the same address
 	withFixedPort := func(req *testcontainers.GenericContainerRequest) error {
 		req.HostConfigModifier = func(hc *container.HostConfig) {
-			hc.PortBindings = nat.PortMap{
-				"9093/tcp": []nat.PortBinding{
-					{HostIP: "0.0.0.0", HostPort: strconv.Itoa(portNum)},
+			hc.PortBindings = network.PortMap{
+				brokerPort: []network.PortBinding{
+					{HostIP: netip.IPv4Unspecified(), HostPort: strconv.Itoa(portNum)},
 				},
 			}
 		}
