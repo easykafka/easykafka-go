@@ -53,6 +53,7 @@ func NewEngine(
 	logger zerolog.Logger,
 	pollTimeoutMs int,
 ) *Engine {
+
 	return &Engine{
 		adapter:     adapter,
 		handler:     handler,
@@ -74,6 +75,7 @@ func NewBatchEngine(
 	batchSize int,
 	batchTimeout time.Duration,
 ) *Engine {
+
 	return &Engine{
 		adapter:      adapter,
 		batchHandler: batchHandler,
