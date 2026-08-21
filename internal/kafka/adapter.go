@@ -30,7 +30,14 @@ type Adapter struct {
 }
 
 // NewAdapter creates a new Kafka adapter from configuration.
-func NewAdapter(brokers []string, topic string, groupID string, kafkaConfig map[string]any, logger zerolog.Logger) (*Adapter, error) {
+func NewAdapter(
+	brokers []string,
+	topic string,
+	groupID string,
+	kafkaConfig map[string]any,
+	logger zerolog.Logger,
+) (*Adapter, error) {
+
 	if len(brokers) == 0 {
 		return nil, fmt.Errorf("at least one broker is required")
 	}
@@ -62,8 +69,8 @@ func NewAdapter(brokers []string, topic string, groupID string, kafkaConfig map[
 	// confluent-kafka-go (librdkafka) handles automatic reconnection natively.
 	// These defaults ensure reasonable backoff with exponential increase.
 	reconnectDefaults := map[string]any{
-		"reconnect.backoff.ms":     100,   // initial backoff
-		"reconnect.backoff.max.ms": 10000, // max backoff (10s)
+		"reconnect.backoff.ms":     100,   //nolint:mnd // initial backoff
+		"reconnect.backoff.max.ms": 10000, //nolint:mnd // max backoff (10s)
 	}
 	for key, value := range reconnectDefaults {
 		if err := config.SetKey(key, value); err != nil {
@@ -195,7 +202,7 @@ func (a *Adapter) Poll(ctx context.Context, timeoutMs int) (*types.Message, erro
 	ev := a.consumer.Poll(timeoutMs)
 	if ev == nil {
 		// Timeout, no event available
-		return nil, nil
+		return nil, nil //nolint:nilnil // a nil message with a nil error means "nothing polled"
 	}
 
 	switch e := ev.(type) {
@@ -252,11 +259,11 @@ func (a *Adapter) Poll(ctx context.Context, timeoutMs int) (*types.Message, erro
 		default:
 			a.logger.Warn().Err(e).Int("code", int(e.Code())).Msg("non-fatal kafka error")
 		}
-		return nil, nil
+		return nil, nil //nolint:nilnil // a nil message with a nil error means "nothing polled"
 
 	default:
 		// Other events (rebalance, stats, etc.) handled via callbacks
-		return nil, nil
+		return nil, nil //nolint:nilnil // a nil message with a nil error means "nothing polled"
 	}
 }
 

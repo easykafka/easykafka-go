@@ -183,7 +183,7 @@ func (e *Engine) runSingleLoop(ctx context.Context) error {
 
 		// (Handler succeeded) or (handler failed and error strategy succeeded) => commit the offset
 		if err := e.adapter.CommitOffset(msg.Topic, msg.Partition, msg.Offset); err != nil {
-			// todo: can we afford to continue if offset is not commited?
+			// todo: can we afford to continue if offset is not committed?
 			e.logger.Error().Err(err).
 				Int64("offset", msg.Offset).
 				Int32("partition", msg.Partition).

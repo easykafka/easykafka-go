@@ -55,7 +55,7 @@ func TestShutdownStopsFetching(t *testing.T) {
 
 	select {
 	case err := <-done:
-		assert.NoError(t, err)
+		require.NoError(t, err)
 	case <-time.After(5 * time.Second):
 		t.Fatal("engine did not stop after context cancellation")
 	}
@@ -110,7 +110,7 @@ func TestShutdownWaitsForInFlightHandler(t *testing.T) {
 	// Engine should wait for handler to finish
 	select {
 	case err := <-done:
-		assert.NoError(t, err)
+		require.NoError(t, err)
 		assert.True(t, handlerCompleted.Load(), "handler should have completed before engine stopped")
 	case <-time.After(5 * time.Second):
 		t.Fatal("engine did not stop after handler completion")
@@ -301,8 +301,8 @@ func TestShutdownEngineStopSignal(t *testing.T) {
 
 	select {
 	case err := <-done:
-		assert.NoError(t, err)
-		assert.Greater(t, processedCount.Load(), int32(0), "should have processed some messages")
+		require.NoError(t, err)
+		assert.Positive(t, processedCount.Load(), "should have processed some messages")
 	case <-time.After(5 * time.Second):
 		t.Fatal("engine did not stop after Stop() call")
 	}
@@ -343,7 +343,7 @@ func TestShutdownBatchModeFlushesRemaining(t *testing.T) {
 
 	// 5 messages, batch size 100 -> all should be flushed as a partial batch on shutdown
 	messages := make([]*types.Message, 5)
-	for i := 0; i < 5; i++ {
+	for i := range 5 {
 		messages[i] = newTestMessage("topic", 0, int64(i), "msg")
 	}
 
@@ -424,7 +424,7 @@ func TestConsumerShutdownTimeout(t *testing.T) {
 	defer waitCancel()
 
 	err := eng.WaitForDone(waitCtx)
-	assert.ErrorIs(t, err, context.DeadlineExceeded, "WaitForDone should timeout")
+	require.ErrorIs(t, err, context.DeadlineExceeded, "WaitForDone should timeout")
 
 	// Clean up: cancel the parent context so the handler exits
 	cancel()
@@ -489,7 +489,7 @@ func (c *slowPollClient) Poll(ctx context.Context, timeoutMs int) (*types.Messag
 	if c.pollIndex >= len(c.messages) {
 		// Simulate blocking poll behavior
 		time.Sleep(time.Duration(timeoutMs) * time.Millisecond)
-		return nil, nil
+		return nil, nil //nolint:nilnil // nil,nil is the mock poll contract for "no message"
 	}
 	msg := c.messages[c.pollIndex]
 	c.pollIndex++
@@ -537,9 +537,9 @@ func (c *blockingPollClient) Poll(ctx context.Context, timeoutMs int) (*types.Me
 	// Block until context is cancelled
 	select {
 	case <-ctx.Done():
-		return nil, nil
+		return nil, nil //nolint:nilnil // nil,nil is the mock poll contract for "no message"
 	case <-time.After(time.Duration(timeoutMs) * time.Millisecond):
-		return nil, nil
+		return nil, nil //nolint:nilnil // nil,nil is the mock poll contract for "no message"
 	}
 }
 

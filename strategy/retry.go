@@ -138,10 +138,10 @@ type RetryStrategy struct {
 // The strategy must be initialized via Initialize() before use (called automatically by Consumer.Start).
 func NewRetryStrategy(opts ...RetryOption) (*RetryStrategy, error) {
 	cfg := RetryConfig{
-		MaxAttempts:     3,
+		MaxAttempts:     3, //nolint:mnd
 		InitialDelay:    1 * time.Second,
-		MaxDelay:        30 * time.Second,
-		Multiplier:      2.0,
+		MaxDelay:        30 * time.Second, //nolint:mnd
+		Multiplier:      2.0,              //nolint:mnd
 		PayloadEncoding: types.PayloadEncodingJSON,
 	}
 
@@ -166,7 +166,12 @@ func NewRetryStrategy(opts ...RetryOption) (*RetryStrategy, error) {
 
 // NewRetryStrategyWithProducers creates a retry strategy with externally provided producers.
 // Used for testing with mock producers.
-func NewRetryStrategyWithProducers(cfg RetryConfig, retryProducer, dlqProducer types.KafkaProducer, logger zerolog.Logger) *RetryStrategy {
+func NewRetryStrategyWithProducers(
+	cfg RetryConfig,
+	retryProducer, dlqProducer types.KafkaProducer,
+	logger zerolog.Logger,
+) *RetryStrategy {
+
 	return &RetryStrategy{
 		config:        cfg,
 		retryProducer: retryProducer,
@@ -315,7 +320,7 @@ func (r *RetryStrategy) sendToDLQ(ctx context.Context, msg *types.Message, handl
 		origTopic = msg.Topic
 	}
 
-	dlqMessage := map[string]interface{}{
+	dlqMessage := map[string]any{
 		"originalTopic":     origTopic,
 		"originalPartition": msg.Partition,
 		"originalOffset":    msg.Offset,

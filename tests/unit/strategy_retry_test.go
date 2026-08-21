@@ -186,7 +186,7 @@ func TestNewRetryStrategyDefaults(t *testing.T) {
 	assert.Equal(t, 3, cfg.MaxAttempts)
 	assert.Equal(t, time.Second, cfg.InitialDelay)
 	assert.Equal(t, 30*time.Second, cfg.MaxDelay)
-	assert.Equal(t, 2.0, cfg.Multiplier)
+	assert.InEpsilon(t, 2.0, cfg.Multiplier, 1e-9)
 	assert.Equal(t, types.PayloadEncodingJSON, cfg.PayloadEncoding)
 }
 
@@ -208,7 +208,7 @@ func TestNewRetryStrategyCustomOptions(t *testing.T) {
 	assert.Equal(t, 5, cfg.MaxAttempts)
 	assert.Equal(t, 2*time.Second, cfg.InitialDelay)
 	assert.Equal(t, 60*time.Second, cfg.MaxDelay)
-	assert.Equal(t, 3.0, cfg.Multiplier)
+	assert.InEpsilon(t, 3.0, cfg.Multiplier, 1e-9)
 	assert.Equal(t, types.PayloadEncodingBase64, cfg.PayloadEncoding)
 }
 
@@ -280,7 +280,7 @@ func TestRetryStrategySendsToRetryQueueOnFirstFailure(t *testing.T) {
 	retryMsgs := retryProd.getMessages()
 	require.Len(t, retryMsgs, 1)
 	assert.Equal(t, "test.retry", retryMsgs[0].Topic)
-	assert.Equal(t, []byte(`{"orderId":"12345"}`), retryMsgs[0].Value)
+	assert.JSONEq(t, `{"orderId":"12345"}`, string(retryMsgs[0].Value))
 
 	// Verify headers
 	assert.Equal(t, "1", retryMsgs[0].Headers[metadata.HeaderRetryAttempt])
@@ -653,7 +653,7 @@ func TestCircuitBreakerTripsAfterThreshold(t *testing.T) {
 	}
 
 	// First two failures: circuit stays closed
-	for i := 0; i < 2; i++ {
+	for i := range 2 {
 		err := cb.HandleError(context.Background(), []*types.Message{msg}, errors.New("err"))
 		require.NoError(t, err, "failure %d should not open circuit", i+1)
 		assert.Equal(t, strategy.CircuitClosed, cb.State())
@@ -679,7 +679,7 @@ func TestCircuitBreakerSuccessResetsCounter(t *testing.T) {
 	}
 
 	// 2 failures
-	for i := 0; i < 2; i++ {
+	for range 2 {
 		_ = cb.HandleError(context.Background(), []*types.Message{msg}, errors.New("err"))
 	}
 
@@ -689,7 +689,7 @@ func TestCircuitBreakerSuccessResetsCounter(t *testing.T) {
 	cb.OnSuccess()
 
 	// Now need 3 more failures to trip
-	for i := 0; i < 2; i++ {
+	for range 2 {
 		err := cb.HandleError(context.Background(), []*types.Message{msg}, errors.New("err"))
 		require.NoError(t, err)
 		assert.Equal(t, strategy.CircuitClosed, cb.State())
@@ -805,7 +805,7 @@ func TestCircuitBreakerHalfOpenToOpenOnFailure(t *testing.T) {
 	})
 
 	err = cb.HandleError(context.Background(), []*types.Message{msg}, errors.New("still failing"))
-	assert.Error(t, err)
+	require.Error(t, err)
 	// The state should reflect that the circuit was reopened
 	assert.Equal(t, strategy.CircuitOpen, cb.State())
 }

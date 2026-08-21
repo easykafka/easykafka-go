@@ -65,7 +65,7 @@ func (m *mockKafkaClient) Poll(ctx context.Context, timeoutMs int) (*types.Messa
 		return nil, m.pollErr
 	}
 	if m.pollIndex >= len(m.messages) {
-		return nil, nil // No more messages
+		return nil, nil //nolint:nilnil // "no message" sentinel in the mock poll contract
 	}
 	msg := m.messages[m.pollIndex]
 	m.pollIndex++
@@ -194,7 +194,7 @@ func TestEngineDispatchSuccess(t *testing.T) {
 	assert.Equal(t, int64(2), commits[2].Offset)
 
 	// Verify strategy was never called (no errors)
-	assert.Len(t, strat.getHandleCalls(), 0)
+	assert.Empty(t, strat.getHandleCalls())
 
 	// Verify adapter lifecycle
 	assert.True(t, client.connected)
@@ -278,7 +278,7 @@ func TestEngineDispatchStrategyFatal(t *testing.T) {
 	assert.Len(t, calls, 1)
 
 	// No offsets should be committed
-	assert.Len(t, client.getCommittedOffsets(), 0)
+	assert.Empty(t, client.getCommittedOffsets())
 }
 
 // TestEngineDispatchPanicRecovery verifies that handler panics are recovered

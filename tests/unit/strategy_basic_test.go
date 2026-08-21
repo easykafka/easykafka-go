@@ -69,7 +69,7 @@ func TestFailFastStrategyAlwaysStopsConsumer(t *testing.T) {
 	s := strategy.NewFailFastStrategy()
 
 	// Call multiple times — always returns error
-	for i := 0; i < 5; i++ {
+	for i := range 5 {
 		msgs := []*types.Message{
 			newStrategyTestMessage("topic", 0, int64(i), "msg"),
 		}
@@ -105,7 +105,7 @@ func TestSkipStrategyName(t *testing.T) {
 func TestSkipStrategyAlwaysContinues(t *testing.T) {
 	s := strategy.NewSkipStrategy(zerolog.Nop())
 
-	for i := 0; i < 10; i++ {
+	for i := range 10 {
 		msgs := []*types.Message{
 			newStrategyTestMessage("topic", 0, int64(i), "msg"),
 		}

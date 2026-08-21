@@ -99,7 +99,7 @@ func TestRetryStrategyWritesToRetryTopic(t *testing.T) {
 
 	cancel()
 	consumerErr := <-done
-	assert.NoError(t, consumerErr)
+	require.NoError(t, consumerErr)
 
 	retryMsgs := cluster.ConsumeMessages(ctx, t, retryTopic,
 		"verify-retry-"+suffix, 2, 15*time.Second)
@@ -183,7 +183,7 @@ func TestRetryStrategyWritesToDLQAfterMaxAttempts(t *testing.T) {
 
 	cancel()
 	consumerErr := <-done
-	assert.NoError(t, consumerErr)
+	require.NoError(t, consumerErr)
 
 	time.Sleep(1 * time.Second)
 
@@ -192,7 +192,7 @@ func TestRetryStrategyWritesToDLQAfterMaxAttempts(t *testing.T) {
 
 	require.Len(t, dlqMsgs, 1, "expected 1 message in DLQ")
 
-	var envelope map[string]interface{}
+	var envelope map[string]any
 	err = json.Unmarshal(dlqMsgs[0].Value, &envelope)
 	require.NoError(t, err, "DLQ message should be valid JSON")
 

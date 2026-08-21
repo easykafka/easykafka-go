@@ -89,7 +89,7 @@ func TestGracefulShutdownCompletesInFlight(t *testing.T) {
 		t.Fatal("consumer did not stop after context cancellation")
 	}
 
-	assert.NoError(t, consumerErr)
+	require.NoError(t, consumerErr)
 
 	// At least the message being processed should have completed
 	mu.Lock()

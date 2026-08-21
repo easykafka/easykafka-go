@@ -143,7 +143,7 @@ func (k *KafkaTestCluster) ProduceMessages(ctx context.Context, t *testing.T, to
 	}
 
 	// Wait for deliveries
-	for i := 0; i < len(messages); i++ {
+	for i := range messages {
 		ev := <-deliveryChan
 		m := ev.(*kfk.Message)
 		if m.TopicPartition.Error != nil {

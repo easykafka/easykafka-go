@@ -68,7 +68,7 @@ func TestBatchBuffer_FlushReturnsNilWhenEmpty(t *testing.T) {
 func TestBatchBuffer_MaintainsOrder(t *testing.T) {
 	buf := engine.NewBatchBuffer(10, 10*time.Second)
 
-	for i := 0; i < 5; i++ {
+	for i := range 5 {
 		buf.Add(newTestMessage("topic", 0, int64(i), "msg-"+string(rune('a'+i))))
 	}
 

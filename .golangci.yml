@@ -29,6 +29,11 @@ linters:
   - whitespace    # Tool for detection of leading and trailing whitespace
   - zerologlint   # Detects the wrong usage of zerolog that a user forgets to dispatch with Send or Msg.
   settings:
+    misspell:
+      # `strat` is shorthand for "strategy" throughout the tests, not a typo for
+      # "start" — 66 of the 67 findings were this one word.
+      ignore-rules:
+        - strat
     revive:
       rules:
         - name: exported
@@ -54,6 +59,13 @@ linters:
     - source: "^\t*// "
       linters:
         - lll
+    # TODO(lint): gocritic commentFormatting — the disabled CreateTopic call in
+    # reconnection_test.go should either be deleted or restored; a commented-out
+    # line cannot carry its own //nolint directive, so it is suppressed here.
+    - path: ^tests/integration/reconnection_test\.go$
+      text: commentFormatting
+      linters:
+        - gocritic
     # Test code: magic numbers, long table-driven cases, deferred Close() and
     # fixed-signature helpers are idiomatic here and not worth the churn.
     - path: ^tests/
@@ -67,3 +79,6 @@ linters:
         - unparam
 issues:
   max-issues-per-linter: 0
+  # Siblings rely on the default (3), which hides repeats of the same issue
+  # text and makes the backlog look smaller than it is. Report everything.
+  max-same-issues: 0

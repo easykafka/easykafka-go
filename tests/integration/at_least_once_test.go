@@ -35,7 +35,7 @@ func TestAtLeastOnceDelivery(t *testing.T) {
 	// Produce a batch of messages
 	const messageCount = 50
 	var produced []string
-	for i := 0; i < messageCount; i++ {
+	for i := range messageCount {
 		produced = append(produced, fmt.Sprintf("alo-msg-%d", i))
 	}
 	cluster.ProduceMessages(ctx, t, topic, produced)
@@ -75,7 +75,7 @@ func TestAtLeastOnceDelivery(t *testing.T) {
 	cancel()
 	<-done
 
-	assert.NoError(t, consumerErr)
+	require.NoError(t, consumerErr)
 
 	mu.Lock()
 	defer mu.Unlock()
@@ -183,7 +183,7 @@ func TestAtLeastOnceAfterBrokerRestart(t *testing.T) {
 	cancel()
 	<-done
 
-	assert.NoError(t, consumerErr)
+	require.NoError(t, consumerErr)
 
 	mu.Lock()
 	defer mu.Unlock()
@@ -194,7 +194,9 @@ func TestAtLeastOnceAfterBrokerRestart(t *testing.T) {
 	}
 
 	// Every produced message (pre and post restart) must appear at least once
-	allProduced := append(preMessages, postMessages...)
+	// TODO(lint): gocritic appendAssign — appending to preMessages aliases its
+	// backing array; build the union into a fresh slice instead.
+	allProduced := append(preMessages, postMessages...) //nolint:gocritic // see TODO above
 	for _, msg := range allProduced {
 		assert.GreaterOrEqual(t, receivedSet[msg], 1,
 			"message %q was never delivered after broker restart (violates at-least-once)", msg)
@@ -288,7 +290,7 @@ func TestAtLeastOnceWithHandlerErrors(t *testing.T) {
 	cancel()
 	<-done
 
-	assert.NoError(t, consumerErr)
+	require.NoError(t, consumerErr)
 
 	mu.Lock()
 	defer mu.Unlock()

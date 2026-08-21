@@ -97,7 +97,7 @@ func TestKafkaConfigPassthrough(t *testing.T) {
 
 	cancel()
 	<-done
-	assert.NoError(t, consumerErr)
+	require.NoError(t, consumerErr)
 
 	mu.Lock()
 	defer mu.Unlock()
@@ -180,7 +180,7 @@ func TestKafkaConfigSessionTimeout(t *testing.T) {
 
 	cancel()
 	<-done
-	assert.NoError(t, consumerErr)
+	require.NoError(t, consumerErr)
 
 	mu.Lock()
 	defer mu.Unlock()

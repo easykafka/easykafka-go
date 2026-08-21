@@ -47,7 +47,9 @@ func NewProducer(brokers []string, logger zerolog.Logger) (*Producer, error) {
 // handleDeliveryReports processes delivery reports from the producer.
 func (p *Producer) handleDeliveryReports() {
 	for e := range p.producer.Events() {
-		switch ev := e.(type) {
+		// TODO(lint): gocritic singleCaseSwitch — collapse to a type assertion,
+		// or extend to handle the other librdkafka event types.
+		switch ev := e.(type) { //nolint:gocritic // see TODO above
 		case *kfk.Message:
 			if ev.TopicPartition.Error != nil {
 				p.logger.Error().
@@ -104,7 +106,7 @@ func (p *Producer) Close() {
 	if p.producer == nil {
 		return
 	}
-	p.producer.Flush(5000) // Wait up to 5s for pending messages
+	p.producer.Flush(5000) //nolint:mnd // Wait up to 5s for pending messages
 	p.producer.Close()
 	p.producer = nil
 }

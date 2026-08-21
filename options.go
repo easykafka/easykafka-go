@@ -3,6 +3,7 @@ package easykafka
 import (
 	"errors"
 	"fmt"
+	"slices"
 	"time"
 
 	"github.com/easykafka/easykafka-go/internal/types"
@@ -38,10 +39,10 @@ const (
 // ApplyDefaults applies sensible defaults to optional configuration fields.
 func (c *Config) ApplyDefaults() {
 	if c.PollTimeout == 0 {
-		c.PollTimeout = 100 * time.Millisecond
+		c.PollTimeout = 100 * time.Millisecond //nolint:mnd
 	}
 	if c.ShutdownTimeout == 0 {
-		c.ShutdownTimeout = 30 * time.Second
+		c.ShutdownTimeout = 30 * time.Second //nolint:mnd
 	}
 
 	if c.Mode == ModeSingleMessage && c.ErrorStrategy == nil {
@@ -107,10 +108,8 @@ func WithBrokers(brokers ...string) Option {
 		if len(brokers) == 0 {
 			return errors.New("at least one broker must be provided")
 		}
-		for _, b := range brokers {
-			if b == "" {
-				return errors.New("broker address cannot be empty")
-			}
+		if slices.Contains(brokers, "") {
+			return errors.New("broker address cannot be empty")
 		}
 		c.Brokers = brokers
 		return nil
@@ -155,7 +154,7 @@ func WithBatchHandler(handler BatchHandler) Option {
 			c.BatchSize = 100 // default batch size
 		}
 		if c.BatchTimeout <= 0 {
-			c.BatchTimeout = 5 * time.Second // default batch timeout
+			c.BatchTimeout = 5 * time.Second //nolint:mnd // default batch timeout
 		}
 		return nil
 	}

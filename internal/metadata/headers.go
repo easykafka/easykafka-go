@@ -68,7 +68,9 @@ func GetRetryStep(msg *types.Message) int32 {
 	if err != nil {
 		return 0
 	}
-	return int32(step)
+	// TODO(lint): gosec G109 — validate that the parsed step fits in int32
+	// instead of truncating silently.
+	return int32(step) //nolint:gosec // see TODO above
 }
 
 // GetOriginalTopic reads the original topic from message headers.

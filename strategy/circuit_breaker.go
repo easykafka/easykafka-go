@@ -109,9 +109,9 @@ type CircuitBreakerStrategy struct {
 // NewCircuitBreakerStrategy creates a circuit breaker strategy.
 func NewCircuitBreakerStrategy(opts ...CircuitBreakerOption) (*CircuitBreakerStrategy, error) {
 	cfg := CircuitBreakerConfig{
-		FailureThreshold: 10,
-		CooldownPeriod:   60 * time.Second,
-		HalfOpenAttempts: 3,
+		FailureThreshold: 10,               //nolint:mnd
+		CooldownPeriod:   60 * time.Second, //nolint:mnd
+		HalfOpenAttempts: 3,                //nolint:mnd
 	}
 
 	for _, opt := range opts {
@@ -229,7 +229,13 @@ func (cb *CircuitBreakerStrategy) Name() string {
 }
 
 // handleClosed handles errors in the Closed (normal) state.
-func (cb *CircuitBreakerStrategy) handleClosed(ctx context.Context, msgs []*types.Message, handlerErr error, now time.Time) error {
+func (cb *CircuitBreakerStrategy) handleClosed(
+	ctx context.Context,
+	msgs []*types.Message,
+	handlerErr error,
+	now time.Time,
+) error {
+
 	cb.failureCount++
 	cb.logger.Warn().
 		Int("failures", cb.failureCount).
@@ -281,7 +287,13 @@ func (cb *CircuitBreakerStrategy) handleOpen(now time.Time) error {
 }
 
 // handleHalfOpen handles errors in the HalfOpen state.
-func (cb *CircuitBreakerStrategy) handleHalfOpen(ctx context.Context, msgs []*types.Message, handlerErr error, now time.Time) error {
+func (cb *CircuitBreakerStrategy) handleHalfOpen(
+	ctx context.Context,
+	msgs []*types.Message,
+	handlerErr error,
+	now time.Time,
+) error {
+
 	// Failure in half-open — downstream still broken, reopen circuit
 	cb.state = CircuitOpen
 	cb.failureCount = 0

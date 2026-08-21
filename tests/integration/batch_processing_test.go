@@ -93,7 +93,7 @@ func TestBatchProcessing_SizeTrigger(t *testing.T) {
 
 	cancel()
 	<-done
-	assert.NoError(t, consumerErr)
+	require.NoError(t, consumerErr)
 
 	mu.Lock()
 	defer mu.Unlock()
@@ -187,7 +187,7 @@ func TestBatchProcessing_TimeoutTrigger(t *testing.T) {
 
 	cancel()
 	<-done
-	assert.NoError(t, consumerErr)
+	require.NoError(t, consumerErr)
 
 	mu.Lock()
 	defer mu.Unlock()
@@ -275,7 +275,7 @@ func TestBatchProcessing_AtomicCommit(t *testing.T) {
 
 	cancel()
 	<-done
-	assert.NoError(t, consumerErr)
+	require.NoError(t, consumerErr)
 
 	// Verify offsets were committed by starting a new consumer on the same group.
 	// It should not receive any messages since offsets were committed.

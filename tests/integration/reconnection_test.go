@@ -19,6 +19,8 @@ import (
 // 2. Stops the Kafka container (simulating broker failure)
 // 3. Restarts the container on the same port
 // 4. Produces new messages and verifies the consumer reconnects and resumes processing
+// TODO(lint): gocritic commentFormatting — decide whether the disabled
+// CreateTopic call below is still needed, then delete it or restore it.
 func TestBrokerReconnectionAfterRestart(t *testing.T) {
 	t.Log("TestBrokerReconnectionAfterRestart started")
 	defer t.Log("TestBrokerReconnectionAfterRestart finished")
@@ -130,7 +132,7 @@ func TestBrokerReconnectionAfterRestart(t *testing.T) {
 	cancel()
 	<-done
 
-	assert.NoError(t, consumerErr)
+	require.NoError(t, consumerErr)
 
 	// Verify we received all messages (at-least-once: may have duplicates)
 	mu.Lock()
@@ -227,7 +229,7 @@ func TestConsumerSurvivesTransientErrors(t *testing.T) {
 	cancel()
 	<-done
 
-	assert.NoError(t, consumerErr)
+	require.NoError(t, consumerErr)
 
 	mu.Lock()
 	defer mu.Unlock()

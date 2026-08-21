@@ -107,7 +107,7 @@ func TestBasicConsumption(t *testing.T) {
 	<-done
 
 	// consumerErr is expected to be nil (context cancellation is clean)
-	assert.NoError(t, consumerErr)
+	require.NoError(t, consumerErr)
 
 	// Verify all messages were received
 	mu.Lock()
@@ -202,7 +202,7 @@ func TestBasicConsumptionWithErrorStrategy(t *testing.T) {
 	cancel()
 	<-done
 
-	assert.NoError(t, consumerErr)
+	require.NoError(t, consumerErr)
 
 	mu.Lock()
 	defer mu.Unlock()
@@ -286,7 +286,7 @@ func TestBasicConsumptionPanicRecovery(t *testing.T) {
 	cancel()
 	<-done
 
-	assert.NoError(t, consumerErr)
+	require.NoError(t, consumerErr)
 
 	mu.Lock()
 	defer mu.Unlock()

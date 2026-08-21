@@ -40,7 +40,7 @@ func TestRebalanceDuplicateProcessingAcceptable(t *testing.T) {
 	// Produce messages before any consumer starts
 	const messageCount = 10_000
 	var produced []string
-	for i := 0; i < messageCount; i++ {
+	for i := range messageCount {
 		produced = append(produced, fmt.Sprintf("rebal-msg-%d", i))
 	}
 	cluster.ProduceMessages(ctx, t, topic, produced)
@@ -237,7 +237,7 @@ func TestRebalanceOnConsumerLeave(t *testing.T) {
 	// Produce messages across both partitions
 	const messageCount = 20
 	var produced []string
-	for i := 0; i < messageCount; i++ {
+	for i := range messageCount {
 		produced = append(produced, fmt.Sprintf("leave-msg-%d", i))
 	}
 	cluster.ProduceMessages(ctx, t, topic, produced)
@@ -344,7 +344,7 @@ func TestRebalanceCommitsBeforeRevocation(t *testing.T) {
 	// Stop consumer 1 - rebalance callback should commit offsets
 	c1Cancel()
 	<-c1Done
-	assert.NoError(t, c1Err)
+	require.NoError(t, c1Err)
 
 	// Phase 2: consumer 2 joins the same group and should NOT re-receive
 	// messages already committed by consumer 1 (beyond at-least-once margin)
@@ -374,7 +374,7 @@ func TestRebalanceCommitsBeforeRevocation(t *testing.T) {
 	go func() { c2Err = c2.Start(c2Ctx); close(c2Done) }()
 
 	<-c2Done
-	assert.NoError(t, c2Err)
+	require.NoError(t, c2Err)
 
 	mu.Lock()
 	defer mu.Unlock()
@@ -414,7 +414,7 @@ func TestRebalanceWithSlowHandler(t *testing.T) {
 	// Produce messages
 	const messageCount = 15
 	var produced []string
-	for i := 0; i < messageCount; i++ {
+	for i := range messageCount {
 		produced = append(produced, fmt.Sprintf("slow-msg-%d", i))
 	}
 	cluster.ProduceMessages(ctx, t, topic, produced)
@@ -565,7 +565,7 @@ func TestRebalanceNoDataLossWithDirectConsumer(t *testing.T) {
 	waitForMessages(t, &mu, &received, len(produced), 30*time.Second)
 	cCancel()
 	<-cDone
-	assert.NoError(t, cErr)
+	require.NoError(t, cErr)
 
 	// Now verify committed offsets via a raw consumer - it should have
 	// nothing new to read from the same group because offsets were committed.
