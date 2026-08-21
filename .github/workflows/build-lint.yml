@@ -29,8 +29,10 @@ jobs:
       - name: Build
         run: go build ./...
 
+      # Version comes from .golangci-lint-version — the same file `make lint`
+      # reads, so CI and local runs use identical binaries.
       - name: Run golangci-lint
-        uses: golangci/golangci-lint-action@v6
+        uses: golangci/golangci-lint-action@v9
         with:
-          version: latest
+          version-file: .golangci-lint-version
 

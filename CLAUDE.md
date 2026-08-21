@@ -32,6 +32,27 @@ go build ./...
 go mod download
 ```
 
+### Tooling & Linting
+Dev tools are installed into `./bin` (gitignored) at pinned versions — never
+globally, and never via brew. Run this once after cloning:
+```bash
+make install-tools        # golangci-lint + gotestsum into ./bin
+make lint                 # ./bin/golangci-lint run
+```
+
+Version pins are single-sourced:
+- `.golangci-lint-version` — read by both the `Makefile` and
+  `.github/workflows/build-lint.yml` (via the action's `version-file` input),
+  so local and CI always run the same linter build. Bump that one file.
+- `GOTESTSUM_VERSION` in the `Makefile` — CI installs it via
+  `make install-test-tools` and runs tests through `make test-unit` /
+  `make test-integration`, so flags cannot drift between local and CI.
+
+`.golangci.yml` is kept in sync with the other SRM Go repos (`srm-common`,
+`srm-overask`, `srm-transactional-core`); `tests/` is excluded from the
+churn-heavy linters (`mnd`, `lll`, `dupl`, `gocognit`, `gosec`, `errcheck`,
+`unparam`). Note golangci-lint v2 requires `golangci-lint-action@v7` or newer.
+
 ## Architecture
 
 ### Public API (root package)
