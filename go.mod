@@ -10,7 +10,7 @@ go 1.27.0
 
 require (
 	github.com/confluentinc/confluent-kafka-go/v2 v2.15.0
-	github.com/moby/moby/api v1.55.0
+	github.com/moby/moby/api v1.56.0
 	github.com/rs/zerolog v1.35.1
 	github.com/stretchr/testify v1.12.1
 	github.com/testcontainers/testcontainers-go v0.44.0
