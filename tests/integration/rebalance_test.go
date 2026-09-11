@@ -28,12 +28,15 @@ func TestRebalanceDuplicateProcessingAcceptable(t *testing.T) {
 		t.Skip("skipping integration test in short mode")
 	}
 
+	// Deliberately not t.Parallel: a second consumer joining the group is what
+	// this test measures, so it must be the only thing making the coordinator
+	// rebalance. It still shares the broker with every other test.
+
 	ctx := context.Background()
 
-	cluster := helpers.StartKafkaCluster(ctx, t)
-	defer cluster.Stop(ctx, t)
+	cluster := helpers.SharedCluster(t)
 
-	topic := fmt.Sprintf("test-rebalance-%d", time.Now().UnixNano())
+	topic := helpers.UniqueTopicName(t, "test-rebalance")
 	// Use multiple partitions so the rebalance actually reassigns work.
 	cluster.CreateTopic(ctx, t, topic, 3)
 
@@ -161,12 +164,15 @@ func TestRebalanceOnConsumerLeave(t *testing.T) {
 		t.Skip("skipping integration test in short mode")
 	}
 
+	// Deliberately not t.Parallel: the 5s stabilisation sleep and the 6s session
+	// timeout below assume the coordinator is otherwise idle, so a concurrent
+	// test's rebalance could exhaust them. It still shares the broker.
+
 	ctx := context.Background()
 
-	cluster := helpers.StartKafkaCluster(ctx, t)
-	defer cluster.Stop(ctx, t)
+	cluster := helpers.SharedCluster(t)
 
-	topic := fmt.Sprintf("test-rebal-leave-%d", time.Now().UnixNano())
+	topic := helpers.UniqueTopicName(t, "test-rebal-leave")
 	cluster.CreateTopic(ctx, t, topic, 2)
 
 	groupID := fmt.Sprintf("rebal-leave-group-%d", time.Now().UnixNano())
@@ -299,12 +305,15 @@ func TestRebalanceCommitsBeforeRevocation(t *testing.T) {
 		t.Skip("skipping integration test in short mode")
 	}
 
+	// Deliberately not t.Parallel: it asserts that the second consumer does not
+	// re-receive what the first already committed, which only holds if nothing
+	// else perturbs the group's revocation timing. It still shares the broker.
+
 	ctx := context.Background()
 
-	cluster := helpers.StartKafkaCluster(ctx, t)
-	defer cluster.Stop(ctx, t)
+	cluster := helpers.SharedCluster(t)
 
-	topic := fmt.Sprintf("test-rebal-commit-%d", time.Now().UnixNano())
+	topic := helpers.UniqueTopicName(t, "test-rebal-commit")
 	cluster.CreateTopic(ctx, t, topic, 1) // single partition for deterministic offsets
 
 	groupID := fmt.Sprintf("rebal-commit-group-%d", time.Now().UnixNano())
@@ -401,12 +410,15 @@ func TestRebalanceWithSlowHandler(t *testing.T) {
 		t.Skip("skipping integration test in short mode")
 	}
 
+	// Deliberately not t.Parallel: a handler sleeping 500ms per message against a
+	// 6s session timeout leaves little headroom, and CPU contention from parallel
+	// tests would eat it. It still shares the broker.
+
 	ctx := context.Background()
 
-	cluster := helpers.StartKafkaCluster(ctx, t)
-	defer cluster.Stop(ctx, t)
+	cluster := helpers.SharedCluster(t)
 
-	topic := fmt.Sprintf("test-rebal-slow-%d", time.Now().UnixNano())
+	topic := helpers.UniqueTopicName(t, "test-rebal-slow")
 	cluster.CreateTopic(ctx, t, topic, 2)
 
 	groupID := fmt.Sprintf("rebal-slow-group-%d", time.Now().UnixNano())
@@ -524,12 +536,15 @@ func TestRebalanceNoDataLossWithDirectConsumer(t *testing.T) {
 		t.Skip("skipping integration test in short mode")
 	}
 
+	// Deliberately not t.Parallel: it inspects committed offsets with a raw
+	// consumer on the same group, which needs the rebalance to have settled and
+	// stayed settled. It still shares the broker.
+
 	ctx := context.Background()
 
-	cluster := helpers.StartKafkaCluster(ctx, t)
-	defer cluster.Stop(ctx, t)
+	cluster := helpers.SharedCluster(t)
 
-	topic := fmt.Sprintf("test-rebal-direct-%d", time.Now().UnixNano())
+	topic := helpers.UniqueTopicName(t, "test-rebal-direct")
 	cluster.CreateTopic(ctx, t, topic, 1)
 
 	groupID := fmt.Sprintf("rebal-direct-group-%d", time.Now().UnixNano())

@@ -25,16 +25,16 @@ func TestRetryStrategyWritesToRetryTopic(t *testing.T) {
 		t.Skip("skipping integration test in short mode")
 	}
 
+	t.Parallel()
+
 	ctx := context.Background()
 
-	cluster := helpers.StartKafkaCluster(ctx, t)
-	defer cluster.Stop(ctx, t)
+	cluster := helpers.SharedCluster(t)
 
-	suffix := fmt.Sprintf("%d", time.Now().UnixNano())
-	sourceTopic := "retry-source-" + suffix
-	retryTopic := "retry-queue-" + suffix
-	dlqTopic := "retry-dlq-" + suffix
-	consumerGroup := "retry-test-group-" + suffix
+	sourceTopic := helpers.UniqueTopicName(t, "retry-source")
+	retryTopic := helpers.UniqueTopicName(t, "retry-queue")
+	dlqTopic := helpers.UniqueTopicName(t, "retry-dlq")
+	consumerGroup := fmt.Sprintf("retry-test-group-%d", time.Now().UnixNano())
 
 	cluster.CreateTopic(ctx, t, sourceTopic, 1)
 	cluster.CreateTopic(ctx, t, retryTopic, 1)
@@ -102,7 +102,7 @@ func TestRetryStrategyWritesToRetryTopic(t *testing.T) {
 	require.NoError(t, consumerErr)
 
 	retryMsgs := cluster.ConsumeMessages(ctx, t, retryTopic,
-		"verify-retry-"+suffix, 2, 15*time.Second)
+		fmt.Sprintf("verify-retry-%d", time.Now().UnixNano()), 2, 15*time.Second)
 
 	require.Len(t, retryMsgs, 2, "expected 2 messages in retry topic")
 
@@ -134,16 +134,16 @@ func TestRetryStrategyWritesToDLQAfterMaxAttempts(t *testing.T) {
 		t.Skip("skipping integration test in short mode")
 	}
 
+	t.Parallel()
+
 	ctx := context.Background()
 
-	cluster := helpers.StartKafkaCluster(ctx, t)
-	defer cluster.Stop(ctx, t)
+	cluster := helpers.SharedCluster(t)
 
-	suffix := fmt.Sprintf("%d", time.Now().UnixNano())
-	sourceTopic := "dlq-source-" + suffix
-	retryTopic := "dlq-retry-" + suffix
-	dlqTopic := "dlq-target-" + suffix
-	consumerGroup := "dlq-test-group-" + suffix
+	sourceTopic := helpers.UniqueTopicName(t, "dlq-source")
+	retryTopic := helpers.UniqueTopicName(t, "dlq-retry")
+	dlqTopic := helpers.UniqueTopicName(t, "dlq-target")
+	consumerGroup := fmt.Sprintf("dlq-test-group-%d", time.Now().UnixNano())
 
 	cluster.CreateTopic(ctx, t, sourceTopic, 1)
 	cluster.CreateTopic(ctx, t, retryTopic, 1)
@@ -188,7 +188,7 @@ func TestRetryStrategyWritesToDLQAfterMaxAttempts(t *testing.T) {
 	time.Sleep(1 * time.Second)
 
 	dlqMsgs := cluster.ConsumeMessages(ctx, t, dlqTopic,
-		"verify-dlq-"+suffix, 1, 15*time.Second)
+		fmt.Sprintf("verify-dlq-%d", time.Now().UnixNano()), 1, 15*time.Second)
 
 	require.Len(t, dlqMsgs, 1, "expected 1 message in DLQ")
 

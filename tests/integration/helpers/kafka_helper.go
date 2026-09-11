@@ -1,11 +1,14 @@
+// Package helpers starts Kafka brokers for the integration suite and provides
+// the topic, producing and consuming calls the tests need.
 package helpers
 
 import (
 	"context"
 	"fmt"
+	"net"
 	"net/netip"
 	"os"
-	"strconv"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -17,7 +20,23 @@ import (
 	"github.com/testcontainers/testcontainers-go/modules/kafka"
 )
 
-const defaultKafkaImage = "confluentinc/cp-kafka:7.5.0"
+const (
+	defaultKafkaImage = "confluentinc/cp-kafka:7.5.0"
+	adminTimeout      = 30 * time.Second
+
+	// brokerStopTimeout is how long Docker waits after SIGTERM before killing
+	// the broker. Kept short deliberately: this image does not shut down on
+	// SIGTERM, so the timeout is really just "how long until SIGKILL", and a
+	// generous value is paid in full on every outage — 30s here cost the two
+	// restart tests 30s each. An abrupt stop is also the better model of the
+	// failure being simulated, since a broker that dies does not shut down
+	// gracefully either. The log survives it: Kafka recovers unflushed segments
+	// when it starts again.
+	brokerStopTimeout = 2 * time.Second
+
+	// kafkaBrokerPort is the container port the Kafka module publishes.
+	kafkaBrokerPort = "9093/tcp"
+)
 
 // kafkaImage returns the Kafka Docker image to use.
 // In CI this is set to the GHCR mirror; locally it falls back to Docker Hub.
@@ -29,58 +48,179 @@ func kafkaImage() string {
 }
 
 var (
-	sharedCluster     *KafkaTestCluster
-	sharedClusterOnce sync.Once
+	sharedCluster *KafkaTestCluster
+	sharedOnce    sync.Once
+	sharedErr     error
 )
 
 // KafkaTestCluster manages a Kafka container for integration tests.
 type KafkaTestCluster struct {
 	Container *kafka.KafkaContainer
 	Brokers   []string
-	hostPort  string // preserved across stop/start for reconnection tests
 }
 
-// StartKafkaCluster starts a Kafka container using confluentinc/cp-kafka.
-func StartKafkaCluster(ctx context.Context, t *testing.T) *KafkaTestCluster {
+// SharedCluster starts one broker for the whole test binary and reuses it.
+//
+// Starting a container costs seconds, so tests share one rather than paying
+// that per test. Each test must therefore use its own topic name — see
+// UniqueTopicName — and its own consumer group, since the broker's state is
+// shared.
+//
+// Nothing here terminates the container, deliberately. There is no test whose
+// lifetime is the right one to tie it to: a t.Cleanup registered by whichever
+// test happened to call first would tear the broker down while every other test
+// is still using it. Ownership belongs to Ryuk, the testcontainers reaper, which
+// holds an open connection to this process and deletes everything labelled with
+// its session id once the binary exits — including on a panic, a -timeout kill
+// or an interrupt, which a t.Cleanup would not cover.
+func SharedCluster(t *testing.T) *KafkaTestCluster {
 	t.Helper()
 
-	container, err := kafka.Run(ctx, kafkaImage(),
-		kafka.WithClusterID("test-cluster"),
-	)
-	if err != nil {
-		t.Fatalf("failed to start kafka container: %v", err)
+	sharedOnce.Do(func() {
+		ctx := context.Background()
+
+		container, err := kafka.Run(ctx, kafkaImage(), kafka.WithClusterID("test-cluster"))
+		if err != nil {
+			sharedErr = fmt.Errorf("starting kafka container: %w", err)
+
+			return
+		}
+
+		brokers, err := container.Brokers(ctx)
+		if err != nil {
+			sharedErr = fmt.Errorf("resolving broker addresses: %w", err)
+
+			return
+		}
+
+		sharedCluster = &KafkaTestCluster{Container: container, Brokers: brokers}
+	})
+
+	// Re-checked by every caller, not just the one that ran the Once: a failure
+	// there would otherwise hand every later test a nil cluster to dereference.
+	if sharedErr != nil {
+		t.Fatalf("kafka cluster unavailable: %v", sharedErr)
 	}
 
-	brokers, err := container.Brokers(ctx)
+	return sharedCluster
+}
+
+// DedicatedCluster starts a broker for one test and terminates it afterwards.
+//
+// For tests that must disturb the broker itself — stopping it to watch a client
+// reconnect — which the shared cluster cannot host, since every other test in
+// the binary is using it. Costs a container start, so it is worth it only for
+// that.
+func DedicatedCluster(t *testing.T) *KafkaTestCluster {
+	t.Helper()
+
+	ctx := context.Background()
+
+	// The host port is pinned rather than left to Docker, because a stop and
+	// start would otherwise hand the broker a different one, and a client that
+	// survived the outage would then be reconnecting to nothing. Pinning it is
+	// what makes the outage look to the client like the broker it already knows
+	// going away and coming back.
+	port := freePort(t)
+
+	broker, err := kafka.Run(ctx, kafkaImage(),
+		kafka.WithClusterID("test-dedicated"),
+		testcontainers.WithHostConfigModifier(func(hc *container.HostConfig) {
+			hc.PortBindings = network.PortMap{
+				// Both families. The broker advertises "localhost", which
+				// resolves to ::1 first, so an IPv4-only binding is refused by
+				// every client that gets that far — the admin client falls back
+				// to IPv4 and works, while the producer does not, which makes
+				// the failure look like a broken broker rather than a binding.
+				network.MustParsePort(kafkaBrokerPort): []network.PortBinding{
+					{HostIP: netip.IPv4Unspecified(), HostPort: port},
+					{HostIP: netip.IPv6Unspecified(), HostPort: port},
+				},
+			}
+		}),
+	)
+	if err != nil {
+		t.Fatalf("starting dedicated kafka container: %v", err)
+	}
+
+	t.Cleanup(func() {
+		if err := broker.Terminate(context.Background()); err != nil {
+			t.Logf("terminating dedicated kafka container: %v", err)
+		}
+	})
+
+	brokers, err := broker.Brokers(ctx)
 	if err != nil {
 		t.Fatalf("failed to get broker addresses: %v", err)
 	}
 
-	// Extract and store the host port for potential restart with same port
-	mappedPort, err := container.MappedPort(ctx, "9093/tcp")
-	if err != nil {
-		t.Fatalf("failed to get mapped port: %v", err)
-	}
-	hostPort := mappedPort.Port()
+	t.Logf("dedicated kafka container started, brokers: %v", brokers)
 
-	t.Logf("Kafka container started, brokers: %v", brokers)
-
-	return &KafkaTestCluster{
-		Container: container,
-		Brokers:   brokers,
-		hostPort:  hostPort,
-	}
+	return &KafkaTestCluster{Container: broker, Brokers: brokers}
 }
 
-// Stop terminates the Kafka container.
-func (k *KafkaTestCluster) Stop(ctx context.Context, t *testing.T) {
+// freePort reserves a port by binding and releasing it, and returns it for the
+// container to claim.
+//
+// Racy in principle — something else could take it in between — but the window
+// is microseconds and the alternative is a hard-coded port that collides with
+// whatever is already running.
+func freePort(t *testing.T) string {
 	t.Helper()
-	if k.Container == nil {
-		return
+
+	l, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("reserving a host port: %v", err)
 	}
-	if err := k.Container.Terminate(ctx); err != nil {
-		t.Logf("warning: failed to terminate kafka container: %v", err)
+	defer func() { _ = l.Close() }()
+
+	_, port, err := net.SplitHostPort(l.Addr().String())
+	if err != nil {
+		t.Fatalf("reading the reserved port: %v", err)
 	}
+
+	return port
+}
+
+// StopBroker stops the broker container, as an outage would.
+//
+// The container is stopped, not terminated: its log directory and host port
+// mapping both survive, so the topics and messages written before the outage
+// are still there when StartBroker brings it back, and the addresses handed to
+// a client beforehand are still the right ones. Only use this on a
+// DedicatedCluster.
+func (k *KafkaTestCluster) StopBroker(ctx context.Context, t *testing.T) {
+	t.Helper()
+
+	timeout := brokerStopTimeout
+	if err := k.Container.Stop(ctx, &timeout); err != nil {
+		t.Fatalf("stopping broker: %v", err)
+	}
+
+	t.Log("Kafka container stopped (data and port preserved for restart)")
+}
+
+// StartBroker brings a stopped broker back at the same address.
+func (k *KafkaTestCluster) StartBroker(ctx context.Context, t *testing.T) {
+	t.Helper()
+
+	if err := k.Container.Start(ctx); err != nil {
+		t.Fatalf("restarting broker: %v", err)
+	}
+
+	// The addresses must not have moved, or a client that survived the outage
+	// would be reconnecting to nothing and the test would prove the opposite of
+	// what it claims.
+	brokers, err := k.Container.Brokers(ctx)
+	if err != nil {
+		t.Fatalf("failed to get broker addresses after restart: %v", err)
+	}
+	if strings.Join(brokers, ",") != strings.Join(k.Brokers, ",") {
+		t.Fatalf("broker moved across the restart: was %v, now %v — this test cannot say anything "+
+			"about reconnection", k.Brokers, brokers)
+	}
+
+	t.Logf("Kafka container restarted, brokers: %v", brokers)
 }
 
 // CreateTopic creates a topic with the given name and partitions using an admin client.
@@ -211,64 +351,11 @@ func GetHeader(msg *kfk.Message, key string) string {
 	return ""
 }
 
-// StopBroker terminates the Kafka container to simulate broker failure.
-// Use StartBroker to create a new container on the same port.
-func (k *KafkaTestCluster) StopBroker(ctx context.Context, t *testing.T) {
-	t.Helper()
-	if err := k.Container.Terminate(ctx); err != nil {
-		t.Fatalf("failed to terminate kafka container: %v", err)
-	}
-	k.Container = nil
-	t.Logf("Kafka container terminated (port %s preserved for restart)", k.hostPort)
-}
-
-// StartBroker creates a new Kafka container bound to the same host port as the
-// original container. This preserves the broker address so existing consumers
-// can reconnect automatically.
-func (k *KafkaTestCluster) StartBroker(ctx context.Context, t *testing.T) {
-	t.Helper()
-
-	portNum, err := strconv.Atoi(k.hostPort)
-	if err != nil {
-		t.Fatalf("invalid host port %q: %v", k.hostPort, err)
-	}
-
-	brokerPort, err := network.ParsePort("9093/tcp")
-	if err != nil {
-		t.Fatalf("invalid broker port: %v", err)
-	}
-
-	// Bind to the same host port so consumers reconnect to the same address
-	withFixedPort := func(req *testcontainers.GenericContainerRequest) error {
-		req.HostConfigModifier = func(hc *container.HostConfig) {
-			hc.PortBindings = network.PortMap{
-				brokerPort: []network.PortBinding{
-					{HostIP: netip.IPv4Unspecified(), HostPort: strconv.Itoa(portNum)},
-				},
-			}
-		}
-		return nil
-	}
-
-	container, err := kafka.Run(ctx, kafkaImage(),
-		kafka.WithClusterID("test-cluster"),
-		testcontainers.CustomizeRequestOption(withFixedPort),
-	)
-	if err != nil {
-		t.Fatalf("failed to start kafka container on port %s: %v", k.hostPort, err)
-	}
-
-	k.Container = container
-
-	brokers, err := container.Brokers(ctx)
-	if err != nil {
-		t.Fatalf("failed to get broker addresses after restart: %v", err)
-	}
-	k.Brokers = brokers
-	t.Logf("Kafka container restarted, brokers: %v (same port %s)", brokers, k.hostPort)
-}
-
 // WaitForBrokerReady waits until the Kafka broker is ready to accept connections.
+//
+// Starting a container is not the same as the broker inside it being ready, and
+// testcontainers does not re-apply its wait strategy to a restart — so without
+// this, the first call after StartBroker races Kafka's startup.
 func (k *KafkaTestCluster) WaitForBrokerReady(ctx context.Context, t *testing.T, timeout time.Duration) {
 	t.Helper()
 	deadline := time.After(timeout)
@@ -309,45 +396,25 @@ func (k *KafkaTestCluster) WaitForBrokerReady(ctx context.Context, t *testing.T,
 	}
 }
 
-// UniqueTopicName generates a unique topic name for a test.
+// UniqueTopicName returns a topic name unique to this test, so tests sharing the
+// broker cannot interfere with one another.
 func UniqueTopicName(t *testing.T, prefix string) string {
-	return fmt.Sprintf("%s-%s", prefix, t.Name())
-}
-
-// SharedKafkaCluster returns a package-level Kafka container that is started
-// once and reused across all integration tests in this package. This avoids the
-// overhead of launching a new container for every test.
-//
-// The first call starts the container; subsequent calls return the same
-// instance. The container is cleaned up automatically via t.Cleanup on the
-// first caller's test, so it lives for the duration of the test suite.
-//
-// Tests that need an isolated broker (for example, reconnection tests that
-// stop and restart the container) should call helpers.StartKafkaCluster
-// directly instead of using this helper.
-//
-// Usage:
-//
-//	func TestMyFeature(t *testing.T) {
-//	    if testing.Short() {
-//	        t.Skip("skipping integration test in short mode")
-//	    }
-//	    cluster := SharedKafkaCluster(t)
-//	    topic := helpers.UniqueTopicName(t, "my-feature")
-//	    cluster.CreateTopic(context.Background(), t, topic, 1)
-//	    // ... use cluster.Brokers, cluster.ProduceMessages, etc.
-//	}
-func SharedKafkaCluster(t *testing.T) *KafkaTestCluster {
 	t.Helper()
 
-	sharedClusterOnce.Do(func() {
-		ctx := context.Background()
-		sharedCluster = StartKafkaCluster(ctx, t)
-		t.Cleanup(func() {
-			sharedCluster.Stop(ctx, t)
-		})
-		t.Logf("shared kafka cluster started, brokers: %v", sharedCluster.Brokers)
-	})
+	return fmt.Sprintf("%s-%d-%s", prefix, time.Now().UnixNano(), sanitise(t.Name()))
+}
 
-	return sharedCluster
+// sanitise reduces a test name to characters Kafka accepts in a topic name.
+func sanitise(name string) string {
+	out := make([]rune, 0, len(name))
+	for _, r := range name {
+		switch {
+		case r >= 'a' && r <= 'z', r >= 'A' && r <= 'Z', r >= '0' && r <= '9', r == '-', r == '_':
+			out = append(out, r)
+		default:
+			out = append(out, '-')
+		}
+	}
+
+	return string(out)
 }

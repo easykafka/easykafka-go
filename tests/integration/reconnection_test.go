@@ -19,8 +19,6 @@ import (
 // 2. Stops the Kafka container (simulating broker failure)
 // 3. Restarts the container on the same port
 // 4. Produces new messages and verifies the consumer reconnects and resumes processing
-// TODO(lint): gocritic commentFormatting — decide whether the disabled
-// CreateTopic call below is still needed, then delete it or restore it.
 func TestBrokerReconnectionAfterRestart(t *testing.T) {
 	t.Log("TestBrokerReconnectionAfterRestart started")
 	defer t.Log("TestBrokerReconnectionAfterRestart finished")
@@ -29,13 +27,15 @@ func TestBrokerReconnectionAfterRestart(t *testing.T) {
 		t.Skip("skipping integration test in short mode")
 	}
 
+	t.Parallel()
+
 	ctx := context.Background()
 
-	// Start Kafka cluster
-	cluster := helpers.StartKafkaCluster(ctx, t)
-	defer cluster.Stop(ctx, t)
+	// Dedicated, because this test stops the broker: the shared cluster is in
+	// use by every other test in the binary.
+	cluster := helpers.DedicatedCluster(t)
 
-	topic := fmt.Sprintf("test-reconnect-%d", time.Now().UnixNano())
+	topic := helpers.UniqueTopicName(t, "test-reconnect")
 	cluster.CreateTopic(ctx, t, topic, 1)
 
 	// Produce initial messages (before broker failure)
@@ -107,7 +107,7 @@ func TestBrokerReconnectionAfterRestart(t *testing.T) {
 	t.Log("Phase 2: Waiting for consumer to detect broker unavailability...")
 	time.Sleep(3 * time.Second)
 
-	// Phase 3: Restart the Kafka container (same port preserved by creating new container)
+	// Phase 3: Restart the Kafka container at the same address
 	t.Log("Phase 3: Restarting Kafka container...")
 	cluster.StartBroker(ctx, t)
 
@@ -115,8 +115,8 @@ func TestBrokerReconnectionAfterRestart(t *testing.T) {
 	t.Log("Phase 3: Waiting for Kafka to be ready after restart...")
 	cluster.WaitForBrokerReady(ctx, t, 60*time.Second)
 
-	// Re-create the topic on the new container (data was lost with old container)
-	//cluster.CreateTopic(ctx, t, topic, 1) // disabled, what AI says above is not true, the topic will be there after restart
+	// The topic needs no re-creating: the container is stopped and started, not
+	// replaced, so its log directory survives the outage along with the topic.
 
 	// Phase 4: Produce new messages after recovery
 	t.Log("Phase 4: Producing post-recovery messages...")
@@ -159,12 +159,13 @@ func TestConsumerSurvivesTransientErrors(t *testing.T) {
 		t.Skip("skipping integration test in short mode")
 	}
 
+	t.Parallel()
+
 	ctx := context.Background()
 
-	cluster := helpers.StartKafkaCluster(ctx, t)
-	defer cluster.Stop(ctx, t)
+	cluster := helpers.SharedCluster(t)
 
-	topic := fmt.Sprintf("test-transient-%d", time.Now().UnixNano())
+	topic := helpers.UniqueTopicName(t, "test-transient")
 	cluster.CreateTopic(ctx, t, topic, 1)
 
 	messages := []string{"msg-1", "msg-2", "msg-3"}

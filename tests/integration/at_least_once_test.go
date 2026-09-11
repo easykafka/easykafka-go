@@ -24,12 +24,13 @@ func TestAtLeastOnceDelivery(t *testing.T) {
 		t.Skip("skipping integration test in short mode")
 	}
 
+	t.Parallel()
+
 	ctx := context.Background()
 
-	cluster := helpers.StartKafkaCluster(ctx, t)
-	defer cluster.Stop(ctx, t)
+	cluster := helpers.SharedCluster(t)
 
-	topic := fmt.Sprintf("test-alo-%d", time.Now().UnixNano())
+	topic := helpers.UniqueTopicName(t, "test-alo")
 	cluster.CreateTopic(ctx, t, topic, 3) // multiple partitions for realistic coverage
 
 	// Produce a batch of messages
@@ -115,12 +116,15 @@ func TestAtLeastOnceAfterBrokerRestart(t *testing.T) {
 		t.Skip("skipping integration test in short mode")
 	}
 
+	t.Parallel()
+
 	ctx := context.Background()
 
-	cluster := helpers.StartKafkaCluster(ctx, t)
-	defer cluster.Stop(ctx, t)
+	// Dedicated, because this test stops the broker: the shared cluster is in
+	// use by every other test in the binary.
+	cluster := helpers.DedicatedCluster(t)
 
-	topic := fmt.Sprintf("test-alo-restart-%d", time.Now().UnixNano())
+	topic := helpers.UniqueTopicName(t, "test-alo-restart")
 	cluster.CreateTopic(ctx, t, topic, 1)
 
 	// Phase 1: produce pre-restart messages
@@ -218,12 +222,13 @@ func TestAtLeastOnceWithHandlerErrors(t *testing.T) {
 		t.Skip("skipping integration test in short mode")
 	}
 
+	t.Parallel()
+
 	ctx := context.Background()
 
-	cluster := helpers.StartKafkaCluster(ctx, t)
-	defer cluster.Stop(ctx, t)
+	cluster := helpers.SharedCluster(t)
 
-	topic := fmt.Sprintf("test-alo-errors-%d", time.Now().UnixNano())
+	topic := helpers.UniqueTopicName(t, "test-alo-errors")
 	cluster.CreateTopic(ctx, t, topic, 1)
 
 	messages := []string{"ok-1", "fail-msg", "ok-2", "ok-3"}

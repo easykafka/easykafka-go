@@ -24,14 +24,14 @@ func TestCircuitBreakerStopsConsumerAfterThreshold(t *testing.T) {
 		t.Skip("skipping integration test in short mode")
 	}
 
+	t.Parallel()
+
 	ctx := context.Background()
 
-	cluster := helpers.StartKafkaCluster(ctx, t)
-	defer cluster.Stop(ctx, t)
+	cluster := helpers.SharedCluster(t)
 
-	suffix := fmt.Sprintf("%d", time.Now().UnixNano())
-	topic := "cb-test-" + suffix
-	consumerGroup := "cb-group-" + suffix
+	topic := helpers.UniqueTopicName(t, "cb-test")
+	consumerGroup := fmt.Sprintf("cb-group-%d", time.Now().UnixNano())
 
 	cluster.CreateTopic(ctx, t, topic, 1)
 
@@ -92,14 +92,14 @@ func TestCircuitBreakerAllowsCleanShutdownBeforeThreshold(t *testing.T) {
 		t.Skip("skipping integration test in short mode")
 	}
 
+	t.Parallel()
+
 	ctx := context.Background()
 
-	cluster := helpers.StartKafkaCluster(ctx, t)
-	defer cluster.Stop(ctx, t)
+	cluster := helpers.SharedCluster(t)
 
-	suffix := fmt.Sprintf("%d", time.Now().UnixNano())
-	topic := "cb-clean-" + suffix
-	consumerGroup := "cb-clean-group-" + suffix
+	topic := helpers.UniqueTopicName(t, "cb-clean")
+	consumerGroup := fmt.Sprintf("cb-clean-group-%d", time.Now().UnixNano())
 
 	cluster.CreateTopic(ctx, t, topic, 1)
 

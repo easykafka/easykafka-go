@@ -23,11 +23,12 @@ func TestBatchProcessing_SizeTrigger(t *testing.T) {
 		t.Skip("skipping integration test in short mode")
 	}
 
-	ctx := context.Background()
-	cluster := helpers.StartKafkaCluster(ctx, t)
-	defer cluster.Stop(ctx, t)
+	t.Parallel()
 
-	topic := fmt.Sprintf("test-batch-size-%d", time.Now().UnixNano())
+	ctx := context.Background()
+	cluster := helpers.SharedCluster(t)
+
+	topic := helpers.UniqueTopicName(t, "test-batch-size")
 	cluster.CreateTopic(ctx, t, topic, 1)
 
 	// Produce exactly 6 messages => expect 2 batches of size 3
@@ -117,11 +118,12 @@ func TestBatchProcessing_TimeoutTrigger(t *testing.T) {
 		t.Skip("skipping integration test in short mode")
 	}
 
-	ctx := context.Background()
-	cluster := helpers.StartKafkaCluster(ctx, t)
-	defer cluster.Stop(ctx, t)
+	t.Parallel()
 
-	topic := fmt.Sprintf("test-batch-timeout-%d", time.Now().UnixNano())
+	ctx := context.Background()
+	cluster := helpers.SharedCluster(t)
+
+	topic := helpers.UniqueTopicName(t, "test-batch-timeout")
 	cluster.CreateTopic(ctx, t, topic, 1)
 
 	// Produce 2 messages -- batch size is 100, so only timeout should trigger
@@ -211,11 +213,12 @@ func TestBatchProcessing_AtomicCommit(t *testing.T) {
 		t.Skip("skipping integration test in short mode")
 	}
 
-	ctx := context.Background()
-	cluster := helpers.StartKafkaCluster(ctx, t)
-	defer cluster.Stop(ctx, t)
+	t.Parallel()
 
-	topic := fmt.Sprintf("test-batch-commit-%d", time.Now().UnixNano())
+	ctx := context.Background()
+	cluster := helpers.SharedCluster(t)
+
+	topic := helpers.UniqueTopicName(t, "test-batch-commit")
 	groupID := fmt.Sprintf("test-batch-commit-group-%d", time.Now().UnixNano())
 	cluster.CreateTopic(ctx, t, topic, 1) // todo: with more than one partition this will probably not work!
 

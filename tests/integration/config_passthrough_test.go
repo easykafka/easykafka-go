@@ -23,12 +23,13 @@ func TestKafkaConfigPassthrough(t *testing.T) {
 		t.Skip("skipping integration test in short mode")
 	}
 
+	t.Parallel()
+
 	ctx := context.Background()
 
-	cluster := helpers.StartKafkaCluster(ctx, t)
-	defer cluster.Stop(ctx, t)
+	cluster := helpers.SharedCluster(t)
 
-	topic := fmt.Sprintf("test-passthrough-%d", time.Now().UnixNano())
+	topic := helpers.UniqueTopicName(t, "test-passthrough")
 	cluster.CreateTopic(ctx, t, topic, 1)
 
 	preMessages := []string{"pre-1", "pre-2", "pre-3"}
@@ -116,12 +117,13 @@ func TestKafkaConfigSessionTimeout(t *testing.T) {
 		t.Skip("skipping integration test in short mode")
 	}
 
+	t.Parallel()
+
 	ctx := context.Background()
 
-	cluster := helpers.StartKafkaCluster(ctx, t)
-	defer cluster.Stop(ctx, t)
+	cluster := helpers.SharedCluster(t)
 
-	topic := fmt.Sprintf("test-session-timeout-%d", time.Now().UnixNano())
+	topic := helpers.UniqueTopicName(t, "test-session-timeout")
 	cluster.CreateTopic(ctx, t, topic, 1)
 
 	var mu sync.Mutex

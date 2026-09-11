@@ -25,12 +25,13 @@ func TestGracefulShutdownCompletesInFlight(t *testing.T) {
 		t.Skip("skipping integration test in short mode")
 	}
 
+	t.Parallel()
+
 	ctx := context.Background()
 
-	cluster := helpers.StartKafkaCluster(ctx, t)
-	defer cluster.Stop(ctx, t)
+	cluster := helpers.SharedCluster(t)
 
-	topic := fmt.Sprintf("test-shutdown-inflight-%d", time.Now().UnixNano())
+	topic := helpers.UniqueTopicName(t, "test-shutdown-inflight")
 	cluster.CreateTopic(ctx, t, topic, 1)
 
 	// Produce messages
@@ -108,12 +109,13 @@ func TestGracefulShutdownViaMethod(t *testing.T) {
 		t.Skip("skipping integration test in short mode")
 	}
 
+	t.Parallel()
+
 	ctx := context.Background()
 
-	cluster := helpers.StartKafkaCluster(ctx, t)
-	defer cluster.Stop(ctx, t)
+	cluster := helpers.SharedCluster(t)
 
-	topic := fmt.Sprintf("test-shutdown-method-%d", time.Now().UnixNano())
+	topic := helpers.UniqueTopicName(t, "test-shutdown-method")
 	cluster.CreateTopic(ctx, t, topic, 1)
 
 	cluster.ProduceMessages(ctx, t, topic, []string{"msg-1", "msg-2"})
@@ -176,12 +178,13 @@ func TestGracefulShutdownNoNewMessages(t *testing.T) {
 		t.Skip("skipping integration test in short mode")
 	}
 
+	t.Parallel()
+
 	ctx := context.Background()
 
-	cluster := helpers.StartKafkaCluster(ctx, t)
-	defer cluster.Stop(ctx, t)
+	cluster := helpers.SharedCluster(t)
 
-	topic := fmt.Sprintf("test-shutdown-nofetch-%d", time.Now().UnixNano())
+	topic := helpers.UniqueTopicName(t, "test-shutdown-nofetch")
 	cluster.CreateTopic(ctx, t, topic, 1)
 
 	// Produce initial messages

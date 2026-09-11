@@ -27,13 +27,14 @@ func TestBasicConsumption(t *testing.T) {
 		t.Skip("skipping integration test in short mode")
 	}
 
+	t.Parallel()
+
 	ctx := context.Background()
 
 	// Start a Kafka cluster
-	cluster := helpers.StartKafkaCluster(ctx, t)
-	defer cluster.Stop(ctx, t)
+	cluster := helpers.SharedCluster(t)
 
-	topic := fmt.Sprintf("test-basic-%d", time.Now().UnixNano())
+	topic := helpers.UniqueTopicName(t, "test-basic")
 
 	// Create topic with 1 partition for deterministic ordering
 	cluster.CreateTopic(ctx, t, topic, 1)
@@ -133,12 +134,13 @@ func TestBasicConsumptionWithErrorStrategy(t *testing.T) {
 		t.Skip("skipping integration test in short mode")
 	}
 
+	t.Parallel()
+
 	ctx := context.Background()
 
-	cluster := helpers.StartKafkaCluster(ctx, t)
-	defer cluster.Stop(ctx, t)
+	cluster := helpers.SharedCluster(t)
 
-	topic := fmt.Sprintf("test-error-strategy-%d", time.Now().UnixNano())
+	topic := helpers.UniqueTopicName(t, "test-error-strategy")
 	cluster.CreateTopic(ctx, t, topic, 1)
 
 	// Produce messages — one will fail
@@ -220,12 +222,13 @@ func TestBasicConsumptionPanicRecovery(t *testing.T) {
 		t.Skip("skipping integration test in short mode")
 	}
 
+	t.Parallel()
+
 	ctx := context.Background()
 
-	cluster := helpers.StartKafkaCluster(ctx, t)
-	defer cluster.Stop(ctx, t)
+	cluster := helpers.SharedCluster(t)
 
-	topic := fmt.Sprintf("test-panic-%d", time.Now().UnixNano())
+	topic := helpers.UniqueTopicName(t, "test-panic")
 	cluster.CreateTopic(ctx, t, topic, 1)
 
 	messages := []string{"normal", "panic-me", "after-panic"}
