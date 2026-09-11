@@ -1,3 +1,19 @@
+<!-- Mirror notice. Kept as plain HTML on purpose: it renders as a bordered box on
+     both GitHub and GitLab, whereas GitHub's "> [!IMPORTANT]" alert syntax would
+     show up as literal text on the mirror — the one place it needs to be read. -->
+<table>
+  <tr>
+    <td>
+      <h3>⚠️ &nbsp;Not on <code>github.com/easykafka</code>? You are reading a mirror.</h3>
+      <p>
+        This copy is <strong>read-only</strong> and may lag behind. Issues, pull requests, releases and CI
+        all live at the source of truth:<br><br>
+        👉 &nbsp;<a href="https://github.com/easykafka/easykafka-go"><strong>github.com/easykafka/easykafka-go</strong></a>
+      </p>
+    </td>
+  </tr>
+</table>
+
 # 🔀 easykafka-go
 
 [![Build & Lint](https://github.com/easykafka/easykafka-go/actions/workflows/build-lint.yml/badge.svg)](https://github.com/easykafka/easykafka-go/actions/workflows/build-lint.yml)
@@ -5,7 +21,6 @@
 [![Integration Tests](https://github.com/easykafka/easykafka-go/actions/workflows/integration-tests.yml/badge.svg)](https://github.com/easykafka/easykafka-go/actions/workflows/integration-tests.yml)
 [![codecov](https://codecov.io/gh/easykafka/easykafka-go/branch/main/graph/badge.svg)](https://codecov.io/gh/easykafka/easykafka-go)
 [![Go Reference](https://pkg.go.dev/badge/github.com/easykafka/easykafka-go.svg)](https://pkg.go.dev/github.com/easykafka/easykafka-go)
-[![Go Report Card](https://goreportcard.com/badge/github.com/easykafka/easykafka-go)](https://goreportcard.com/report/github.com/easykafka/easykafka-go)
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](https://opensource.org/licenses/MIT)
 
 A minimal, handler-based Kafka consumer library for Go, built on top of
@@ -13,6 +28,8 @@ A minimal, handler-based Kafka consumer library for Go, built on top of
 
 Write a function, point it at a topic, and let the library handle polling,
 offset commits, rebalancing, and error recovery.
+
+* **[Changelog](CHANGELOG.md)** — what each release contains, and what it deliberately does not.
 
 ## 💡 Why easykafka?
 
@@ -33,7 +50,7 @@ instead of *how* to survive when things go wrong.
 go get github.com/easykafka/easykafka-go
 ```
 
-Requires Go 1.19+ and a C toolchain for `librdkafka` (see the confluent-kafka-go
+Requires Go 1.27+ and a C toolchain for `librdkafka` (see the confluent-kafka-go
 docs for platform-specific instructions).
 
 ## 🚀 Quick Start
@@ -240,3 +257,13 @@ For details see:
 - https://github.com/github/spec-kit
 - https://www.youtube.com/watch?v=a9eR1xsfvHg
 - https://github.blog/ai-and-ml/generative-ai/spec-driven-development-with-ai-get-started-with-a-new-open-source-toolkit/
+
+## 📜 Releases
+
+Version history is in [CHANGELOG.md](CHANGELOG.md); tagged releases appear on
+[pkg.go.dev](https://pkg.go.dev/github.com/easykafka/easykafka-go). Pre-1.0, the public API may still
+change in a minor release.
+
+## 📄 Licence
+
+MIT — see [MIT-LICENSE.md](MIT-LICENSE.md).
