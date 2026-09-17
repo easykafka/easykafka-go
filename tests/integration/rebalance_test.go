@@ -15,7 +15,7 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-// TestRebalanceDuplicateProcessingAcceptable verifies FR-043 under rebalance:
+// TestRebalanceDuplicateProcessingAcceptable verifies at-least-once under rebalance:
 // when a second consumer joins the same group, a partition rebalance occurs.
 // Messages that were in-flight at the time of revocation may be re-delivered
 // to another consumer. At-least-once semantics guarantee every message is

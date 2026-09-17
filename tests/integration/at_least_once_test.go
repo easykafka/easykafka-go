@@ -13,7 +13,7 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-// TestAtLeastOnceDelivery verifies FR-043: at-least-once delivery semantics.
+// TestAtLeastOnceDelivery verifies at-least-once delivery semantics.
 // All produced messages must be received by the handler. Duplicates are
 // acceptable (at-least-once), but no message may be lost.
 func TestAtLeastOnceDelivery(t *testing.T) {

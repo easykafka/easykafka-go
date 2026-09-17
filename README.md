@@ -211,8 +211,22 @@ easykafka.WithKafkaConfig(map[string]any{
 })
 ```
 
-Keys managed by the library (`bootstrap.servers`, `group.id`,
-`enable.auto.commit`) cannot be overridden.
+Some keys are managed by the library and are rejected with an explanation rather
+than silently ignored:
+
+| Key | Why |
+|---|---|
+| `bootstrap.servers` | set by `WithBrokers` |
+| `group.id` | set by `WithConsumerGroup` |
+| `enable.auto.commit` | the library decides when offsets are published |
+| `enable.auto.offset.store` | offsets are recorded only once a message has been processed |
+| `partition.assignment.strategy` | rebalance handling requires an eager strategy |
+
+The last two are what make at-least-once hold. Left to librdkafka, the offset
+store advances the moment a message is polled — before your handler has seen it,
+or at all in batch mode — so a rebalance would commit work that never happened.
+And the rebalance handling assumes every partition is revoked at once, which a
+cooperative strategy breaks.
 
 ## 🧪 Testing
 

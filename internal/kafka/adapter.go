@@ -2,6 +2,7 @@ package kafka
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"strings"
 	"sync"
@@ -12,6 +13,10 @@ import (
 	"github.com/easykafka/easykafka-go/internal/types"
 )
 
+// Adapter is the production KafkaClient: everything the engine needs from Kafka,
+// and the only place confluent-kafka-go is touched.
+var _ types.KafkaClient = (*Adapter)(nil)
+
 // Adapter wraps confluent-kafka-go for the consumer.
 type Adapter struct {
 	consumer *kfk.Consumer
@@ -21,12 +26,23 @@ type Adapter struct {
 	groupID  string
 	logger   zerolog.Logger
 
-	// Rebalance tracking
+	// mu guards both fields below, which are written from different places:
+	// assignedPartitions from the rebalance callback, and brokerConnected from
+	// Poll as the transport drops and recovers.
 	mu                 sync.Mutex
 	assignedPartitions []kfk.TopicPartition
+	brokerConnected    bool
 
-	// Reconnection tracking (FR-042)
-	brokerConnected bool
+	// onRevoke is invoked from the rebalance callback when partitions are
+	// revoked, so the engine can discard work it no longer owns. The rebalance
+	// callback runs on the goroutine that calls Poll, so this needs no locking.
+	onRevoke func()
+}
+
+// SetOnRevoke registers a function invoked when partitions are revoked.
+// Must be called before SubscribeToTopic.
+func (a *Adapter) SetOnRevoke(fn func()) {
+	a.onRevoke = fn
 }
 
 // NewAdapter creates a new Kafka adapter from configuration.
@@ -60,12 +76,45 @@ func NewAdapter(
 		return nil, fmt.Errorf("setting auto.offset.reset: %w", err)
 	}
 
-	// Disable auto-commit for explicit offset management (FR-044: offset commit protection)
+	// Disable auto-commit, so the library alone decides when offsets are published.
 	if err := config.SetKey("enable.auto.commit", false); err != nil {
 		return nil, fmt.Errorf("setting enable.auto.commit: %w", err)
 	}
 
-	// FR-042: Configure reconnection backoff defaults.
+	// Take over the offset store as well. Left at its default of true, librdkafka
+	// stores the offset of every message the moment Poll hands it to the
+	// application — before the handler has run, or even been called at all in
+	// batch mode. Committing that store would then publish work that never
+	// happened. With it off, the store holds only what the engine puts there
+	// after a message is accounted for, which is what makes every commit path
+	// safe. StoreOffsets also refuses to run at all while this is true.
+	if err := config.SetKey("enable.auto.offset.store", false); err != nil {
+		return nil, fmt.Errorf("setting enable.auto.offset.store: %w", err)
+	}
+
+	// Pin the eager rebalance protocol. Two things here depend on every partition
+	// being revoked at once: the rebalance callback below calls Assign/Unassign
+	// rather than their Incremental counterparts, and on revoke the engine drops
+	// its whole batch buffer rather than the revoked partitions' share of it.
+	//
+	// That drop is only safe under an eager revoke. Everything is unassigned, so
+	// the partitions come back with their fetch positions reset to the committed
+	// offset, and the dropped messages are redelivered. Under a cooperative
+	// strategy only a subset is revoked: the partitions we keep hold their fetch
+	// positions, so buffered messages for them are never re-read — and the next
+	// message on that partition stores a higher offset whose commit seals the gap.
+	// The messages are not redelivered and not recorded as failed. They are simply
+	// gone.
+	//
+	// librdkafka already defaults to these two strategies, but a default is not
+	// something to rest a correctness argument on, so set it explicitly. Supporting
+	// cooperative rebalancing means making both of those call sites
+	// partition-aware; until then, reject it rather than lose messages quietly.
+	if err := config.SetKey("partition.assignment.strategy", "range,roundrobin"); err != nil {
+		return nil, fmt.Errorf("setting partition.assignment.strategy: %w", err)
+	}
+
+	// Configure reconnection backoff defaults.
 	// confluent-kafka-go (librdkafka) handles automatic reconnection natively.
 	// These defaults ensure reasonable backoff with exponential increase.
 	reconnectDefaults := map[string]any{
@@ -166,17 +215,24 @@ func (a *Adapter) rebalanceCallback(c *kfk.Consumer, event kfk.Event) error {
 			Strs("partitions", partitions).
 			Msg("partitions revoked")
 
-		// Commit current offsets before revocation
-		committed, err := c.Commit()
-		if err != nil {
-			// It's okay if there's nothing to commit
-			if kfkErr, ok := err.(kfk.Error); ok && kfkErr.Code() == kfk.ErrNoOffset {
-				a.logger.Debug().Msg("no offsets to commit during revocation")
-			} else {
-				a.logger.Warn().Err(err).Msg("failed to commit offsets during revocation")
-			}
-		} else {
-			a.logger.Debug().Int("committed", len(committed)).Msg("offsets committed during revocation")
+		// Stop caring about work we are about to give away. Buffered messages for
+		// these partitions were never stored, so dropping them cannot affect the
+		// commit below — it only avoids processing them for a partition that now
+		// belongs to someone else, who will process them too.
+		//
+		// Under the eager protocol every partition is revoked at once, so the
+		// engine drops its whole buffer. That equivalence would not hold under
+		// cooperative-sticky, which revokes a subset.
+		if a.onRevoke != nil {
+			a.onRevoke()
+		}
+
+		// Commit current offsets before revocation. Safe because
+		// enable.auto.offset.store is off: the store holds only offsets the
+		// engine put there after a message was accounted for, so this can no
+		// longer publish messages that were polled but never processed.
+		if err := a.CommitStored(); err != nil {
+			a.logger.Warn().Err(err).Msg("failed to commit offsets during revocation")
 		}
 
 		if err := c.Unassign(); err != nil {
@@ -207,7 +263,7 @@ func (a *Adapter) Poll(ctx context.Context, timeoutMs int) (*types.Message, erro
 
 	switch e := ev.(type) {
 	case *kfk.Message:
-		// FR-042: Detect reconnection — receiving a message means broker is available
+		// Detect reconnection — receiving a message means the broker is available
 		a.mu.Lock()
 		wasDisconnected := !a.brokerConnected
 		a.brokerConnected = true
@@ -237,7 +293,7 @@ func (a *Adapter) Poll(ctx context.Context, timeoutMs int) (*types.Message, erro
 			return nil, fmt.Errorf("fatal kafka error: %w", e)
 		}
 
-		// FR-042: Reconnection-aware logging for broker transport errors.
+		// Reconnection-aware logging for broker transport errors.
 		// confluent-kafka-go handles reconnection automatically via librdkafka;
 		// we log state transitions so operators can observe disconnect/reconnect cycles.
 		a.mu.Lock()
@@ -267,24 +323,83 @@ func (a *Adapter) Poll(ctx context.Context, timeoutMs int) (*types.Message, erro
 	}
 }
 
-// CommitOffset commits an offset for a specific topic/partition.
-// The committed offset is offset+1 (the next message to be consumed).
-func (a *Adapter) CommitOffset(topic string, partition int32, offset int64) error {
+// StoreOffset records that a message has been accounted for, so that the next
+// commit will include it. The stored value is offset+1: Kafka's committed offset
+// is a resume position — the next message to read — not a high-water mark of what
+// has been done. This is the only place that +1 is applied.
+//
+// Returns ErrPartitionRevoked if the partition is no longer assigned, which is an
+// ordinary rebalance race rather than a failure.
+func (a *Adapter) StoreOffset(topic string, partition int32, offset int64) error {
 	if a.consumer == nil {
 		return fmt.Errorf("consumer not connected")
 	}
 
 	topicStr := topic
-	tp := kfk.TopicPartition{
+	stored, storeErr := a.consumer.StoreOffsets([]kfk.TopicPartition{{
 		Topic:     &topicStr,
 		Partition: partition,
-		Offset:    kfk.Offset(offset + 1), // Commit next offset to consume
+		Offset:    kfk.Offset(offset + 1),
+	}})
+
+	// Check the result slice first: those entries name the partition, so the
+	// error can too. Then the top-level error, which is where a call rejected
+	// outright shows up — with the per-partition error left nil.
+	for _, tp := range stored {
+		if tp.Error != nil {
+			return classifyStoreErr(tp.Error, *tp.Topic, tp.Partition)
+		}
+	}
+	if storeErr != nil {
+		return classifyStoreErr(storeErr, topic, partition)
 	}
 
-	_, err := a.consumer.CommitOffsets([]kfk.TopicPartition{tp})
-	if err != nil {
-		return fmt.Errorf("failed to commit offset: %w", err)
+	return nil
+}
+
+// classifyStoreErr turns a librdkafka store error into either the revoked-partition
+// sentinel or an ordinary wrapped error.
+func classifyStoreErr(err error, topic string, partition int32) error {
+	if isNotAssigned(err) {
+		return fmt.Errorf("%w: %s[%d]", types.ErrPartitionRevoked, topic, partition)
 	}
+	return fmt.Errorf("failed to store offset for %s[%d]: %w", topic, partition, err)
+}
+
+// isNotAssigned reports whether err means "this consumer does not currently hold
+// that partition".
+//
+// librdkafka answers ErrState both for a partition that was revoked and for one
+// that never existed — it means "not in a state to accept this offset", not
+// specifically "revoked". That ambiguity is safe here and only here, because the
+// engine stores offsets only for messages Poll handed it, so the partition always
+// existed and was always assigned. Called from anywhere else, this would quietly
+// swallow a bad partition number.
+func isNotAssigned(err error) bool {
+	var kfkErr kfk.Error
+	return errors.As(err, &kfkErr) && kfkErr.Code() == kfk.ErrState
+}
+
+// CommitStored commits the offsets currently in librdkafka's store for this
+// consumer's assignment. Because enable.auto.offset.store is off, the store holds
+// only offsets the engine put there after a message was accounted for, so this is
+// safe to call from any point. An empty store is not an error.
+func (a *Adapter) CommitStored() error {
+	if a.consumer == nil {
+		return fmt.Errorf("consumer not connected")
+	}
+
+	committed, err := a.consumer.Commit()
+	if err != nil {
+		var kfkErr kfk.Error
+		if errors.As(err, &kfkErr) && kfkErr.Code() == kfk.ErrNoOffset {
+			a.logger.Debug().Msg("no stored offsets to commit")
+			return nil
+		}
+		return fmt.Errorf("failed to commit stored offsets: %w", err)
+	}
+
+	a.logger.Debug().Int("committed", len(committed)).Msg("stored offsets committed")
 
 	return nil
 }

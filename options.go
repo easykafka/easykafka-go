@@ -236,12 +236,17 @@ var managedKafkaKeys = map[string]string{
 	"bootstrap.servers":  "managed by WithBrokers",
 	"group.id":           "managed by WithConsumerGroup",
 	"enable.auto.commit": "managed by the library for explicit offset control",
+	"enable.auto.offset.store": "managed by the library; " +
+		"offsets are stored only after a message is processed",
+	"partition.assignment.strategy": "managed by the library; " +
+		"rebalance handling requires an eager strategy, and a cooperative one would silently drop buffered messages",
 }
 
 // WithKafkaConfig passes advanced configuration to confluent-kafka-go.
 // Use this to set low-level Kafka consumer properties.
-// Keys managed by the library (bootstrap.servers, group.id, enable.auto.commit)
-// cannot be set via this option and will return an error.
+// Keys managed by the library (bootstrap.servers, group.id, enable.auto.commit,
+// enable.auto.offset.store, partition.assignment.strategy) cannot be set via this
+// option and will return an error explaining why.
 func WithKafkaConfig(config map[string]any) Option {
 	return func(c *Config) error {
 		if config == nil {

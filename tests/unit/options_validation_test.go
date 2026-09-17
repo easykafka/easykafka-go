@@ -246,8 +246,13 @@ func TestWithKafkaConfigRejectsNil(t *testing.T) {
 	assert.Contains(t, err.Error(), "nil")
 }
 
-// TestWithKafkaConfigRejectsManagedKeys verifies that WithKafkaConfig rejects
-// keys that are managed by the library (bootstrap.servers, group.id, enable.auto.commit).
+// TestWithKafkaConfigRejectsManagedKeys verifies that WithKafkaConfig rejects the
+// keys the library sets itself.
+//
+// The last two are not housekeeping: they are what makes at-least-once hold.
+// Letting a caller re-enable the offset store would put back the bug where a
+// rebalance commits messages no handler has seen, and a cooperative assignment
+// strategy would break the rebalance handling that drops the batch buffer.
 func TestWithKafkaConfigRejectsManagedKeys(t *testing.T) {
 	managedKeys := []struct {
 		key  string
@@ -256,6 +261,8 @@ func TestWithKafkaConfigRejectsManagedKeys(t *testing.T) {
 		{"bootstrap.servers", "bootstrap.servers is managed by WithBrokers"},
 		{"group.id", "group.id is managed by WithConsumerGroup"},
 		{"enable.auto.commit", "enable.auto.commit is managed by the library"},
+		{"enable.auto.offset.store", "enable.auto.offset.store is managed by the library"},
+		{"partition.assignment.strategy", "partition.assignment.strategy is managed by the library"},
 	}
 
 	for _, tc := range managedKeys {

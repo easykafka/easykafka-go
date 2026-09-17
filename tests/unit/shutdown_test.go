@@ -14,7 +14,7 @@ import (
 )
 
 // TestShutdownStopsFetching verifies that when the engine context is cancelled,
-// no new messages are polled from Kafka (FR-036).
+// no new messages are polled from Kafka.
 func TestShutdownStopsFetching(t *testing.T) {
 	var pollCount atomic.Int32
 
@@ -67,7 +67,7 @@ func TestShutdownStopsFetching(t *testing.T) {
 }
 
 // TestShutdownWaitsForInFlightHandler verifies that the engine completes
-// an in-flight handler before stopping (FR-037).
+// an in-flight handler before stopping.
 func TestShutdownWaitsForInFlightHandler(t *testing.T) {
 	handlerStarted := make(chan struct{})
 	handlerCompleted := atomic.Bool{}
@@ -117,12 +117,12 @@ func TestShutdownWaitsForInFlightHandler(t *testing.T) {
 	}
 
 	// Verify offset was committed for the completed message
-	commits := client.getCommittedOffsets()
+	commits := client.getStoredOffsets()
 	assert.Len(t, commits, 1, "offset should be committed for completed in-flight message")
 }
 
 // TestShutdownCommitsFinalOffsets verifies that all completed message offsets
-// are committed during shutdown (FR-038).
+// are committed during shutdown.
 func TestShutdownCommitsFinalOffsets(t *testing.T) {
 	processedCount := atomic.Int32{}
 
@@ -149,7 +149,7 @@ func TestShutdownCommitsFinalOffsets(t *testing.T) {
 	require.NoError(t, err)
 
 	// All 3 offsets should be committed
-	commits := client.getCommittedOffsets()
+	commits := client.getStoredOffsets()
 	require.Len(t, commits, 3)
 	assert.Equal(t, int64(0), commits[0].Offset)
 	assert.Equal(t, int64(1), commits[1].Offset)
@@ -157,7 +157,7 @@ func TestShutdownCommitsFinalOffsets(t *testing.T) {
 }
 
 // TestShutdownTimeoutForcesStop verifies that if the shutdown timeout
-// expires, the engine force-stops and returns a timeout error (FR-040).
+// expires, the engine force-stops and returns a timeout error.
 func TestShutdownTimeoutForcesStop(t *testing.T) {
 	handlerStarted := make(chan struct{})
 
@@ -211,7 +211,7 @@ func TestShutdownTimeoutForcesStop(t *testing.T) {
 }
 
 // TestShutdownContextCancelsHandlerContext verifies that when shutdown begins,
-// the handler's context is cancelled, allowing handlers to abort (FR-035, Acceptance Scenario 4).
+// the handler's context is cancelled, allowing handlers to abort.
 func TestShutdownContextCancelsHandlerContext(t *testing.T) {
 	handlerCtxCancelled := atomic.Bool{}
 	handlerStarted := make(chan struct{})
@@ -309,7 +309,7 @@ func TestShutdownEngineStopSignal(t *testing.T) {
 }
 
 // TestShutdownClosesAdapter verifies that the Kafka adapter is closed
-// during shutdown (FR-039).
+// during shutdown.
 func TestShutdownClosesAdapter(t *testing.T) {
 	client := &mockKafkaClient{
 		messages: []*types.Message{
@@ -376,7 +376,7 @@ func TestShutdownBatchModeFlushesRemaining(t *testing.T) {
 	assert.Equal(t, 5, totalMsgs, "all buffered messages should be flushed on shutdown")
 
 	// Verify offsets were committed
-	commits := client.getCommittedOffsets()
+	commits := client.getStoredOffsets()
 	assert.NotEmpty(t, commits, "offsets should be committed for flushed batch")
 }
 
@@ -496,9 +496,15 @@ func (c *slowPollClient) Poll(ctx context.Context, timeoutMs int) (*types.Messag
 	return msg, nil
 }
 
-func (c *slowPollClient) CommitOffset(topic string, partition int32, offset int64) error {
+func (c *slowPollClient) StoreOffset(topic string, partition int32, offset int64) error {
 	return nil
 }
+
+func (c *slowPollClient) CommitStored() error {
+	return nil
+}
+
+func (c *slowPollClient) SetOnRevoke(fn func()) {}
 
 func (c *slowPollClient) Close(ctx context.Context) error {
 	c.mu.Lock()
@@ -543,9 +549,15 @@ func (c *blockingPollClient) Poll(ctx context.Context, timeoutMs int) (*types.Me
 	}
 }
 
-func (c *blockingPollClient) CommitOffset(topic string, partition int32, offset int64) error {
+func (c *blockingPollClient) StoreOffset(topic string, partition int32, offset int64) error {
 	return nil
 }
+
+func (c *blockingPollClient) CommitStored() error {
+	return nil
+}
+
+func (c *blockingPollClient) SetOnRevoke(fn func()) {}
 
 func (c *blockingPollClient) Close(ctx context.Context) error {
 	c.mu.Lock()
@@ -579,9 +591,15 @@ func (c *infinitePollClient) Poll(ctx context.Context, timeoutMs int) (*types.Me
 	return newTestMessage("topic", 0, off, "infinite-msg"), nil
 }
 
-func (c *infinitePollClient) CommitOffset(topic string, partition int32, offset int64) error {
+func (c *infinitePollClient) StoreOffset(topic string, partition int32, offset int64) error {
 	return nil
 }
+
+func (c *infinitePollClient) CommitStored() error {
+	return nil
+}
+
+func (c *infinitePollClient) SetOnRevoke(fn func()) {}
 
 func (c *infinitePollClient) Close(ctx context.Context) error {
 	c.mu.Lock()

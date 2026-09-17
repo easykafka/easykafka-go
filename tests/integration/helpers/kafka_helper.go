@@ -341,6 +341,48 @@ func (k *KafkaTestCluster) ConsumeMessages(ctx context.Context, t *testing.T, to
 	return messages
 }
 
+// CommittedOffset returns the offset a consumer group has committed for a
+// topic-partition, or kfk.OffsetInvalid when the group has committed nothing.
+//
+// This reads the group's state from the broker without joining the group, so it
+// can be called while consumers are running without provoking a rebalance.
+func (k *KafkaTestCluster) CommittedOffset(
+	ctx context.Context, t *testing.T, group, topic string, partition int32,
+) kfk.Offset {
+
+	t.Helper()
+
+	admin, err := kfk.NewAdminClient(&kfk.ConfigMap{
+		"bootstrap.servers": k.Brokers[0],
+	})
+	if err != nil {
+		t.Fatalf("failed to create admin client: %v", err)
+	}
+	defer admin.Close()
+
+	result, err := admin.ListConsumerGroupOffsets(ctx, []kfk.ConsumerGroupTopicPartitions{{
+		Group:      group,
+		Partitions: []kfk.TopicPartition{{Topic: &topic, Partition: partition}},
+	}})
+	if err != nil {
+		t.Fatalf("failed to list committed offsets for group %s: %v", group, err)
+	}
+
+	// One group with one partition was requested, so at most one entry comes back.
+	for _, groupOffsets := range result.ConsumerGroupsTopicPartitions {
+		if len(groupOffsets.Partitions) == 0 {
+			continue
+		}
+		tp := groupOffsets.Partitions[0]
+		if tp.Error != nil {
+			t.Fatalf("committed offset lookup failed for %s[%d]: %v", topic, partition, tp.Error)
+		}
+		return tp.Offset
+	}
+
+	return kfk.OffsetInvalid
+}
+
 // GetHeader extracts a header value from a Kafka message by key.
 func GetHeader(msg *kfk.Message, key string) string {
 	for _, h := range msg.Headers {

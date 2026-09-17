@@ -18,21 +18,34 @@ import (
 
 // mockKafkaClient implements engine.KafkaClient for testing.
 type mockKafkaClient struct {
-	mu              sync.Mutex
-	connected       bool
-	subscribed      bool
-	closed          bool
-	messages        []*types.Message
-	pollIndex       int
-	commitedOffsets []commitRecord
-	connectErr      error
-	subscribeErr    error
-	pollErr         error
-	commitErr       error
-	closeErr        error
+	mu            sync.Mutex
+	connected     bool
+	subscribed    bool
+	closed        bool
+	messages      []*types.Message
+	pollIndex     int
+	storedOffsets []storeRecord
+	commitCount   int
+	onRevoke      func()
+	connectErr    error
+	subscribeErr  error
+	pollErr       error
+	// storeErr fails StoreOffset. Set it to types.ErrPartitionRevoked to simulate
+	// a rebalance race, or to anything else to simulate a real store failure —
+	// the engine treats the two very differently.
+	storeErr error
+	// storeErrByPartition fails StoreOffset for specific partitions only, so a
+	// single batch can produce a mix of outcomes. Takes precedence over storeErr.
+	storeErrByPartition map[int32]error
+	commitErr           error
+	closeErr            error
+	// revokeAtPoll fires the revoke hook once pollIndex reaches it (0 = never).
+	// The hook runs from inside Poll, mirroring where librdkafka runs it.
+	revokeAtPoll int
+	revokeFired  bool
 }
 
-type commitRecord struct {
+type storeRecord struct {
 	Topic     string
 	Partition int32
 	Offset    int64
@@ -60,30 +73,75 @@ func (m *mockKafkaClient) SubscribeToTopic(ctx context.Context) error {
 
 func (m *mockKafkaClient) Poll(ctx context.Context, timeoutMs int) (*types.Message, error) {
 	m.mu.Lock()
-	defer m.mu.Unlock()
 	if m.pollErr != nil {
-		return nil, m.pollErr
+		err := m.pollErr
+		m.mu.Unlock()
+		return nil, err
 	}
+
+	// Fire the revoke hook from inside Poll, on the caller's goroutine, because
+	// that is where librdkafka runs the rebalance callback. Firing it from
+	// anywhere else would be a race the real adapter cannot produce — and the
+	// engine leaves the batch buffer unsynchronised on exactly this guarantee.
+	if m.revokeAtPoll > 0 && m.pollIndex >= m.revokeAtPoll && !m.revokeFired {
+		m.revokeFired = true
+		fn := m.onRevoke
+		m.mu.Unlock()
+		if fn != nil {
+			fn()
+		}
+		// A poll that delivered a rebalance yields no message, as in the adapter.
+		return nil, nil //nolint:nilnil // "no message" sentinel in the mock poll contract
+	}
+
 	if m.pollIndex >= len(m.messages) {
+		m.mu.Unlock()
 		return nil, nil //nolint:nilnil // "no message" sentinel in the mock poll contract
 	}
 	msg := m.messages[m.pollIndex]
 	m.pollIndex++
+	m.mu.Unlock()
 	return msg, nil
 }
 
-func (m *mockKafkaClient) CommitOffset(topic string, partition int32, offset int64) error {
+func (m *mockKafkaClient) StoreOffset(topic string, partition int32, offset int64) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	if m.commitErr != nil {
-		return m.commitErr
+	if err, ok := m.storeErrByPartition[partition]; ok {
+		return err
 	}
-	m.commitedOffsets = append(m.commitedOffsets, commitRecord{
+	if m.storeErr != nil {
+		return m.storeErr
+	}
+	m.storedOffsets = append(m.storedOffsets, storeRecord{
 		Topic:     topic,
 		Partition: partition,
 		Offset:    offset,
 	})
 	return nil
+}
+
+func (m *mockKafkaClient) CommitStored() error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if m.commitErr != nil {
+		return m.commitErr
+	}
+	m.commitCount++
+	return nil
+}
+
+func (m *mockKafkaClient) SetOnRevoke(fn func()) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.onRevoke = fn
+}
+
+// didRevoke reports whether the revoke hook has fired yet.
+func (m *mockKafkaClient) didRevoke() bool {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	return m.revokeFired
 }
 
 func (m *mockKafkaClient) Close(ctx context.Context) error {
@@ -93,12 +151,22 @@ func (m *mockKafkaClient) Close(ctx context.Context) error {
 	return m.closeErr
 }
 
-func (m *mockKafkaClient) getCommittedOffsets() []commitRecord {
+// getStoredOffsets returns the offsets the engine recorded as processed. These
+// are raw message offsets: the +1 that turns one into a resume position lives in
+// the real adapter, not here.
+func (m *mockKafkaClient) getStoredOffsets() []storeRecord {
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	result := make([]commitRecord, len(m.commitedOffsets))
-	copy(result, m.commitedOffsets)
+	result := make([]storeRecord, len(m.storedOffsets))
+	copy(result, m.storedOffsets)
 	return result
+}
+
+// getCommitCount reports how many times the engine published the store.
+func (m *mockKafkaClient) getCommitCount() int {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	return m.commitCount
 }
 
 // mockStrategy implements types.ErrorStrategy for testing.
@@ -187,7 +255,7 @@ func TestEngineDispatchSuccess(t *testing.T) {
 	mu.Unlock()
 
 	// Verify all offsets were committed
-	commits := client.getCommittedOffsets()
+	commits := client.getStoredOffsets()
 	require.Len(t, commits, 3)
 	assert.Equal(t, int64(0), commits[0].Offset)
 	assert.Equal(t, int64(1), commits[1].Offset)
@@ -232,7 +300,7 @@ func TestEngineDispatchHandlerError(t *testing.T) {
 	require.NoError(t, err)
 
 	// Verify only good messages had their offsets committed
-	commits := client.getCommittedOffsets()
+	commits := client.getStoredOffsets()
 	require.Len(t, commits, 3)
 	assert.Equal(t, int64(0), commits[0].Offset) // good-msg
 	assert.Equal(t, int64(1), commits[1].Offset) // bad-msg
@@ -278,7 +346,7 @@ func TestEngineDispatchStrategyFatal(t *testing.T) {
 	assert.Len(t, calls, 1)
 
 	// No offsets should be committed
-	assert.Empty(t, client.getCommittedOffsets())
+	assert.Empty(t, client.getStoredOffsets())
 }
 
 // TestEngineDispatchPanicRecovery verifies that handler panics are recovered
@@ -315,7 +383,7 @@ func TestEngineDispatchPanicRecovery(t *testing.T) {
 	assert.Contains(t, calls[0].HandlerErr.Error(), "unexpected crash!")
 
 	// Verify all messages were committed (even failed ones since error strategy does not commit by itself!)
-	commits := client.getCommittedOffsets()
+	commits := client.getStoredOffsets()
 	require.Len(t, commits, 3)
 	assert.Equal(t, int64(0), commits[0].Offset)
 	assert.Equal(t, int64(1), commits[1].Offset)
@@ -419,9 +487,15 @@ func (f *fatalPollClient) Poll(ctx context.Context, timeoutMs int) (*types.Messa
 	return nil, f.pollError
 }
 
-func (f *fatalPollClient) CommitOffset(topic string, partition int32, offset int64) error {
+func (f *fatalPollClient) StoreOffset(topic string, partition int32, offset int64) error {
 	return nil
 }
+
+func (f *fatalPollClient) CommitStored() error {
+	return nil
+}
+
+func (f *fatalPollClient) SetOnRevoke(fn func()) {}
 
 func (f *fatalPollClient) Close(ctx context.Context) error {
 	f.mu.Lock()

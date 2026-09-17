@@ -13,7 +13,7 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-// TestBrokerReconnectionAfterRestart verifies FR-042: automatic reconnection
+// TestBrokerReconnectionAfterRestart verifies automatic reconnection
 // on broker unavailability. The test:
 // 1. Starts a consumer and verifies it processes messages
 // 2. Stops the Kafka container (simulating broker failure)

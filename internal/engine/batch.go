@@ -53,6 +53,17 @@ func (b *BatchBuffer) Len() int {
 	return len(b.messages)
 }
 
+// Drop discards all buffered messages without dispatching them and returns how
+// many were discarded. Used when partitions are revoked: the messages belong to
+// whichever consumer owns those partitions now, and it will process them.
+// Nothing is lost — their offsets were never stored, so they are redelivered.
+func (b *BatchBuffer) Drop() int {
+	dropped := len(b.messages)
+	b.messages = make([]*types.Message, 0, b.batchSize)
+	b.firstAdd = time.Time{}
+	return dropped
+}
+
 // Flush returns all buffered messages and resets the buffer.
 // Returns nil if the buffer is empty.
 func (b *BatchBuffer) Flush() []*types.Message {

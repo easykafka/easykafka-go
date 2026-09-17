@@ -2,6 +2,7 @@ package engine
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"runtime/debug"
 	"sync/atomic"
@@ -12,14 +13,10 @@ import (
 	"github.com/rs/zerolog"
 )
 
-// KafkaClient abstracts the Kafka adapter for testability.
-type KafkaClient interface {
-	Connect(ctx context.Context) error
-	SubscribeToTopic(ctx context.Context) error
-	Poll(ctx context.Context, timeoutMs int) (*types.Message, error)
-	CommitOffset(topic string, partition int32, offset int64) error
-	Close(ctx context.Context) error
-}
+// KafkaClient is an alias for the port the engine is driven through. The
+// interface itself lives in internal/types so that the adapter can assert it
+// implements it without the two packages importing each other.
+type KafkaClient = types.KafkaClient
 
 // Engine manages the Kafka polling loop and message dispatch.
 type Engine struct {
@@ -36,6 +33,11 @@ type Engine struct {
 
 	batchSize    int
 	batchTimeout time.Duration
+
+	// buf accumulates messages in batch mode. It lives on the Engine rather than
+	// inside runBatchLoop so the revoke hook can discard it. Only ever touched
+	// from the polling goroutine — see the hook registration in Start.
+	buf *BatchBuffer
 }
 
 const (
@@ -86,6 +88,7 @@ func NewBatchEngine(
 		done:         make(chan struct{}),
 		batchSize:    batchSize,
 		batchTimeout: batchTimeout,
+		buf:          NewBatchBuffer(batchSize, batchTimeout),
 	}
 }
 
@@ -105,6 +108,21 @@ func (e *Engine) Start(ctx context.Context) error {
 		return fmt.Errorf("failed to connect: %w", err)
 	}
 
+	// Discard buffered work when partitions are revoked, before subscribing so the
+	// hook is in place for the first rebalance. Only batch mode buffers anything;
+	// single mode holds at most the message it is currently handling.
+	//
+	// The rebalance callback runs on the goroutine that calls Poll, and this
+	// engine polls from a single goroutine, so the buffer needs no locking.
+	if e.batchHandler != nil {
+		e.adapter.SetOnRevoke(func() {
+			if dropped := e.buf.Drop(); dropped > 0 {
+				e.logger.Debug().Int("dropped", dropped).
+					Msg("discarded buffered messages for revoked partitions")
+			}
+		})
+	}
+
 	// Subscribe to topic
 	if err := e.adapter.SubscribeToTopic(ctx); err != nil {
 		_ = e.adapter.Close(ctx)
@@ -117,6 +135,13 @@ func (e *Engine) Start(ctx context.Context) error {
 		loopErr = e.runBatchLoop(ctx)
 	} else {
 		loopErr = e.runSingleLoop(ctx)
+	}
+
+	// Publish anything stored but not yet committed, before the consumer goes
+	// away. Mostly redundant given the commit after every message or batch, but
+	// it costs one call and saves a replay.
+	if err := e.adapter.CommitStored(); err != nil {
+		e.logger.Warn().Err(err).Msg("final commit failed, offsets remain stored")
 	}
 
 	// Cleanup
@@ -181,13 +206,44 @@ func (e *Engine) runSingleLoop(ctx context.Context) error {
 			}
 		}
 
-		// (Handler succeeded) or (handler failed and error strategy succeeded) => commit the offset
-		if err := e.adapter.CommitOffset(msg.Topic, msg.Partition, msg.Offset); err != nil {
-			// todo: can we afford to continue if offset is not committed?
-			e.logger.Error().Err(err).
+		// (Handler succeeded) or (handler failed and error strategy succeeded) =>
+		// the message is accounted for, so record it and publish the record.
+		if err := e.adapter.StoreOffset(msg.Topic, msg.Partition, msg.Offset); err != nil {
+			if !errors.Is(err, types.ErrPartitionRevoked) {
+				// Continuing here would lose this message: the next message on
+				// this partition stores a higher offset, and committing that
+				// silently declares this one done. Stop instead.
+				e.logger.Error().Err(err).
+					Int64("offset", msg.Offset).
+					Int32("partition", msg.Partition).
+					Msg("failed to store offset, stopping consumer")
+				loopErr = fmt.Errorf("store offset: %w", err)
+				e.state.Store(engineStateStopping)
+				break
+			}
+
+			// Expected during a rebalance, and nothing is lost. The offset was
+			// never stored, so the partition's committed offset still points at
+			// this message, and no later message from it can reach us to store a
+			// higher one — it is no longer assigned. It is therefore redelivered
+			// to whichever consumer holds the partition next, including this one:
+			// an eager rebalance unassigns every partition, so a reassignment
+			// resets the fetch position back to the committed offset.
+			e.logger.Debug().Err(err).
 				Int64("offset", msg.Offset).
 				Int32("partition", msg.Partition).
-				Msg("failed to commit offset")
+				Msg("offset not stored, partition revoked")
+			continue
+		}
+
+		// Unlike a store failure, a failed commit loses nothing: the offset stays
+		// in the store and the next commit covers it. The cost is a replay if the
+		// process dies first, which at-least-once already allows.
+		if err := e.adapter.CommitStored(); err != nil {
+			e.logger.Warn().Err(err).
+				Int64("offset", msg.Offset).
+				Int32("partition", msg.Partition).
+				Msg("commit failed, offset remains stored")
 		}
 	}
 
@@ -199,7 +255,7 @@ func (e *Engine) runSingleLoop(ctx context.Context) error {
 // full or the batch timeout expires. Offsets are committed atomically
 // for the highest offset in each batch.
 func (e *Engine) runBatchLoop(ctx context.Context) error {
-	buf := NewBatchBuffer(e.batchSize, e.batchTimeout)
+	buf := e.buf
 	var loopErr error
 
 	for e.state.Load() == engineStateRunning {
@@ -270,28 +326,54 @@ func (e *Engine) dispatchBatch(ctx context.Context, msgs []*types.Message) error
 		}
 	}
 
-	// Commit the highest offset per topic-partition in the batch.
-	// A batch may contain messages from multiple partitions, so we
-	// find the maximum offset for each (topic, partition) pair and
-	// commit each one individually.
-	type tpKey struct {
+	// Store the highest offset per topic-partition in the batch. A batch may span
+	// several partitions, so find the maximum offset for each (topic, partition)
+	// pair. Storing the maximum asserts that everything below it is accounted for,
+	// which holds because the batch is handled — or written off — as a unit.
+	type topicPartition struct {
 		Topic     string
 		Partition int32
 	}
-	highest := make(map[tpKey]int64)
+	highest := make(map[topicPartition]int64)
 	for _, m := range msgs {
-		key := tpKey{Topic: m.Topic, Partition: m.Partition}
-		if off, ok := highest[key]; !ok || m.Offset > off {
-			highest[key] = m.Offset
+		tp := topicPartition{Topic: m.Topic, Partition: m.Partition}
+		if off, ok := highest[tp]; !ok || m.Offset > off {
+			highest[tp] = m.Offset
 		}
 	}
-	for key, offset := range highest {
-		if err := e.adapter.CommitOffset(key.Topic, key.Partition, offset); err != nil {
-			e.logger.Error().Err(err).
+
+	// One call per partition, so each gets its own classified result. A single
+	// multi-partition call would surface only one error and collapse the
+	// distinction between a revoked partition and a real failure — which now
+	// have opposite handling.
+	var fatal error
+	for tp, offset := range highest {
+		err := e.adapter.StoreOffset(tp.Topic, tp.Partition, offset)
+		switch {
+		case err == nil:
+		case errors.Is(err, types.ErrPartitionRevoked):
+			// Routine: this partition moved to another consumer mid-batch. It
+			// resumes from the last commit and redelivers.
+			e.logger.Debug().Err(err).
 				Int64("offset", offset).
-				Int32("partition", key.Partition).
-				Msg("failed to commit batch offset")
+				Int32("partition", tp.Partition).
+				Msg("batch offset not stored, partition revoked")
+		default:
+			// Remember it, but keep storing the partitions still ours — their
+			// offsets are legitimately processed, and no break here is deliberate.
+			fatal = errors.Join(fatal, err)
 		}
+	}
+
+	// Commit whatever did store, including on the fatal path: those offsets are
+	// legitimately processed, and committing them shrinks the replay on restart.
+	if err := e.adapter.CommitStored(); err != nil {
+		e.logger.Warn().Err(err).Msg("commit failed, batch offsets remain stored")
+	}
+
+	if fatal != nil {
+		e.logger.Error().Err(fatal).Msg("failed to store batch offset, stopping consumer")
+		return fmt.Errorf("store offset: %w", fatal)
 	}
 
 	return nil

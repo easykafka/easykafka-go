@@ -148,7 +148,7 @@ func (c *consumerImpl) Start(ctx context.Context) error {
 		Str("error_strategy", c.config.ErrorStrategy.Name()).
 		Msg("consumer starting")
 
-	// Wire logger into error strategy if it supports it (FR-045)
+	// Wire logger into error strategy if it supports it
 	if la, ok := c.config.ErrorStrategy.(types.LoggerAware); ok {
 		la.SetLogger(c.config.Logger)
 	}
@@ -245,7 +245,7 @@ func GetConfig(c Consumer) Config {
 // Shutdown gracefully stops the consumer within the configured timeout.
 // Completes in-flight message processing and commits final offsets.
 // If the shutdown timeout expires before in-flight work completes,
-// the consumer force-stops and returns a timeout error (FR-040).
+// the consumer force-stops and returns a timeout error.
 func (c *consumerImpl) Shutdown(ctx context.Context) error {
 	state := c.state.Load().(ConsumerState)
 	if state != StateRunning {
@@ -255,7 +255,7 @@ func (c *consumerImpl) Shutdown(ctx context.Context) error {
 	c.state.Store(StateShuttingDown)
 	c.config.Logger.Info().Msg("consumer shutdown initiated")
 
-	// Signal the engine to stop fetching new messages (FR-036)
+	// Signal the engine to stop fetching new messages
 	if c.eng != nil {
 		if err := c.eng.Stop(ctx); err != nil {
 			return fmt.Errorf("engine stop error: %w", err)
@@ -267,7 +267,7 @@ func (c *consumerImpl) Shutdown(ctx context.Context) error {
 		c.cancel()
 	}
 
-	// Wait for the engine to complete in-flight work within the shutdown timeout (FR-037)
+	// Wait for the engine to complete in-flight work within the shutdown timeout
 	if c.eng != nil {
 		waitCtx, waitCancel := context.WithTimeout(ctx, c.config.ShutdownTimeout)
 		defer waitCancel()

@@ -164,7 +164,7 @@ func TestBatchEngine_DispatchesBatchWhenFull(t *testing.T) {
 	assert.Equal(t, []string{"d", "e", "f"}, receivedBatches[1])
 
 	// All 6 offsets should be committed (committed after each batch)
-	commits := client.getCommittedOffsets()
+	commits := client.getStoredOffsets()
 	// Each batch commit commits the last offset in the batch
 	require.Len(t, commits, 2)
 	assert.Equal(t, int64(2), commits[0].Offset) // last offset in batch 1
@@ -232,7 +232,7 @@ func TestBatchEngine_AtomicCommitOnSuccess(t *testing.T) {
 	require.NoError(t, err)
 
 	// Atomic commit: only the highest offset in the batch should be committed
-	commits := client.getCommittedOffsets()
+	commits := client.getStoredOffsets()
 	require.Len(t, commits, 1)
 	assert.Equal(t, int64(2), commits[0].Offset)
 }
@@ -346,7 +346,7 @@ func TestBatchEngine_CommitsAfterStrategySuccess(t *testing.T) {
 	require.NoError(t, err)
 
 	// Even though handler failed, strategy said continue => commit offset
-	commits := client.getCommittedOffsets()
+	commits := client.getStoredOffsets()
 	require.Len(t, commits, 1)
 	assert.Equal(t, int64(2), commits[0].Offset)
 }
@@ -380,7 +380,7 @@ func TestBatchEngine_CommitsHighestOffsetPerPartition(t *testing.T) {
 	err := eng.Start(ctx)
 	require.NoError(t, err)
 
-	commits := client.getCommittedOffsets()
+	commits := client.getStoredOffsets()
 	// Should have exactly 3 commits — one per partition
 	require.Len(t, commits, 3)
 
@@ -420,7 +420,7 @@ func TestBatchEngine_CommitsHighestOffsetPerPartitionOnError(t *testing.T) {
 	err := eng.Start(ctx)
 	require.NoError(t, err)
 
-	commits := client.getCommittedOffsets()
+	commits := client.getStoredOffsets()
 	require.Len(t, commits, 2)
 
 	commitMap := make(map[int32]int64)
