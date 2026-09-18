@@ -13,19 +13,18 @@ import (
 
 // Config holds the consumer configuration derived from functional options.
 type Config struct {
-	Topic           string
-	Brokers         []string
-	ConsumerGroup   string
-	Handler         types.Handler
-	BatchHandler    types.BatchHandler
-	Mode            ConsumptionMode
-	BatchSize       int
-	BatchTimeout    time.Duration
-	PollTimeout     time.Duration
-	ShutdownTimeout time.Duration
-	ErrorStrategy   types.ErrorStrategy
-	KafkaConfig     map[string]any
-	Logger          zerolog.Logger
+	Topic         string
+	Brokers       []string
+	ConsumerGroup string
+	Handler       types.Handler
+	BatchHandler  types.BatchHandler
+	Mode          ConsumptionMode
+	BatchSize     int
+	BatchTimeout  time.Duration
+	PollTimeout   time.Duration
+	ErrorStrategy types.ErrorStrategy
+	KafkaConfig   map[string]any
+	Logger        zerolog.Logger
 }
 
 // ConsumptionMode represents single-message or batch consumption mode.
@@ -41,10 +40,6 @@ func (c *Config) ApplyDefaults() {
 	if c.PollTimeout == 0 {
 		c.PollTimeout = 100 * time.Millisecond //nolint:mnd
 	}
-	if c.ShutdownTimeout == 0 {
-		c.ShutdownTimeout = 30 * time.Second //nolint:mnd
-	}
-
 	if c.Mode == ModeSingleMessage && c.ErrorStrategy == nil {
 		// Default error strategy is skip for single message mode
 		c.ErrorStrategy = strategy.NewSkipStrategy(c.Logger)
@@ -205,18 +200,6 @@ func WithPollTimeout(timeout time.Duration) Option {
 			return errors.New("poll timeout must be at least 10ms")
 		}
 		c.PollTimeout = timeout
-		return nil
-	}
-}
-
-// WithShutdownTimeout specifies the maximum time to wait for graceful shutdown.
-// Default: 30 seconds
-func WithShutdownTimeout(timeout time.Duration) Option {
-	return func(c *Config) error {
-		if timeout <= 0 {
-			return errors.New("shutdown timeout must be positive")
-		}
-		c.ShutdownTimeout = timeout
 		return nil
 	}
 }

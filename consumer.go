@@ -52,12 +52,33 @@
 //   - [NewCircuitBreakerStrategy]: wraps retry with pause/resume behaviour to
 //     protect downstream services.
 //
-// # Graceful Shutdown
+// # Stopping
 //
-// Cancel the context passed to Start, or call Shutdown to allow in-flight
-// messages to complete within the configured timeout:
+// Cancelling the context passed to Start is the only way to stop a consumer,
+// and Start returns once it has fully stopped — poll loop exited, final offsets
+// committed, connection closed:
 //
-//	consumer.Shutdown(ctx)
+//	ctx, cancel := context.WithCancel(context.Background())
+//	defer cancel()
+//
+//	signals := make(chan os.Signal, 1)
+//	signal.Notify(signals, syscall.SIGINT, syscall.SIGTERM)
+//	go func() {
+//	    <-signals
+//	    cancel() // this is what shuts the consumer down
+//	}()
+//
+//	if err := consumer.Start(ctx); err != nil {
+//	    log.Fatal(err)
+//	}
+//
+// A message being handled when the context is cancelled has its context
+// cancelled with it, and whatever the handler returns then goes to the error
+// strategy like any other result: written off under Skip, republished under
+// Retry. A handler that ignores its context blocks Start for as long as it
+// runs, and bounding that wait is the caller's job — only the caller can decide
+// to exit. The README has the pattern, including the shape for several
+// consumers at once.
 package easykafka
 
 import (
@@ -75,33 +96,25 @@ import (
 // Consumer manages the lifecycle of Kafka message consumption.
 // Create via New() with functional options, then call Start() to begin consuming.
 type Consumer interface {
-	// Start begins consuming messages from the configured topic.
-	// Blocks until context is cancelled or a fatal error occurs.
+	// Start begins consuming messages from the configured topic. It blocks
+	// until the context is cancelled or a fatal error occurs, and returns only
+	// once the consumer has fully stopped: the poll loop has exited, the final
+	// offsets are committed and the Kafka connection is closed.
+	//
+	// Cancelling the context is the only way to stop a consumer. A consumer is
+	// single-use — a second Start returns an error.
 	Start(ctx context.Context) error
-
-	// Shutdown gracefully stops the consumer within the configured timeout.
-	// Completes in-flight message processing and commits final offsets.
-	Shutdown(ctx context.Context) error
 }
 
 // consumerImpl is the internal implementation of Consumer.
 type consumerImpl struct {
 	config Config
-	eng    *engine.Engine
-	state  atomic.Value // State (Created, Running, ShuttingDown, Stopped)
-	cancel context.CancelFunc
+	// started is set by the first Start and never cleared, so a consumer that
+	// has run cannot be restarted. It is the whole of the lifecycle state the
+	// library needs: stopping is the caller cancelling their own context, and
+	// they need nothing from us to know they did it.
+	started atomic.Bool
 }
-
-// ConsumerState represents the lifecycle state of a consumer.
-type ConsumerState string
-
-const (
-	StateCreated      ConsumerState = "created"
-	StateRunning      ConsumerState = "running"
-	StateShuttingDown ConsumerState = "shutting_down"
-	StateStopped      ConsumerState = "stopped"
-	StateError        ConsumerState = "error"
-)
 
 // New creates a new Consumer with the provided options.
 // Returns error if required options are missing or invalid.
@@ -125,18 +138,16 @@ func New(options ...Option) (Consumer, error) {
 	// Apply sensible defaults for optional fields
 	cfg.ApplyDefaults()
 
-	c := &consumerImpl{
-		config: cfg,
-	}
-	c.state.Store(StateCreated)
-
-	return c, nil
+	return &consumerImpl{config: cfg}, nil
 }
 
 // Start begins consuming messages from the configured topic.
 // Blocks until context is cancelled or a fatal error occurs.
 func (c *consumerImpl) Start(ctx context.Context) error {
-	if c.state.Load().(ConsumerState) != StateCreated {
+	// Claim the consumer. Exactly one caller can win the swap, so a second
+	// Start — including one racing the first — is rejected here
+	// (CompareAndSwap return value - reports whether the swap actually happened)
+	if !c.started.CompareAndSwap(false, true) {
 		return errors.New("consumer already started or stopped")
 	}
 
@@ -162,7 +173,6 @@ func (c *consumerImpl) Start(ctx context.Context) error {
 			Logger:        c.config.Logger,
 		}
 		if err := init.Initialize(initCfg); err != nil {
-			c.state.Store(StateError)
 			return fmt.Errorf("failed to initialize error strategy: %w", err)
 		}
 	}
@@ -176,7 +186,6 @@ func (c *consumerImpl) Start(ctx context.Context) error {
 		c.config.Logger,
 	)
 	if err != nil {
-		c.state.Store(StateError)
 		// Clean up strategy if initialized
 		if init, ok := c.config.ErrorStrategy.(types.Initializable); ok {
 			_ = init.Close()
@@ -191,8 +200,9 @@ func (c *consumerImpl) Start(ctx context.Context) error {
 	}
 
 	// Create the engine based on consumption mode
+	var eng *engine.Engine
 	if c.config.Mode == ModeBatch {
-		c.eng = engine.NewBatchEngine(
+		eng = engine.NewBatchEngine(
 			adapter,
 			c.config.BatchHandler,
 			c.config.ErrorStrategy,
@@ -202,7 +212,7 @@ func (c *consumerImpl) Start(ctx context.Context) error {
 			c.config.BatchTimeout,
 		)
 	} else {
-		c.eng = engine.NewEngine(
+		eng = engine.NewEngine(
 			adapter,
 			c.config.Handler,
 			c.config.ErrorStrategy,
@@ -211,22 +221,18 @@ func (c *consumerImpl) Start(ctx context.Context) error {
 		)
 	}
 
-	c.state.Store(StateRunning)
 	c.config.Logger.Info().Msg("consumer running")
 
-	// Create a cancellable context for shutdown support
-	engineCtx, cancel := context.WithCancel(ctx)
-	c.cancel = cancel
-
-	// Run the engine (blocks until cancelled or fatal error)
-	err = c.eng.Start(engineCtx)
+	// Run the engine (blocks until the caller's context is cancelled or a fatal
+	// error occurs). The context goes through as given: there is nothing left
+	// that would cancel it from this side.
+	err = eng.Start(ctx)
 
 	// Clean up strategy resources
 	if init, ok := c.config.ErrorStrategy.(types.Initializable); ok {
 		_ = init.Close()
 	}
 
-	c.state.Store(StateStopped)
 	c.config.Logger.Info().Err(err).Msg("consumer stopped")
 
 	return err
@@ -240,44 +246,4 @@ func GetConfig(c Consumer) Config {
 		panic("consumer is not a *consumerImpl")
 	}
 	return impl.config
-}
-
-// Shutdown gracefully stops the consumer within the configured timeout.
-// Completes in-flight message processing and commits final offsets.
-// If the shutdown timeout expires before in-flight work completes,
-// the consumer force-stops and returns a timeout error.
-func (c *consumerImpl) Shutdown(ctx context.Context) error {
-	state := c.state.Load().(ConsumerState)
-	if state != StateRunning {
-		return errors.New("consumer is not running")
-	}
-
-	c.state.Store(StateShuttingDown)
-	c.config.Logger.Info().Msg("consumer shutdown initiated")
-
-	// Signal the engine to stop fetching new messages
-	if c.eng != nil {
-		if err := c.eng.Stop(ctx); err != nil {
-			return fmt.Errorf("engine stop error: %w", err)
-		}
-	}
-
-	// Cancel the engine context to break the poll loop
-	if c.cancel != nil {
-		c.cancel()
-	}
-
-	// Wait for the engine to complete in-flight work within the shutdown timeout
-	if c.eng != nil {
-		waitCtx, waitCancel := context.WithTimeout(ctx, c.config.ShutdownTimeout)
-		defer waitCancel()
-
-		if err := c.eng.WaitForDone(waitCtx); err != nil {
-			c.config.Logger.Error().Err(err).Dur("timeout", c.config.ShutdownTimeout).Msg("consumer shutdown timed out")
-			return fmt.Errorf("shutdown timeout: %w", err)
-		}
-	}
-
-	c.config.Logger.Info().Msg("consumer shutdown complete")
-	return nil
 }

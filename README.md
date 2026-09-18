@@ -89,24 +89,91 @@ func main() {
 That's it — the consumer connects, polls messages, calls your handler, and
 commits offsets on success.
 
-## 🛑 Graceful Shutdown
+## 🛑 Stopping
 
-Cancel the context or call `Shutdown` to let in-flight work complete:
+**Cancelling the context passed to `Start` is the only way to stop a consumer.**
+`Start` returns once that consumer's poll loop has exited, its final offsets are
+committed and its connection is closed — so its return is the join point, and
+there is nothing else to wait for.
 
 ```go
+// The process context. Cancelling it is what stops the consumers.
 ctx, cancel := context.WithCancel(context.Background())
+defer cancel()
+
+signals := make(chan os.Signal, 1)
+signal.Notify(signals, syscall.SIGINT, syscall.SIGTERM)
 
 go func() {
-	sigCh := make(chan os.Signal, 1)
-	signal.Notify(sigCh, syscall.SIGINT, syscall.SIGTERM)
-	<-sigCh
-	cancel()
+	<-signals
+	cancel()                                 // this is what shuts the consumers down
 }()
 
-if err := consumer.Start(ctx); err != nil {
+orders, err := easykafka.New(
+	easykafka.WithTopic("orders"),
+	easykafka.WithBrokers("localhost:9092"),
+	easykafka.WithConsumerGroup("order-processors"),
+	easykafka.WithHandler(processOrder),
+)
+if err != nil {
 	log.Fatal(err)
 }
+
+payments, err := easykafka.New(
+	easykafka.WithTopic("payments"),
+	easykafka.WithBrokers("localhost:9092"),
+	easykafka.WithConsumerGroup("payment-processors"),
+	easykafka.WithHandler(processPayment),
+)
+if err != nil {
+	log.Fatal(err)
+}
+
+consumers := map[string]easykafka.Consumer{
+	"orders":   orders,
+	"payments": payments,
+}
+
+// Start blocks for the life of a consumer, so each runs in its own goroutine.
+var wg sync.WaitGroup
+for name, c := range consumers {
+	wg.Go(func() {                           // Go 1.25+: no Add/Done bookkeeping
+		if err := c.Start(ctx); err != nil {
+			log.Printf("consumer %s stopped: %v", name, err)
+		}
+	})
+}
+
+stopped := make(chan struct{})
+go func() { wg.Wait(); close(stopped) }()    // makes Wait selectable
+
+// ... serve traffic; the consumers poll and dispatch in the background ...
+
+<-ctx.Done()                                 // a signal arrived and cancel ran
+
+// Bound the wait below the pod's terminationGracePeriodSeconds, or SIGKILL
+// lands first and this never runs.
+select {
+case <-stopped:
+	log.Print("all consumers stopped")
+case <-time.After(20 * time.Second):
+	log.Print("consumers did not stop in time, exiting anyway")
+}
 ```
+
+Errors are logged where the consumer's name is in scope, so there is no results
+channel and no correlation problem. Scaling from one consumer to several costs
+four lines — the map, the `WaitGroup`, and the goroutine that makes `Wait`
+selectable — and the shutdown block is unchanged.
+
+**Two things worth knowing.** A message being handled when the context is
+cancelled has its context cancelled with it, and whatever the handler returns
+then goes to the error strategy like any other result: under `Skip` it is
+written off, under `Retry` it is republished and burns an attempt. And a handler
+that ignores its context holds `Start` open for as long as it keeps running —
+Go cannot kill a goroutine, so no timeout the library held could change that.
+Bounding the wait is the caller's job, because only the caller can decide to
+exit. The real hard deadline is the orchestrator's.
 
 ## 📦 Batch Processing
 
@@ -196,7 +263,6 @@ cbStrategy, err := easykafka.NewCircuitBreakerStrategy(
 | `WithBatchSize(n)` | 100 | Max messages per batch |
 | `WithBatchTimeout(d)` | 5s | Partial-batch flush interval |
 | `WithPollTimeout(d)` | 100ms | Kafka poll timeout |
-| `WithShutdownTimeout(d)` | 30s | Graceful shutdown deadline |
 | `WithLogger(l)` | no-op | Structured logger (zerolog) |
 | `WithKafkaConfig(m)` | — | Passthrough to confluent-kafka-go |
 

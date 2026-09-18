@@ -28,9 +28,6 @@ type Engine struct {
 	pollTimeout  int
 	state        atomic.Int32 // protected; use Load()/Store() everywhere
 
-	// done is closed when the engine has fully stopped (poll loop exited, adapter closed).
-	done chan struct{}
-
 	batchSize    int
 	batchTimeout time.Duration
 
@@ -63,7 +60,6 @@ func NewEngine(
 		logger:      logger,
 		pollTimeout: pollTimeoutMs,
 		// state defaults to 0 i.e. engineStateCreated
-		done: make(chan struct{}),
 	}
 }
 
@@ -85,7 +81,6 @@ func NewBatchEngine(
 		logger:       logger,
 		pollTimeout:  pollTimeoutMs,
 		// state defaults to 0 i.e. engineStateCreated
-		done:         make(chan struct{}),
 		batchSize:    batchSize,
 		batchTimeout: batchTimeout,
 		buf:          NewBatchBuffer(batchSize, batchTimeout),
@@ -93,13 +88,16 @@ func NewBatchEngine(
 }
 
 // Start begins the polling loop.
-// Blocks until context is cancelled or a fatal error occurs.
+// Blocks until context is cancelled or a fatal error occurs, and returns only
+// once the loop has exited, the final offsets are committed and the adapter is
+// closed — so its return is the caller's join point, with nothing left running.
 func (e *Engine) Start(ctx context.Context) error {
-	if e.state.Load() != engineStateCreated {
-		return fmt.Errorf("engine already started")
+	// Claim the engine. Exactly one caller can win the swap, so a second Start —
+	// including one racing the first — is rejected here. Every state other than
+	// created means Start has already run.
+	if !e.state.CompareAndSwap(engineStateCreated, engineStateRunning) {
+		return errors.New("engine already started")
 	}
-
-	e.state.Store(engineStateRunning)
 
 	e.logger.Info().Int("poll_timeout_ms", e.pollTimeout).Msg("engine starting")
 
@@ -150,7 +148,6 @@ func (e *Engine) Start(ctx context.Context) error {
 	}
 
 	e.state.Store(engineStateStopped)
-	close(e.done)
 
 	e.logger.Info().Msg("engine stopped")
 
@@ -262,12 +259,11 @@ func (e *Engine) runBatchLoop(ctx context.Context) error {
 		select {
 		case <-ctx.Done():
 			e.state.Store(engineStateStopping)
-			// Flush any remaining buffered messages before stopping
-			if msgs := buf.Flush(); msgs != nil {
-				if err := e.dispatchBatch(ctx, msgs); err != nil {
-					loopErr = err
-				}
-			}
+			// The buffer is discarded, not dispatched. Its messages were polled
+			// but never stored, so they are re-read by whoever holds the
+			// partition next. Dispatching them instead would run a bulk handler
+			// while the consumer is stopping, hand it a dead context, and let
+			// the error strategy advance offsets over work that never happened.
 			continue
 		default:
 		}
@@ -413,32 +409,4 @@ func (e *Engine) dispatchMessage(ctx context.Context, msg *types.Message) (err e
 	}()
 
 	return e.handler(ctx, msg.Payload)
-}
-
-// Stop gracefully stops the engine by transitioning to stopping state.
-// Returns error if the engine is not currently running.
-func (e *Engine) Stop(ctx context.Context) error {
-	if e.state.Load() != engineStateRunning {
-		return fmt.Errorf("engine is not running (state: %d)", e.state.Load())
-	}
-	e.state.Store(engineStateStopping)
-	return nil
-}
-
-// WaitForDone blocks until the engine has fully stopped or the context expires.
-// Returns nil if the engine stopped cleanly, or ctx.Err() if the deadline/cancellation
-// fires before the engine finishes.
-func (e *Engine) WaitForDone(ctx context.Context) error {
-	select {
-	case <-e.done:
-		return nil
-	case <-ctx.Done():
-		return fmt.Errorf("shutdown timeout: %w", ctx.Err())
-	}
-}
-
-// Done returns a channel that is closed when the engine has fully stopped.
-// Useful for callers that need to select on engine completion.
-func (e *Engine) Done() <-chan struct{} {
-	return e.done
 }

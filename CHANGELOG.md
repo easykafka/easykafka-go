@@ -5,6 +5,50 @@ All notable changes to this project are documented here. The format follows
 [Semantic Versioning](https://semver.org/spec/v2.0.0.html) — with the usual pre-1.0 caveat that the
 public API may still change in a minor release.
 
+## [0.2.0]
+
+### Removed
+
+- **`Consumer.Shutdown` and `WithShutdownTimeout`.** **Breaking.** Cancelling the context passed to
+  `Start` is now the only way to stop a consumer. Replace `consumer.Shutdown(ctx)` with cancelling
+  that context, and wait for `Start` to return — it returns once the poll loop has exited, the final
+  offsets are committed and the connection is closed, so there is nothing else to join on. The
+  README's *Stopping* section has the pattern, including the shape for several consumers.
+
+  The library had two stop mechanisms and they had drifted apart, and `Shutdown` was not the one
+  being used: applications stop on SIGTERM by cancelling the context they passed to `Start`.
+  `ShutdownTimeout` goes with it because it could not do anything — Go cannot kill a goroutine, so a
+  handler that ignores its context cannot be stopped by any timeout the library holds. The caller,
+  who *can* decide to give up and exit, is better placed to own that bound; the real hard deadline is
+  the orchestrator's `terminationGracePeriodSeconds`.
+
+- **`ConsumerState` and its constants.** Exported but unreadable — there was no accessor and no
+  method took one — so nothing outside the library could observe or use them. The state they carried
+  is now the single "already started" guard `Start` needs.
+
+### Changed
+
+- **A batch buffer that was never dispatched is dropped on shutdown, not flushed.** Its messages were
+  polled but never stored, so they are re-read by whoever holds the partition next. Flushing them ran
+  a bulk handler while the consumer was stopping, handed it a dead context, and let the error
+  strategy advance offsets over work that never happened — written off under `Skip`, or republished
+  under `Retry`, where every message burned an attempt it never earned.
+
+- **A message being handled when the context is cancelled is failed, not rescued.** Its context is
+  cancelled with the consumer's, and whatever the handler returns goes to the error strategy like any
+  other result: the engine cannot tell "this failed" from "this was abandoned", and does not try.
+  Under `Skip` that means a message interrupted by shutdown is skipped like any other failure. The
+  alternative — handing handlers a context that survives cancellation — costs a second context, a
+  deadline goroutine and a timeout the library cannot enforce anyway.
+
+### Fixed
+
+- **A context leak on every consumer that was not shut down via `Shutdown`** — which was all of them
+  in practice. `Start` derived a cancellable context purely so `Shutdown` could cancel it, and never
+  deferred the cancel, so the derived context held a reference on its parent until the parent
+  finished. `go vet`'s lostcancel check missed it because the cancel func was stored in a field. The
+  derived context is gone with `Shutdown`.
+
 ## [0.1.0]
 
 First release.
@@ -60,4 +104,5 @@ These are named because a reader may come looking:
   different pattern with no handlers, no retries and no offset commits; that is
   [easykafka-config-go](https://github.com/easykafka/easykafka-config-go).
 
+[0.2.0]: https://github.com/easykafka/easykafka-go/compare/v0.1.0...v0.2.0
 [0.1.0]: https://github.com/easykafka/easykafka-go/releases/tag/v0.1.0

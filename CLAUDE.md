@@ -56,7 +56,7 @@ churn-heavy linters (`mnd`, `lll`, `dupl`, `gocognit`, `gosec`, `errcheck`,
 ## Architecture
 
 ### Public API (root package)
-- `consumer.go` — `Consumer` interface + lifecycle management: `Created → Running → ShuttingDown → Stopped`
+- `consumer.go` — `Consumer` interface. One method, `Start`, which blocks for the life of the consumer. Cancelling the context passed to it is the only way to stop; `Start` returns once the poll loop has exited, the final offsets are committed and the connection is closed.
 - `options.go` — all configuration via functional options (`WithTopic`, `WithBrokers`, `WithHandler`, etc.)
 - `handler.go` — re-exports types from internal packages for public consumption
 
