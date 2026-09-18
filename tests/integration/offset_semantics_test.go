@@ -26,9 +26,8 @@ import (
 //
 // The test pins the group in exactly that state — a full buffer, no dispatch, a
 // rebalance — and asserts the committed offset has not moved. It asserts on the
-// committed offset rather than on what handlers received because the engine
-// flushes its buffer on shutdown: stopping the consumers to count messages would
-// process them and hide the bug.
+// committed offset rather than on what handlers received because the committed
+// offset is what the next owner resumes from, which is where the loss shows up.
 func TestRebalanceDoesNotCommitUnprocessedBatch(t *testing.T) {
 	t.Log("TestRebalanceDoesNotCommitUnprocessedBatch started")
 	defer t.Log("TestRebalanceDoesNotCommitUnprocessedBatch finished")
