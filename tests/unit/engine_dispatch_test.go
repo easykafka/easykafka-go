@@ -162,6 +162,13 @@ func (m *mockKafkaClient) getStoredOffsets() []storeRecord {
 	return result
 }
 
+// getPolledCount reports how many of the canned messages Poll has handed over.
+func (m *mockKafkaClient) getPolledCount() int {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	return m.pollIndex
+}
+
 // getCommitCount reports how many times the engine published the store.
 func (m *mockKafkaClient) getCommitCount() int {
 	m.mu.Lock()
