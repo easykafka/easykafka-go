@@ -13,6 +13,9 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
+// Cancelling the context passed to Start is the only way to stop a consumer, so
+// every test in this file triggers shutdown that way.
+
 // TestShutdownStopsFetching verifies that when the engine context is cancelled,
 // no new messages are polled from Kafka.
 func TestShutdownStopsFetching(t *testing.T) {
@@ -66,8 +69,10 @@ func TestShutdownStopsFetching(t *testing.T) {
 	assert.Equal(t, finalCount, pollCount.Load(), "polls continued after cancellation")
 }
 
-// TestShutdownWaitsForInFlightHandler verifies that the engine completes
-// an in-flight handler before stopping.
+// TestShutdownWaitsForInFlightHandler verifies that Start does not return until
+// the in-flight handler has returned. The handler here ignores its context on
+// purpose: a handler that keeps working through cancellation holds Start open,
+// which is what makes Start's return a usable join point.
 func TestShutdownWaitsForInFlightHandler(t *testing.T) {
 	handlerStarted := make(chan struct{})
 	handlerCompleted := atomic.Bool{}
@@ -107,11 +112,11 @@ func TestShutdownWaitsForInFlightHandler(t *testing.T) {
 	// Cancel while handler is still processing
 	cancel()
 
-	// Engine should wait for handler to finish
+	// Start must not return before the handler does
 	select {
 	case err := <-done:
 		require.NoError(t, err)
-		assert.True(t, handlerCompleted.Load(), "handler should have completed before engine stopped")
+		assert.True(t, handlerCompleted.Load(), "Start returned before the handler finished")
 	case <-time.After(5 * time.Second):
 		t.Fatal("engine did not stop after handler completion")
 	}
@@ -121,97 +126,56 @@ func TestShutdownWaitsForInFlightHandler(t *testing.T) {
 	assert.Len(t, commits, 1, "offset should be committed for completed in-flight message")
 }
 
-// TestShutdownCommitsFinalOffsets verifies that all completed message offsets
-// are committed during shutdown.
-func TestShutdownCommitsFinalOffsets(t *testing.T) {
-	processedCount := atomic.Int32{}
-
-	messages := []*types.Message{
-		newTestMessage("topic", 0, 0, "msg-1"),
-		newTestMessage("topic", 0, 1, "msg-2"),
-		newTestMessage("topic", 0, 2, "msg-3"),
+// TestShutdownReturnsAfterFinalCommitAndClose pins the guarantee the documented
+// stop pattern rests on: when Start returns there is nothing left to wait for.
+// The final commit and the adapter close have both already happened, and no
+// further call reaches the adapter afterwards.
+func TestShutdownReturnsAfterFinalCommitAndClose(t *testing.T) {
+	client := &recordingClient{
+		messages: []*types.Message{
+			newTestMessage("topic", 0, 0, "msg-1"),
+		},
 	}
 
-	client := &mockKafkaClient{messages: messages}
-
-	handler := func(ctx context.Context, payload []byte) error {
-		processedCount.Add(1)
-		return nil
-	}
-	strat := &mockStrategy{}
-
-	eng := engine.NewEngine(client, handler, strat, testLogger(), 50)
-
-	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
-	defer cancel()
-
-	err := eng.Start(ctx)
-	require.NoError(t, err)
-
-	// All 3 offsets should be committed
-	commits := client.getStoredOffsets()
-	require.Len(t, commits, 3)
-	assert.Equal(t, int64(0), commits[0].Offset)
-	assert.Equal(t, int64(1), commits[1].Offset)
-	assert.Equal(t, int64(2), commits[2].Offset)
-}
-
-// TestShutdownTimeoutForcesStop verifies that if the shutdown timeout
-// expires, the engine force-stops and returns a timeout error.
-func TestShutdownTimeoutForcesStop(t *testing.T) {
-	handlerStarted := make(chan struct{})
-
-	// Client returns one message, then blocks forever
-	client := &blockingPollClient{
-		firstMessage: newTestMessage("topic", 0, 0, "blocking-msg"),
-	}
-
-	handler := func(ctx context.Context, payload []byte) error {
-		close(handlerStarted)
-		// Handler that respects context cancellation but takes very long
-		select {
-		case <-ctx.Done():
-			return ctx.Err()
-		case <-time.After(30 * time.Second):
-			return nil
-		}
-	}
+	handler := func(ctx context.Context, payload []byte) error { return nil }
 	strat := &mockStrategy{}
 
 	eng := engine.NewEngine(client, handler, strat, testLogger(), 50)
 
 	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
 
 	done := make(chan error, 1)
-	go func() {
-		done <- eng.Start(ctx)
-	}()
+	go func() { done <- eng.Start(ctx) }()
 
-	// Wait for handler to start
-	select {
-	case <-handlerStarted:
-	case <-time.After(2 * time.Second):
-		t.Fatal("handler did not start")
-	}
+	require.Eventually(t, func() bool { return client.polls() > 0 }, 2*time.Second, 10*time.Millisecond,
+		"engine never polled")
 
-	// Shutdown with a very short timeout
-	shutdownCtx, shutdownCancel := context.WithTimeout(context.Background(), 200*time.Millisecond)
-	defer shutdownCancel()
-
-	_ = eng.Stop(shutdownCtx)
 	cancel()
 
 	select {
 	case err := <-done:
-		// Engine should return — handler got context cancelled
-		_ = err // no assertion on error value, just that it exits
+		require.NoError(t, err)
 	case <-time.After(5 * time.Second):
-		t.Fatal("engine did not stop even after timeout")
+		t.Fatal("engine did not stop after context cancellation")
 	}
+
+	calls := client.calls()
+	require.GreaterOrEqual(t, len(calls), 2)
+	assert.Equal(t, "close", calls[len(calls)-1], "the adapter should be closed before Start returns")
+	assert.Equal(t, "commit", calls[len(calls)-2], "the final commit should happen before the close")
+
+	// Nothing may still be running once Start has returned.
+	settled := len(calls)
+	time.Sleep(200 * time.Millisecond)
+	assert.Len(t, client.calls(), settled, "the adapter was called after Start returned")
 }
 
-// TestShutdownContextCancelsHandlerContext verifies that when shutdown begins,
-// the handler's context is cancelled, allowing handlers to abort.
+// TestShutdownContextCancelsHandlerContext verifies that cancelling the context
+// cancels the in-flight handler's context with it. That is deliberate: the
+// library does not hand handlers a context that outlives the shutdown, so an
+// interrupted message is failed like any other and goes to the error strategy —
+// written off under skip, republished under retry.
 func TestShutdownContextCancelsHandlerContext(t *testing.T) {
 	handlerCtxCancelled := atomic.Bool{}
 	handlerStarted := make(chan struct{})
@@ -253,59 +217,10 @@ func TestShutdownContextCancelsHandlerContext(t *testing.T) {
 	case <-time.After(5 * time.Second):
 		t.Fatal("engine did not stop")
 	}
-}
 
-// TestShutdownNotRunningReturnsError verifies that calling Stop on a non-running
-// engine returns an error.
-func TestShutdownNotRunningReturnsError(t *testing.T) {
-	client := &mockKafkaClient{}
-	handler := func(ctx context.Context, payload []byte) error { return nil }
-	strat := &mockStrategy{}
-
-	eng := engine.NewEngine(client, handler, strat, testLogger(), 50)
-
-	err := eng.Stop(context.Background())
-	assert.Error(t, err, "stopping a non-running engine should return error")
-}
-
-// TestShutdownEngineStopSignal verifies the engine responds to Stop()
-// called from another goroutine while the poll loop is running.
-func TestShutdownEngineStopSignal(t *testing.T) {
-	// Client that returns messages indefinitely
-	client := &infinitePollClient{}
-
-	processedCount := atomic.Int32{}
-	handler := func(ctx context.Context, payload []byte) error {
-		processedCount.Add(1)
-		return nil
-	}
-	strat := &mockStrategy{}
-
-	eng := engine.NewEngine(client, handler, strat, testLogger(), 50)
-
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
-
-	done := make(chan error, 1)
-	go func() {
-		done <- eng.Start(ctx)
-	}()
-
-	// Let it process a few messages
-	time.Sleep(200 * time.Millisecond)
-
-	// Stop the engine
-	err := eng.Stop(context.Background())
-	require.NoError(t, err)
-	cancel()
-
-	select {
-	case err := <-done:
-		require.NoError(t, err)
-		assert.Positive(t, processedCount.Load(), "should have processed some messages")
-	case <-time.After(5 * time.Second):
-		t.Fatal("engine did not stop after Stop() call")
-	}
+	// The abandoned message reached the error strategy: the engine cannot tell
+	// "this failed" from "this was abandoned", and does not try.
+	assert.Len(t, strat.getHandleCalls(), 1, "the interrupted message should reach the error strategy")
 }
 
 // TestShutdownClosesAdapter verifies that the Kafka adapter is closed
@@ -335,13 +250,17 @@ func TestShutdownClosesAdapter(t *testing.T) {
 	assert.True(t, closed, "adapter should be closed after engine stops")
 }
 
-// TestShutdownBatchModeFlushesRemaining verifies that in batch mode,
-// remaining buffered messages are flushed and committed on shutdown.
-func TestShutdownBatchModeFlushesRemaining(t *testing.T) {
-	var receivedBatches []int
+// TestShutdownBatchModeDropsBuffered verifies that in batch mode a buffer that
+// was never dispatched is discarded on shutdown, not flushed.
+//
+// Dispatching it instead would run a bulk handler while the consumer is
+// stopping, hand it a dead context, and let the error strategy advance offsets
+// over work that never happened. Nothing is lost by dropping — the offsets were
+// never stored, so the messages are re-read by whoever holds the partition next.
+func TestShutdownBatchModeDropsBuffered(t *testing.T) {
+	var dispatched int
 	var mu sync.Mutex
 
-	// 5 messages, batch size 100 -> all should be flushed as a partial batch on shutdown
 	messages := make([]*types.Message, 5)
 	for i := range 5 {
 		messages[i] = newTestMessage("topic", 0, int64(i), "msg")
@@ -351,112 +270,32 @@ func TestShutdownBatchModeFlushesRemaining(t *testing.T) {
 
 	batchHandler := func(ctx context.Context, payloads [][]byte) error {
 		mu.Lock()
-		receivedBatches = append(receivedBatches, len(payloads))
+		dispatched += len(payloads)
 		mu.Unlock()
 		return nil
 	}
 	strat := &mockStrategy{}
 
-	eng := engine.NewBatchEngine(client, batchHandler, strat, testLogger(), 50, 100, 50*time.Millisecond)
+	// Batch size well above the message count and a timeout far longer than the
+	// test, so the buffer fills and shutdown is the only thing that could flush it.
+	eng := engine.NewBatchEngine(client, batchHandler, strat, testLogger(), 10, 100, time.Hour)
 
-	ctx, cancel := context.WithTimeout(context.Background(), 1*time.Second)
+	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
-	err := eng.Start(ctx)
-	require.NoError(t, err)
+	done := make(chan error, 1)
+	go func() { done <- eng.Start(ctx) }()
+
+	require.Eventually(t, func() bool { return client.getPolledCount() == len(messages) },
+		2*time.Second, 10*time.Millisecond, "engine did not buffer all messages")
+
+	cancel()
+	require.NoError(t, <-done)
 
 	mu.Lock()
 	defer mu.Unlock()
-
-	// Should have received a batch with all 5 messages (flushed by timeout or shutdown)
-	totalMsgs := 0
-	for _, batchSize := range receivedBatches {
-		totalMsgs += batchSize
-	}
-	assert.Equal(t, 5, totalMsgs, "all buffered messages should be flushed on shutdown")
-
-	// Verify offsets were committed
-	commits := client.getStoredOffsets()
-	assert.NotEmpty(t, commits, "offsets should be committed for flushed batch")
-}
-
-// TestConsumerShutdownTimeout verifies the full consumer Shutdown() method
-// respects the configured ShutdownTimeout.
-func TestConsumerShutdownTimeout(t *testing.T) {
-	// This is tested at the consumer level via integration tests.
-	// Unit test validates that the engine's WaitForDone returns appropriately.
-
-	client := &blockingPollClient{
-		firstMessage: newTestMessage("topic", 0, 0, "msg"),
-	}
-
-	handlerStarted := make(chan struct{})
-	handler := func(ctx context.Context, payload []byte) error {
-		close(handlerStarted)
-		// Very long handler
-		select {
-		case <-ctx.Done():
-			return ctx.Err()
-		case <-time.After(1 * time.Minute):
-			return nil
-		}
-	}
-	strat := &mockStrategy{}
-
-	eng := engine.NewEngine(client, handler, strat, testLogger(), 50)
-
-	ctx, cancel := context.WithCancel(context.Background())
-
-	done := make(chan error, 1)
-	go func() {
-		done <- eng.Start(ctx)
-	}()
-
-	select {
-	case <-handlerStarted:
-	case <-time.After(2 * time.Second):
-		cancel()
-		t.Fatal("handler did not start")
-	}
-
-	// WaitForDone with short timeout should fail
-	waitCtx, waitCancel := context.WithTimeout(context.Background(), 100*time.Millisecond)
-	defer waitCancel()
-
-	err := eng.WaitForDone(waitCtx)
-	require.ErrorIs(t, err, context.DeadlineExceeded, "WaitForDone should timeout")
-
-	// Clean up: cancel the parent context so the handler exits
-	cancel()
-	<-done
-}
-
-// TestConsumerShutdownWithinTimeout verifies that WaitForDone returns nil
-// when the engine completes before the deadline.
-func TestConsumerShutdownWithinTimeout(t *testing.T) {
-	client := &mockKafkaClient{
-		messages: []*types.Message{
-			newTestMessage("topic", 0, 0, "msg-1"),
-		},
-	}
-
-	handler := func(ctx context.Context, payload []byte) error { return nil }
-	strat := &mockStrategy{}
-
-	eng := engine.NewEngine(client, handler, strat, testLogger(), 50)
-
-	ctx, cancel := context.WithTimeout(context.Background(), 500*time.Millisecond)
-	defer cancel()
-
-	err := eng.Start(ctx)
-	require.NoError(t, err)
-
-	// WaitForDone should return immediately since engine already stopped
-	waitCtx, waitCancel := context.WithTimeout(context.Background(), 1*time.Second)
-	defer waitCancel()
-
-	err = eng.WaitForDone(waitCtx)
-	assert.NoError(t, err, "WaitForDone should succeed when engine already stopped")
+	assert.Zero(t, dispatched, "buffered messages must not be dispatched on shutdown")
+	assert.Empty(t, client.getStoredOffsets(), "dropped messages must not advance any offset")
 }
 
 // ============================================================================
@@ -566,44 +405,67 @@ func (c *blockingPollClient) Close(ctx context.Context) error {
 	return nil
 }
 
-// infinitePollClient returns messages indefinitely.
-type infinitePollClient struct {
+// recordingClient records the order of the calls the engine makes, so a test can
+// assert what has already happened by the time Start returns. Poll is counted
+// rather than recorded — it fires on every loop iteration and would bury the
+// sequence the tests care about.
+type recordingClient struct {
 	mu        sync.Mutex
-	offset    int64
-	connected bool
-	closed    bool
+	events    []string
+	pollCount int
+	messages  []*types.Message
+	pollIndex int
 }
 
-func (c *infinitePollClient) Connect(ctx context.Context) error {
-	c.mu.Lock()
-	defer c.mu.Unlock()
-	c.connected = true
-	return nil
-}
+func (c *recordingClient) Connect(ctx context.Context) error { return nil }
 
-func (c *infinitePollClient) SubscribeToTopic(ctx context.Context) error { return nil }
+func (c *recordingClient) SubscribeToTopic(ctx context.Context) error { return nil }
 
-func (c *infinitePollClient) Poll(ctx context.Context, timeoutMs int) (*types.Message, error) {
+func (c *recordingClient) Poll(ctx context.Context, timeoutMs int) (*types.Message, error) {
 	c.mu.Lock()
-	off := c.offset
-	c.offset++
+	c.pollCount++
+	if c.pollIndex >= len(c.messages) {
+		c.mu.Unlock()
+		time.Sleep(time.Duration(timeoutMs) * time.Millisecond)
+		return nil, nil //nolint:nilnil // nil,nil is the mock poll contract for "no message"
+	}
+	msg := c.messages[c.pollIndex]
+	c.pollIndex++
 	c.mu.Unlock()
-	return newTestMessage("topic", 0, off, "infinite-msg"), nil
+	return msg, nil
 }
 
-func (c *infinitePollClient) StoreOffset(topic string, partition int32, offset int64) error {
+func (c *recordingClient) StoreOffset(topic string, partition int32, offset int64) error {
+	c.record("store")
 	return nil
 }
 
-func (c *infinitePollClient) CommitStored() error {
+func (c *recordingClient) CommitStored() error {
+	c.record("commit")
 	return nil
 }
 
-func (c *infinitePollClient) SetOnRevoke(fn func()) {}
+func (c *recordingClient) SetOnRevoke(fn func()) {}
 
-func (c *infinitePollClient) Close(ctx context.Context) error {
+func (c *recordingClient) Close(ctx context.Context) error {
+	c.record("close")
+	return nil
+}
+
+func (c *recordingClient) record(event string) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	c.closed = true
-	return nil
+	c.events = append(c.events, event)
+}
+
+func (c *recordingClient) calls() []string {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return append([]string(nil), c.events...)
+}
+
+func (c *recordingClient) polls() int {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.pollCount
 }
