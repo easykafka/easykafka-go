@@ -218,6 +218,32 @@ func TestBatchRevokedPartitionOnlyDoesNotStopConsumer(t *testing.T) {
 // TestRevokeDropsBatchBuffer verifies that buffered-but-undispatched messages are
 // discarded when partitions are revoked, rather than handed to the handler for
 // partitions another consumer now owns.
+//
+// The timing this test relies on is not obvious, so it is spelled out here.
+//
+// The drop has no positive effect to observe — its whole result is that a batch
+// is *not* dispatched. An assertion on absence is only worth anything if the
+// thing would otherwise have happened, so the buffer has to be dispatchable in
+// principle, and the drop is what must prevent it. That makes the numbers below
+// load-bearing:
+//
+//   - Batch size is 100, far above the two messages, so size alone never
+//     dispatches. The batch timeout is the only path left, which is what makes
+//     the 100ms meaningful.
+//   - revokeAtPoll is 2, and the mock fires the hook once pollIndex reaches it —
+//     so the revoke lands on the *third* poll: poll 1 delivers msg-1, poll 2
+//     delivers msg-2, poll 3 finds the list exhausted and fires. mockKafkaClient
+//     does not sleep on that path, so all three happen within microseconds,
+//     roughly 100ms before the batch timeout could fire. The revoke therefore
+//     always wins the race.
+//   - The 500ms sleep keeps the engine polling for five batch timeouts after the
+//     revoke. A buffer that survived would time out during it and dispatch.
+//
+// Drop() also resets the buffer's firstAdd, and TimedOut() is false on an empty
+// buffer, so a dropped buffer leaves no timer still running — the 100ms is
+// measured from the first Add, and there is nothing left to fire.
+//
+// Disabling the drop makes this fail with dispatched=2 and offset 1 stored.
 func TestRevokeDropsBatchBuffer(t *testing.T) {
 	var dispatched int
 	var mu sync.Mutex
@@ -238,11 +264,12 @@ func TestRevokeDropsBatchBuffer(t *testing.T) {
 	// is only ever touched by the polling goroutine, exactly as in production.
 	client := &mockKafkaClient{messages: messages, revokeAtPoll: len(messages)}
 
-	// Batch size above the message count and a long timeout, so the buffer fills
-	// but never dispatches on its own.
+	// pollTimeout 10ms, batch size 100, batch timeout 100ms — see the timing note
+	// on the test. Size can never dispatch; the timeout is the path a surviving
+	// buffer would take, and the drop is what must stop it.
 	eng := engine.NewBatchEngine(
 		client, batchHandler, &mockStrategy{}, testLogger(),
-		10, 100, 10*time.Second,
+		10, 100, 100*time.Millisecond,
 	)
 
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
@@ -254,12 +281,13 @@ func TestRevokeDropsBatchBuffer(t *testing.T) {
 	require.Eventually(t, client.didRevoke, time.Second, 5*time.Millisecond,
 		"the revoke hook should have fired")
 
+	// Five batch timeouts' worth of polling with the engine still running. This is
+	// the window in which a surviving buffer would time out and dispatch.
+	time.Sleep(500 * time.Millisecond)
+
 	cancel()
 	require.NoError(t, <-done)
 
-	// The ctx.Done() path flushes the buffer before exiting, so if the drop had
-	// not happened these messages would have been dispatched for partitions we no
-	// longer own.
 	mu.Lock()
 	assert.Zero(t, dispatched, "buffered messages should be dropped on revoke, not dispatched")
 	mu.Unlock()
