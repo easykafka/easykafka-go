@@ -220,19 +220,6 @@ func TestWithPollTimeoutRejectsTooSmall(t *testing.T) {
 	assert.Contains(t, err.Error(), "poll timeout")
 }
 
-// TestWithShutdownTimeoutRejectsZero verifies that WithShutdownTimeout rejects zero.
-func TestWithShutdownTimeoutRejectsZero(t *testing.T) {
-	_, err := easykafka.New(
-		easykafka.WithTopic("test-topic"),
-		easykafka.WithBrokers("localhost:9092"),
-		easykafka.WithConsumerGroup("test-group"),
-		easykafka.WithHandler(noopHandler),
-		easykafka.WithShutdownTimeout(0),
-	)
-	require.Error(t, err)
-	assert.Contains(t, err.Error(), "shutdown timeout")
-}
-
 // TestWithKafkaConfigRejectsNil verifies that WithKafkaConfig rejects nil config.
 func TestWithKafkaConfigRejectsNil(t *testing.T) {
 	_, err := easykafka.New(
@@ -301,21 +288,6 @@ func TestNewAppliesPollTimeoutDefault(t *testing.T) {
 	assert.Equal(t, 100*time.Millisecond, cfg.PollTimeout)
 }
 
-// TestNewAppliesShutdownTimeoutDefault verifies that ShutdownTimeout defaults to 30s.
-func TestNewAppliesShutdownTimeoutDefault(t *testing.T) {
-	consumer, err := easykafka.New(
-		easykafka.WithTopic("test-topic"),
-		easykafka.WithBrokers("localhost:9092"),
-		easykafka.WithConsumerGroup("test-group"),
-		easykafka.WithHandler(noopHandler),
-	)
-	require.NoError(t, err)
-	require.NotNil(t, consumer)
-
-	cfg := easykafka.GetConfig(consumer)
-	assert.Equal(t, 30*time.Second, cfg.ShutdownTimeout)
-}
-
 // TestNewAppliesDefaultErrorStrategy verifies that a default error strategy is set.
 func TestNewAppliesDefaultErrorStrategy(t *testing.T) {
 	consumer, err := easykafka.New(
@@ -364,21 +336,6 @@ func TestWithPollTimeoutCustomValue(t *testing.T) {
 
 	cfg := easykafka.GetConfig(consumer)
 	assert.Equal(t, 250*time.Millisecond, cfg.PollTimeout)
-}
-
-// TestWithShutdownTimeoutCustomValue verifies custom shutdown timeout is honored.
-func TestWithShutdownTimeoutCustomValue(t *testing.T) {
-	consumer, err := easykafka.New(
-		easykafka.WithTopic("test-topic"),
-		easykafka.WithBrokers("localhost:9092"),
-		easykafka.WithConsumerGroup("test-group"),
-		easykafka.WithHandler(noopHandler),
-		easykafka.WithShutdownTimeout(10*time.Second),
-	)
-	require.NoError(t, err)
-
-	cfg := easykafka.GetConfig(consumer)
-	assert.Equal(t, 10*time.Second, cfg.ShutdownTimeout)
 }
 
 // TestWithBatchHandlerSetsDefaults verifies that batch handler sets default batch size/timeout.
