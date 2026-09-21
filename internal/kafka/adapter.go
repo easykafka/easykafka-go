@@ -26,12 +26,10 @@ type Adapter struct {
 	groupID  string
 	logger   zerolog.Logger
 
-	// mu guards both fields below, which are written from different places:
-	// assignedPartitions from the rebalance callback, and brokerConnected from
-	// Poll as the transport drops and recovers.
-	mu                 sync.Mutex
-	assignedPartitions []kfk.TopicPartition
-	brokerConnected    bool
+	// mu guards brokerConnected, which Poll updates as the transport drops and
+	// recovers.
+	mu              sync.Mutex
+	brokerConnected bool
 
 	// onRevoke is invoked from the rebalance callback when partitions are
 	// revoked, so the engine can discard work it no longer owns. The rebalance
@@ -189,10 +187,6 @@ func (a *Adapter) SubscribeToTopic(ctx context.Context) error {
 func (a *Adapter) rebalanceCallback(c *kfk.Consumer, event kfk.Event) error {
 	switch ev := event.(type) {
 	case kfk.AssignedPartitions:
-		a.mu.Lock()
-		a.assignedPartitions = ev.Partitions
-		a.mu.Unlock()
-
 		partitions := make([]string, 0, len(ev.Partitions))
 		for _, tp := range ev.Partitions {
 			partitions = append(partitions, fmt.Sprintf("%s[%d]", *tp.Topic, tp.Partition))
@@ -239,10 +233,6 @@ func (a *Adapter) rebalanceCallback(c *kfk.Consumer, event kfk.Event) error {
 			a.logger.Error().Err(err).Msg("failed to unassign partitions")
 			return err
 		}
-
-		a.mu.Lock()
-		a.assignedPartitions = nil
-		a.mu.Unlock()
 	}
 
 	return nil
@@ -296,16 +286,17 @@ func (a *Adapter) Poll(ctx context.Context, timeoutMs int) (*types.Message, erro
 		// Reconnection-aware logging for broker transport errors.
 		// confluent-kafka-go handles reconnection automatically via librdkafka;
 		// we log state transitions so operators can observe disconnect/reconnect cycles.
-		a.mu.Lock()
-		wasConnected := a.brokerConnected
-		a.mu.Unlock()
-
 		switch e.Code() {
 		case kfk.ErrTransport, kfk.ErrAllBrokersDown:
+			// Read and write in one critical section, as the message branch above
+			// does: a split would decide on a value another goroutine could have
+			// changed in between.
+			a.mu.Lock()
+			wasConnected := a.brokerConnected
+			a.brokerConnected = false
+			a.mu.Unlock()
+
 			if wasConnected {
-				a.mu.Lock()
-				a.brokerConnected = false
-				a.mu.Unlock()
 				a.logger.Warn().Err(e).Int("code", int(e.Code())).
 					Msg("broker connection lost, librdkafka will reconnect automatically")
 			} else {
