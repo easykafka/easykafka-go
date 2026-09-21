@@ -9,7 +9,7 @@ go 1.27.0
 // - zerolog: Latest for structured logging across consumer, strategies, and engine
 
 require (
-	github.com/confluentinc/confluent-kafka-go/v2 v2.15.0
+	github.com/confluentinc/confluent-kafka-go/v2 v2.15.1
 	github.com/moby/moby/api v1.56.0
 	github.com/rs/zerolog v1.35.1
 	github.com/stretchr/testify v1.12.1
