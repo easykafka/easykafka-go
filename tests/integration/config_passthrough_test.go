@@ -203,7 +203,8 @@ func TestKafkaConfigManagedKeyRejection(t *testing.T) {
 	}{
 		{"bootstrap.servers", "bootstrap.servers", "other:9092", "kafka config key \"bootstrap.servers\" is managed by the library (managed by WithBrokers) and cannot be overridden"},
 		{"group.id", "group.id", "other-group", "kafka config key \"group.id\" is managed by the library (managed by WithConsumerGroup) and cannot be overridden"},
-		{"enable.auto.commit", "enable.auto.commit", true, "kafka config key \"enable.auto.commit\" is managed by the library (managed by the library for explicit offset control) and cannot be overridden"},
+		{"enable.auto.commit", "enable.auto.commit", true, "kafka config key \"enable.auto.commit\" is managed by the library (managed by WithAutoCommitEvery) and cannot be overridden"},
+		{"auto.commit.interval.ms", "auto.commit.interval.ms", 1000, "kafka config key \"auto.commit.interval.ms\" is managed by the library (managed by WithAutoCommitEvery) and cannot be overridden"},
 		// These two are what makes at-least-once hold, not housekeeping.
 		// Re-enabling the offset store would restore the bug where a rebalance
 		// commits messages no handler has seen; a cooperative assignment strategy

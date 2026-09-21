@@ -43,6 +43,9 @@ type mockKafkaClient struct {
 	// The hook runs from inside Poll, mirroring where librdkafka runs it.
 	revokeAtPoll int
 	revokeFired  bool
+	// autoCommit puts the fake in interval mode, where MaybeCommitStored does
+	// nothing — as librdkafka's background committer owns timing.
+	autoCommit bool
 }
 
 type storeRecord struct {
@@ -129,6 +132,19 @@ func (m *mockKafkaClient) CommitStored() error {
 	}
 	m.commitCount++
 	return nil
+}
+
+// MaybeCommitStored mirrors the adapter: it skips the commit when the fake is in
+// interval mode, and otherwise behaves exactly like CommitStored — including
+// counting, so getCommitCount keeps meaning "commits that reached the broker".
+func (m *mockKafkaClient) MaybeCommitStored() error {
+	m.mu.Lock()
+	auto := m.autoCommit
+	m.mu.Unlock()
+	if auto {
+		return nil
+	}
+	return m.CommitStored()
 }
 
 func (m *mockKafkaClient) SetOnRevoke(fn func()) {
@@ -497,6 +513,8 @@ func (f *fatalPollClient) Poll(ctx context.Context, timeoutMs int) (*types.Messa
 func (f *fatalPollClient) StoreOffset(topic string, partition int32, offset int64) error {
 	return nil
 }
+
+func (f *fatalPollClient) MaybeCommitStored() error { return f.CommitStored() }
 
 func (f *fatalPollClient) CommitStored() error {
 	return nil

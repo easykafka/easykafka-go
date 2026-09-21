@@ -244,6 +244,26 @@ cbStrategy, err := easykafka.NewCircuitBreakerStrategy(
 )
 ```
 
+## ⏱ Commit Cadence
+
+By default the library commits an offset after every message, which is the
+narrowest possible duplicate window and costs one round-trip to the group
+coordinator per message. For higher throughput, hand commit timing to
+librdkafka:
+
+```go
+easykafka.WithAutoCommitEvery(5 * time.Second)
+```
+
+A background thread then publishes the offset store on that interval. The
+trade-off is the duplicate window: an abrupt exit replays up to `d` of
+already-processed messages.
+
+**Duplicates only, never loss.** The offset store advances only on messages that
+were handled, so a committed offset can never run ahead of the work. Offsets are
+still committed immediately on revocation and at shutdown, whatever the
+interval, so a rebalance or a clean stop does not replay.
+
 ## ⚙️ Configuration Reference
 
 ### Required Options
@@ -263,6 +283,7 @@ cbStrategy, err := easykafka.NewCircuitBreakerStrategy(
 | `WithBatchSize(n)` | 100 | Max messages per batch |
 | `WithBatchTimeout(d)` | 5s | Partial-batch flush interval |
 | `WithPollTimeout(d)` | 100ms | Kafka poll timeout |
+| `WithAutoCommitEvery(d)` | off | Commit on an interval instead of after every message |
 | `WithLogger(l)` | no-op | Structured logger (zerolog) |
 | `WithKafkaConfig(m)` | — | Passthrough to confluent-kafka-go |
 

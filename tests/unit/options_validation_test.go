@@ -220,6 +220,55 @@ func TestWithPollTimeoutRejectsTooSmall(t *testing.T) {
 	assert.Contains(t, err.Error(), "poll timeout")
 }
 
+// TestWithAutoCommitEveryRejectsNonPositive verifies that WithAutoCommitEvery
+// rejects zero and negative intervals. Zero is not an escape hatch back to
+// commit-per-message: not calling the option at all already gives exactly that,
+// so a zero interval has no meaning to express.
+func TestWithAutoCommitEveryRejectsNonPositive(t *testing.T) {
+	for _, d := range []time.Duration{0, -time.Second} {
+		t.Run(d.String(), func(t *testing.T) {
+			_, err := easykafka.New(
+				easykafka.WithTopic("test-topic"),
+				easykafka.WithBrokers("localhost:9092"),
+				easykafka.WithConsumerGroup("test-group"),
+				easykafka.WithHandler(noopHandler),
+				easykafka.WithAutoCommitEvery(d),
+			)
+			require.Error(t, err)
+			assert.Contains(t, err.Error(), "auto-commit interval")
+		})
+	}
+}
+
+// TestAutoCommitEveryDefaultsToUnset verifies that a consumer built without the
+// option carries a zero interval, which is what selects commit-per-message.
+func TestAutoCommitEveryDefaultsToUnset(t *testing.T) {
+	consumer, err := easykafka.New(
+		easykafka.WithTopic("test-topic"),
+		easykafka.WithBrokers("localhost:9092"),
+		easykafka.WithConsumerGroup("test-group"),
+		easykafka.WithHandler(noopHandler),
+	)
+	require.NoError(t, err)
+
+	assert.Zero(t, easykafka.GetConfig(consumer).AutoCommitEvery,
+		"no default interval: unset means commit after every message")
+}
+
+// TestWithAutoCommitEveryCustomValue verifies the interval reaches the config.
+func TestWithAutoCommitEveryCustomValue(t *testing.T) {
+	consumer, err := easykafka.New(
+		easykafka.WithTopic("test-topic"),
+		easykafka.WithBrokers("localhost:9092"),
+		easykafka.WithConsumerGroup("test-group"),
+		easykafka.WithHandler(noopHandler),
+		easykafka.WithAutoCommitEvery(3*time.Second),
+	)
+	require.NoError(t, err)
+
+	assert.Equal(t, 3*time.Second, easykafka.GetConfig(consumer).AutoCommitEvery)
+}
+
 // TestWithKafkaConfigRejectsNil verifies that WithKafkaConfig rejects nil config.
 func TestWithKafkaConfigRejectsNil(t *testing.T) {
 	_, err := easykafka.New(
@@ -247,7 +296,8 @@ func TestWithKafkaConfigRejectsManagedKeys(t *testing.T) {
 	}{
 		{"bootstrap.servers", "bootstrap.servers is managed by WithBrokers"},
 		{"group.id", "group.id is managed by WithConsumerGroup"},
-		{"enable.auto.commit", "enable.auto.commit is managed by the library"},
+		{"enable.auto.commit", "enable.auto.commit is managed by WithAutoCommitEvery"},
+		{"auto.commit.interval.ms", "auto.commit.interval.ms is managed by WithAutoCommitEvery"},
 		{"enable.auto.offset.store", "enable.auto.offset.store is managed by the library"},
 		{"partition.assignment.strategy", "partition.assignment.strategy is managed by the library"},
 	}

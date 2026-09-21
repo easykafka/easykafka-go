@@ -136,8 +136,11 @@ func (e *Engine) Start(ctx context.Context) error {
 	}
 
 	// Publish anything stored but not yet committed, before the consumer goes
-	// away. Mostly redundant given the commit after every message or batch, but
-	// it costs one call and saves a replay.
+	// away. Unconditional, unlike the per-message commits: in the default cadence
+	// it is near-redundant and costs one call, but under WithAutoCommitEvery it
+	// is what stands between a clean shutdown and replaying up to a full
+	// interval. librdkafka's own Close() commits the store too, so this is the
+	// first of two backstops rather than the only one.
 	if err := e.adapter.CommitStored(); err != nil {
 		e.logger.Warn().Err(err).Msg("final commit failed, offsets remain stored")
 	}
@@ -236,7 +239,11 @@ func (e *Engine) runSingleLoop(ctx context.Context) error {
 		// Unlike a store failure, a failed commit loses nothing: the offset stays
 		// in the store and the next commit covers it. The cost is a replay if the
 		// process dies first, which at-least-once already allows.
-		if err := e.adapter.CommitStored(); err != nil {
+		//
+		// Maybe, not must: under WithAutoCommitEvery this does nothing and
+		// librdkafka's background committer publishes the store on its own
+		// schedule. Read this line as "commit unless someone else is".
+		if err := e.adapter.MaybeCommitStored(); err != nil {
 			e.logger.Warn().Err(err).
 				Int64("offset", msg.Offset).
 				Int32("partition", msg.Partition).
@@ -363,7 +370,10 @@ func (e *Engine) dispatchBatch(ctx context.Context, msgs []*types.Message) error
 
 	// Commit whatever did store, including on the fatal path: those offsets are
 	// legitimately processed, and committing them shrinks the replay on restart.
-	if err := e.adapter.CommitStored(); err != nil {
+	//
+	// Maybe, not must: under WithAutoCommitEvery this does nothing and
+	// librdkafka's background committer publishes the store on its own schedule.
+	if err := e.adapter.MaybeCommitStored(); err != nil {
 		e.logger.Warn().Err(err).Msg("commit failed, batch offsets remain stored")
 	}
 

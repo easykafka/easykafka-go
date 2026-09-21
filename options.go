@@ -13,18 +13,19 @@ import (
 
 // Config holds the consumer configuration derived from functional options.
 type Config struct {
-	Topic         string
-	Brokers       []string
-	ConsumerGroup string
-	Handler       types.Handler
-	BatchHandler  types.BatchHandler
-	Mode          ConsumptionMode
-	BatchSize     int
-	BatchTimeout  time.Duration
-	PollTimeout   time.Duration
-	ErrorStrategy types.ErrorStrategy
-	KafkaConfig   map[string]any
-	Logger        zerolog.Logger
+	Topic           string
+	Brokers         []string
+	ConsumerGroup   string
+	Handler         types.Handler
+	BatchHandler    types.BatchHandler
+	Mode            ConsumptionMode
+	BatchSize       int
+	BatchTimeout    time.Duration
+	PollTimeout     time.Duration
+	AutoCommitEvery time.Duration
+	ErrorStrategy   types.ErrorStrategy
+	KafkaConfig     map[string]any
+	Logger          zerolog.Logger
 }
 
 // ConsumptionMode represents single-message or batch consumption mode.
@@ -204,6 +205,29 @@ func WithPollTimeout(timeout time.Duration) Option {
 	}
 }
 
+// WithAutoCommitEvery hands commit timing to librdkafka, which publishes the
+// offset store on a background thread every d.
+//
+// Unset — the default — the library commits after every message or batch, which
+// is the narrowest possible duplicate window and costs one synchronous
+// round-trip to the group coordinator each time. Setting an interval trades that
+// cost for a wider window: an abrupt exit replays up to d of already-processed
+// messages. Duplicates only, never loss — the offset store advances only on
+// messages that were handled, so a committed offset can never run ahead of the
+// work. librdkafka's own default is 5s, which is a reasonable starting point.
+//
+// Offsets are still committed immediately on revocation and at shutdown,
+// whatever the interval, so a clean stop or a rebalance does not replay.
+func WithAutoCommitEvery(d time.Duration) Option {
+	return func(c *Config) error {
+		if d <= 0 {
+			return errors.New("auto-commit interval must be positive")
+		}
+		c.AutoCommitEvery = d
+		return nil
+	}
+}
+
 // WithLogger specifies a custom zerolog logger. Default uses global log.Logger.
 func WithLogger(logger zerolog.Logger) Option {
 	return func(c *Config) error {
@@ -216,9 +240,10 @@ func WithLogger(logger zerolog.Logger) Option {
 // and cannot be overridden via WithKafkaConfig. These are set automatically
 // based on other functional options (WithBrokers, WithConsumerGroup, etc.).
 var managedKafkaKeys = map[string]string{
-	"bootstrap.servers":  "managed by WithBrokers",
-	"group.id":           "managed by WithConsumerGroup",
-	"enable.auto.commit": "managed by the library for explicit offset control",
+	"bootstrap.servers":       "managed by WithBrokers",
+	"group.id":                "managed by WithConsumerGroup",
+	"enable.auto.commit":      "managed by WithAutoCommitEvery",
+	"auto.commit.interval.ms": "managed by WithAutoCommitEvery",
 	"enable.auto.offset.store": "managed by the library; " +
 		"offsets are stored only after a message is processed",
 	"partition.assignment.strategy": "managed by the library; " +

@@ -339,6 +339,8 @@ func (c *slowPollClient) StoreOffset(topic string, partition int32, offset int64
 	return nil
 }
 
+func (c *slowPollClient) MaybeCommitStored() error { return c.CommitStored() }
+
 func (c *slowPollClient) CommitStored() error {
 	return nil
 }
@@ -392,6 +394,8 @@ func (c *blockingPollClient) StoreOffset(topic string, partition int32, offset i
 	return nil
 }
 
+func (c *blockingPollClient) MaybeCommitStored() error { return c.CommitStored() }
+
 func (c *blockingPollClient) CommitStored() error {
 	return nil
 }
@@ -415,6 +419,9 @@ type recordingClient struct {
 	pollCount int
 	messages  []*types.Message
 	pollIndex int
+	// autoCommit puts the client in interval mode, where MaybeCommitStored does
+	// nothing and only the unconditional CommitStored calls are recorded.
+	autoCommit bool
 }
 
 func (c *recordingClient) Connect(ctx context.Context) error { return nil }
@@ -438,6 +445,18 @@ func (c *recordingClient) Poll(ctx context.Context, timeoutMs int) (*types.Messa
 func (c *recordingClient) StoreOffset(topic string, partition int32, offset int64) error {
 	c.record("store")
 	return nil
+}
+
+// MaybeCommitStored mirrors the adapter: in interval mode librdkafka's
+// background committer owns timing, so nothing is recorded here.
+func (c *recordingClient) MaybeCommitStored() error {
+	c.mu.Lock()
+	auto := c.autoCommit
+	c.mu.Unlock()
+	if auto {
+		return nil
+	}
+	return c.CommitStored()
 }
 
 func (c *recordingClient) CommitStored() error {

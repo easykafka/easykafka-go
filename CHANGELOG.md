@@ -7,6 +7,29 @@ public API may still change in a minor release.
 
 ## [0.2.0]
 
+### Added
+
+- **`WithAutoCommitEvery(d)`** — hands commit timing to librdkafka, which publishes the offset store
+  on a background thread every `d`, instead of the library committing after every message. That
+  removes one synchronous round-trip to the group coordinator per message, which was the throughput
+  ceiling.
+
+  Opt-in, so nothing changes for callers who do not set it: unset still means commit-per-message,
+  the narrowest possible duplicate window. Setting an interval widens that window — an abrupt exit
+  replays up to `d` of already-processed messages. **Duplicates only, never loss:** the offset store
+  advances only on messages that were handled, so a committed offset can never run ahead of the
+  work. Offsets are still committed immediately on revocation and at shutdown whatever the interval,
+  so a rebalance or a clean stop does not replay.
+
+  There is no default interval and no exported constant for one — not calling the option is the
+  default. `auto.commit.interval.ms` joins `enable.auto.commit` as a managed key, both now derived
+  from this option rather than hardcoded.
+
+  Under an interval the commit happens off the poll loop, so failures arrive as
+  `kafka.OffsetsCommitted` events rather than as return values. The adapter now handles that event
+  and logs a failure at warning level; without it a coordinator rejecting every commit would be
+  silent while the window grew.
+
 ### Removed
 
 - **`Consumer.Shutdown` and `WithShutdownTimeout`.** **Breaking.** Cancelling the context passed to

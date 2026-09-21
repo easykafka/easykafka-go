@@ -183,6 +183,7 @@ func (c *consumerImpl) Start(ctx context.Context) error {
 		c.config.Topic,
 		c.config.ConsumerGroup,
 		c.config.KafkaConfig,
+		c.config.AutoCommitEvery,
 		c.config.Logger,
 	)
 	if err != nil {

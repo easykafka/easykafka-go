@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"strings"
 	"sync"
+	"time"
 
 	kfk "github.com/confluentinc/confluent-kafka-go/v2/kafka"
 	"github.com/rs/zerolog"
@@ -25,6 +26,11 @@ type Adapter struct {
 	topic    string
 	groupID  string
 	logger   zerolog.Logger
+
+	// autoCommit is set when the caller asked for interval commits, in which
+	// case librdkafka's background committer owns commit timing and the
+	// engine's per-message commits would be redundant work.
+	autoCommit bool
 
 	// mu guards brokerConnected, which Poll updates as the transport drops and
 	// recovers.
@@ -49,6 +55,7 @@ func NewAdapter(
 	topic string,
 	groupID string,
 	kafkaConfig map[string]any,
+	commitInterval time.Duration,
 	logger zerolog.Logger,
 ) (*Adapter, error) {
 
@@ -74,9 +81,23 @@ func NewAdapter(
 		return nil, fmt.Errorf("setting auto.offset.reset: %w", err)
 	}
 
-	// Disable auto-commit, so the library alone decides when offsets are published.
-	if err := config.SetKey("enable.auto.commit", false); err != nil {
+	// Commit cadence. Unset, the library commits after every message and owns
+	// timing entirely. With an interval, librdkafka's background committer owns
+	// it instead and publishes whatever is in the store every commitInterval.
+	//
+	// Either way the store is ours — see enable.auto.offset.store below — so the
+	// background committer can only ever publish offsets the engine put there
+	// after a message was accounted for. Handing over the timing does not hand
+	// over what gets committed.
+	autoCommit := commitInterval > 0
+	if err := config.SetKey("enable.auto.commit", autoCommit); err != nil {
 		return nil, fmt.Errorf("setting enable.auto.commit: %w", err)
+	}
+	if autoCommit {
+		intervalMs := int(commitInterval / time.Millisecond)
+		if err := config.SetKey("auto.commit.interval.ms", intervalMs); err != nil {
+			return nil, fmt.Errorf("setting auto.commit.interval.ms: %w", err)
+		}
 	}
 
 	// Take over the offset store as well. Left at its default of true, librdkafka
@@ -133,11 +154,12 @@ func NewAdapter(
 	}
 
 	return &Adapter{
-		config:  config,
-		brokers: brokers,
-		topic:   topic,
-		groupID: groupID,
-		logger:  logger,
+		config:     config,
+		brokers:    brokers,
+		topic:      topic,
+		groupID:    groupID,
+		logger:     logger,
+		autoCommit: autoCommit,
 	}, nil
 }
 
@@ -308,6 +330,28 @@ func (a *Adapter) Poll(ctx context.Context, timeoutMs int) (*types.Message, erro
 		}
 		return nil, nil //nolint:nilnil // a nil message with a nil error means "nothing polled"
 
+	case kfk.OffsetsCommitted:
+		// The background committer's only channel back to us. Without this the
+		// event falls to default: and a coordinator rejecting every commit is
+		// silent, while the duplicate window grows with nothing to show for it.
+		//
+		// A failed commit cannot lose a message — the store advances only on
+		// messages that were handled, so the committed offset can never run ahead
+		// of the work, and the cost is replay. It is logged at warning rather than
+		// error for that reason, and logged at all because a *persistent* failure
+		// is operationally significant: a consumer that has not committed for an
+		// hour replays an hour on restart.
+		if e.Error != nil {
+			a.logger.Warn().Err(e.Error).
+				Int("partitions", len(e.Offsets)).
+				Msg("auto-commit failed, offsets remain stored")
+		} else {
+			a.logger.Debug().
+				Int("partitions", len(e.Offsets)).
+				Msg("auto-commit published stored offsets")
+		}
+		return nil, nil //nolint:nilnil // a nil message with a nil error means "nothing polled"
+
 	default:
 		// Other events (rebalance, stats, etc.) handled via callbacks
 		return nil, nil //nolint:nilnil // a nil message with a nil error means "nothing polled"
@@ -371,10 +415,30 @@ func isNotAssigned(err error) bool {
 	return errors.As(err, &kfkErr) && kfkErr.Code() == kfk.ErrState
 }
 
+// MaybeCommitStored publishes the store once a message or batch has been
+// accounted for — unless librdkafka is already committing on an interval, in
+// which case the background committer owns timing and this does nothing.
+//
+// It exists so the engine's flow reads the same in both modes. With
+// WithAutoCommitEvery unset, which is the default, this commits after every
+// message: the narrowest possible duplicate window, and the library's existing
+// behaviour. Callers that must persist progress before it can be lost — a
+// revocation, shutdown — want CommitStored instead, which always commits.
+func (a *Adapter) MaybeCommitStored() error {
+	if a.autoCommit {
+		return nil
+	}
+	return a.CommitStored()
+}
+
 // CommitStored commits the offsets currently in librdkafka's store for this
-// consumer's assignment. Because enable.auto.offset.store is off, the store holds
-// only offsets the engine put there after a message was accounted for, so this is
-// safe to call from any point. An empty store is not an error.
+// consumer's assignment. It always commits, whatever the configured cadence, and
+// is for the points where progress must be persisted before it can be lost: a
+// revocation, and shutdown.
+//
+// Because enable.auto.offset.store is off, the store holds only offsets the
+// engine put there after a message was accounted for, so this is safe to call
+// from any point. An empty store is not an error.
 func (a *Adapter) CommitStored() error {
 	if a.consumer == nil {
 		return fmt.Errorf("consumer not connected")

@@ -89,6 +89,12 @@ type KafkaClient interface {
 	StoreOffset(topic string, partition int32, offset int64) error
 	CommitStored() error
 
+	// MaybeCommitStored is CommitStored unless the client is committing on an
+	// interval of its own, in which case it does nothing and the background
+	// committer owns timing. Use it where a commit is progress-keeping and
+	// skippable; use CommitStored where it must happen.
+	MaybeCommitStored() error
+
 	// SetOnRevoke registers a function invoked when partitions are revoked.
 	// It is called synchronously from whichever goroutine calls Poll.
 	SetOnRevoke(fn func())
