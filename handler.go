@@ -18,6 +18,14 @@ type ErrorStrategy = types.ErrorStrategy
 // Message is a re-export from internal/types
 type Message = types.Message
 
+// DeliveryError describes a retry or DLQ write that never reached the broker.
+// Re-export from internal/types.
+type DeliveryError = types.DeliveryError
+
+// DeliveryErrorFunc is called for writes that fail to reach the broker.
+// Re-export from internal/types.
+type DeliveryErrorFunc = types.DeliveryErrorFunc
+
 // PayloadEncoding is a re-export from internal/types
 type PayloadEncoding = types.PayloadEncoding
 
@@ -66,6 +74,7 @@ var (
 	WithBackoffMultiplier            = strategy.WithBackoffMultiplier
 	WithCustomBackoff                = strategy.WithCustomBackoff
 	WithFailedMessagePayloadEncoding = strategy.WithFailedMessagePayloadEncoding
+	WithDeliveryErrorFunc            = strategy.WithDeliveryErrorFunc
 	WithFailureThreshold             = strategy.WithFailureThreshold
 	WithCooldownPeriod               = strategy.WithCooldownPeriod
 	WithHalfOpenAttempts             = strategy.WithHalfOpenAttempts

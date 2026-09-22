@@ -28,6 +28,7 @@ type RetryConfig struct {
 	Multiplier      float64
 	CustomBackoff   BackoffFunc
 	PayloadEncoding types.PayloadEncoding
+	OnDeliveryError types.DeliveryErrorFunc
 }
 
 // RetryOption configures the retry strategy.
@@ -125,6 +126,28 @@ func WithFailedMessagePayloadEncoding(encoding types.PayloadEncoding) RetryOptio
 	}
 }
 
+// WithDeliveryErrorFunc registers fn to be called for every retry or DLQ write
+// that fails to reach the broker, so the application can log it in its own
+// format, count it and alert on it. Default: none, and failures are logged on
+// the library's own logger only. That logging continues when fn is set — the
+// library does not go quiet because a caller asked to be told as well.
+//
+// fn reports a loss, it does not prevent one. The source offset has already
+// advanced by the time it runs, because the library treats a message as
+// accounted for once it is queued with the client rather than once the broker
+// acknowledges it. Registering fn does not change that.
+//
+// See types.DeliveryErrorFunc for the concurrency contract fn must honour.
+func WithDeliveryErrorFunc(fn types.DeliveryErrorFunc) RetryOption {
+	return func(c *RetryConfig) error {
+		if fn == nil {
+			return errors.New("delivery error function cannot be nil")
+		}
+		c.OnDeliveryError = fn
+		return nil
+	}
+}
+
 // RetryStrategy implements retry logic using Kafka retry topics and DLQ.
 type RetryStrategy struct {
 	config        RetryConfig
@@ -190,13 +213,13 @@ func (r *RetryStrategy) SetLogger(logger zerolog.Logger) {
 func (r *RetryStrategy) Initialize(config types.InitConfig) error {
 	r.logger = config.Logger
 
-	retryProducer, err := kafka.NewProducer(config.Brokers, config.Logger)
+	retryProducer, err := kafka.NewProducer(config.Brokers, config.Logger, r.config.OnDeliveryError)
 	if err != nil {
 		return fmt.Errorf("failed to create retry producer: %w", err)
 	}
 	r.retryProducer = retryProducer
 
-	dlqProducer, err := kafka.NewProducer(config.Brokers, config.Logger)
+	dlqProducer, err := kafka.NewProducer(config.Brokers, config.Logger, r.config.OnDeliveryError)
 	if err != nil {
 		retryProducer.Close()
 		return fmt.Errorf("failed to create DLQ producer: %w", err)

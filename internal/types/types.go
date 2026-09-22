@@ -117,6 +117,60 @@ type ProduceMessage struct {
 	Headers map[string]string
 }
 
+// DeliveryError describes a retry or DLQ write that never reached the broker.
+//
+// It reports a loss, it does not prevent one: the source offset has already
+// advanced by the time a DeliveryError exists, because the library treats a
+// message as accounted for once it is queued with the client rather than once
+// the broker acknowledges it.
+//
+// The fields carry no confluent-kafka-go types, so an application can consume
+// this without importing the Kafka client.
+type DeliveryError struct {
+	// Topic is the retry or DLQ topic the write was aimed at. There is no
+	// separate field naming the producer, because the two use different topics.
+	Topic string
+
+	// Partition may be unassigned if the write never got that far.
+	Partition int32
+
+	Key []byte
+
+	// Value is the record body. For a failed DLQ write these bytes are the last
+	// copy that exists, which is why they are here — but they can be large, so
+	// logging them wholesale is usually the wrong move.
+	Value []byte
+
+	// Headers carries the retry attempt count and the original topic.
+	Headers map[string]string
+
+	// Err is the underlying client error.
+	Err error
+
+	// Code names the kind of failure — "Broker: Message size too large",
+	// "Local: Broker transport failure" — and is empty when Err did not come
+	// from the Kafka client. It is offered as a metric label, because a broker
+	// that is unreachable and a record that is too large want different alerts.
+	//
+	// It is a description, not advice. By the time a delivery report exists the
+	// client has already retried to exhaustion against its own message timeout,
+	// so even a transport failure here has been retried as far as it will be.
+	Code string
+}
+
+// DeliveryErrorFunc is called for every retry or DLQ write that fails to reach
+// the broker. It is supplied by the caller and invoked by the library, in the
+// manner of BackoffFunc.
+//
+// It runs on the producer's event goroutine, once per failed record. Retry and
+// DLQ have separate producers and therefore separate goroutines, so an
+// implementation must be safe for concurrent use, and must not block: while it
+// runs, no further event is drained for that producer — including the delivery
+// failures it exists to report.
+//
+// A panic is recovered and logged rather than allowed to kill the goroutine.
+type DeliveryErrorFunc func(DeliveryError)
+
 // PayloadEncoding defines how payloads are encoded for retry and DLQ messages.
 type PayloadEncoding string
 

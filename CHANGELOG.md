@@ -9,6 +9,27 @@ public API may still change in a minor release.
 
 ### Added
 
+- **`WithDeliveryErrorFunc(fn)`** — a retry-strategy option registering a function called for every
+  retry or DLQ write that fails to reach the broker, so an application can log it in its own format,
+  count it and alert on it. Until now such a failure produced one line on the library's own logger
+  and nothing else: no counter, no hook, no way for the application to know it happened.
+
+  **It reports a loss, it does not prevent one.** The library still treats a message as accounted
+  for once the record is queued with the client rather than once the broker acknowledges it, so the
+  source offset has already advanced when `fn` runs. Registering it does not change that. Confirming
+  the write before the offset moves is separate work, scheduled with the producer API.
+
+  `fn` receives a `DeliveryError` carrying the target topic, partition, key, value, the retry
+  headers, the underlying error and a `Code` naming the kind of failure for use as a metric label.
+  No confluent-kafka-go types appear in it, so callers need not import the Kafka client. `Value` is
+  the record body — for a DLQ write the last copy of it that exists, which is why it is there, and
+  usually the wrong thing to log wholesale.
+
+  `fn` runs on the producer's event goroutine, so it must not block — while it runs no further
+  delivery report is processed, including the failures it exists to report — and it must be safe for
+  concurrent use, because the retry and DLQ producers each have their own goroutine. A panic is
+  recovered and logged rather than allowed to kill that goroutine.
+
 - **`WithAutoCommitEvery(d)`** — hands commit timing to librdkafka, which publishes the offset store
   on a background thread every `d`, instead of the library committing after every message. That
   removes one synchronous round-trip to the group coordinator per message, which was the throughput

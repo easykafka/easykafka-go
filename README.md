@@ -229,6 +229,42 @@ consumer, err := easykafka.New(
 )
 ```
 
+#### Observing failed retry and DLQ writes
+
+A write to the retry or DLQ topic can fail — the broker rejects the record, or is unreachable.
+Today the library does not wait for the broker to acknowledge that write before advancing the
+source offset, so **a failed write loses the message**, and the only trace is a line on the
+library's logger.
+
+`WithDeliveryErrorFunc` makes that visible to your application, so you can log it in your own
+format, count it and alert on it:
+
+```go
+retryStrategy, err := easykafka.NewRetryStrategy(
+	easykafka.WithRetryTopic("orders.retry"),
+	easykafka.WithDLQTopic("orders.dlq"),
+	easykafka.WithDeliveryErrorFunc(func(de easykafka.DeliveryError) {
+		lostWrites.WithLabelValues(de.Topic, de.Code).Inc()
+		log.Error().Err(de.Err).
+			Str("topic", de.Topic).
+			Str("attempt", de.Headers["easykafka.retry.attempt"]).
+			Msg("retry/DLQ write lost")
+	}),
+)
+```
+
+**It reports the loss, it does not prevent it.** The source offset has already advanced by the time
+your function runs, and registering it changes nothing about that. Confirming the write before the
+offset moves is a separate piece of work, scheduled with the producer API.
+
+Two rules for the function you supply, because it runs on the producer's event goroutine: it must
+not block — while it runs, no further delivery report is processed, including the failures it
+exists to report — and it must be safe for concurrent use, since the retry and DLQ producers each
+have their own goroutine. A panic is recovered and logged rather than allowed to kill the goroutine.
+
+`de.Value` carries the record body, which for a DLQ write is the last copy that exists. Useful if
+you want to spool it somewhere; usually the wrong thing to log wholesale.
+
 ### Circuit Breaker
 
 ```go
