@@ -9,26 +9,32 @@ This directory contains comprehensive unit and integration tests for the Easy Ka
 ```
 tests/
 ├── unit/                 # Unit tests (~70% of tests)
-│   ├── engine_dispatch_test.go
-│   ├── options_validation_test.go
-│   ├── strategy_basic_test.go
-│   ├── strategy_retry_test.go
 │   ├── batch_buffer_test.go
-│   └── shutdown_test.go
-│   
+│   ├── commit_cadence_test.go
+│   ├── engine_dispatch_test.go
+│   ├── offset_store_test.go
+│   ├── options_validation_test.go
+│   ├── producer_delivery_test.go
+│   ├── shutdown_test.go
+│   ├── strategy_basic_test.go
+│   └── strategy_retry_test.go
+│
 ├── integration/          # Integration tests (~30% of tests)
-│   ├── consumer_basic_test.go
-│   ├── config_passthrough_test.go
-│   ├── retry_dlq_test.go
-│   ├── circuit_breaker_test.go
-│   ├── batch_processing_test.go
-│   ├── graceful_shutdown_test.go
-│   ├── reconnection_test.go
 │   ├── at_least_once_test.go
+│   ├── batch_processing_test.go
+│   ├── commit_cadence_test.go
+│   ├── config_passthrough_test.go
+│   ├── consumer_basic_test.go
+│   ├── delivery_error_test.go
+│   ├── fail_fast_test.go
+│   ├── graceful_shutdown_test.go
+│   ├── offset_semantics_test.go
 │   ├── rebalance_test.go
-│   ├── kafka_test_helper.go
+│   ├── reconnection_test.go
+│   ├── retry_dlq_test.go
+│   ├── revoked_store_test.go
 │   └── helpers/
-│       └── testcontainers.go
+│       └── kafka_helper.go
 ```
 
 ## 🔬 Unit Tests

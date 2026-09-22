@@ -66,6 +66,24 @@ public API may still change in a minor release.
   who *can* decide to give up and exit, is better placed to own that bound; the real hard deadline is
   the orchestrator's `terminationGracePeriodSeconds`.
 
+- **The `CircuitBreaker` error strategy.** **Breaking.** `NewCircuitBreakerStrategy` is gone, along
+  with `WithFailureThreshold`, `WithCooldownPeriod`, `WithHalfOpenAttempts` and `WithRetryOptions`.
+  Three strategies remain: `Skip`, `FailFast` and `Retry`.
+
+  It did not do what its name said. When the breaker tripped it *returned an error*, and the engine
+  treats any non-nil strategy error as fatal — so it stopped the consumer rather than pausing it,
+  which made `CircuitOpen` and `CircuitHalfOpen` unreachable in real operation and the cooldown,
+  half-open probing and recovery logic dead code. Separately, the engine never called `OnSuccess`,
+  so `WithFailureThreshold(n)` counted the *n*th failure ever rather than the *n*th consecutive one.
+
+  **There is no replacement, and a pause/resume capability is not planned.** A caller reaching for
+  the breaker to stop on repeated failures wants `FailFast`, which is what the breaker actually did.
+  Making it real would need pause/resume on the consumer and a way for a strategy to ask for it —
+  machinery nothing else in the library wants. No deprecation cycle: there was no correct usage to
+  migrate, so a release spent keeping the misleading name would have bought nothing.
+
+  This removes the library's last experimental surface; everything shipped is now supported.
+
 - **`ConsumerState` and its constants.** Exported but unreadable — there was no accessor and no
   method took one — so nothing outside the library could observe or use them. The state they carried
   is now the single "already started" guard `Start` needs.
@@ -92,6 +110,9 @@ public API may still change in a minor release.
   deferred the cancel, so the derived context held a reference on its parent until the parent
   finished. `go vet`'s lostcancel check missed it because the cancel func was stored in a field. The
   derived context is gone with `Shutdown`.
+
+- **The package doc named the wrong default error strategy.** It listed `FailFast` as the default;
+  the default is and always was `Skip`, for both single-message and batch mode.
 
 ## [0.1.0]
 

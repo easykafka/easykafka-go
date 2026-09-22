@@ -45,12 +45,10 @@
 // Pluggable error strategies control what happens when a handler returns an
 // error:
 //
-//   - [NewFailFastStrategy]: stops the consumer immediately (default).
-//   - [NewSkipStrategy]: logs the error and continues.
+//   - [NewSkipStrategy]: logs the error and continues (default).
+//   - [NewFailFastStrategy]: stops the consumer immediately.
 //   - [NewRetryStrategy]: retries via a Kafka retry topic with exponential
 //     backoff, then routes to a dead-letter queue (DLQ).
-//   - [NewCircuitBreakerStrategy]: wraps retry with pause/resume behaviour to
-//     protect downstream services.
 //
 // # Stopping
 //
@@ -164,7 +162,7 @@ func (c *consumerImpl) Start(ctx context.Context) error {
 		la.SetLogger(c.config.Logger)
 	}
 
-	// Initialize error strategy if it implements Initializable (e.g., retry, circuit breaker)
+	// Initialize error strategy if it implements Initializable (e.g., retry)
 	if init, ok := c.config.ErrorStrategy.(types.Initializable); ok {
 		initCfg := types.InitConfig{
 			Brokers:       c.config.Brokers,

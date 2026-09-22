@@ -36,7 +36,6 @@ const (
 
 // Re-export retry option types for public API
 type RetryOption = strategy.RetryOption
-type CircuitBreakerOption = strategy.CircuitBreakerOption
 
 // ============================================================================
 // PUBLIC ERROR STRATEGY CONSTRUCTORS
@@ -46,12 +45,6 @@ type CircuitBreakerOption = strategy.CircuitBreakerOption
 // RetryTopic and DLQTopic are required options.
 func NewRetryStrategy(options ...RetryOption) (ErrorStrategy, error) {
 	return strategy.NewRetryStrategy(options...)
-}
-
-// NewCircuitBreakerStrategy pauses consumption after consecutive failures.
-// Only supported in single-message mode.
-func NewCircuitBreakerStrategy(options ...CircuitBreakerOption) (ErrorStrategy, error) {
-	return strategy.NewCircuitBreakerStrategy(options...)
 }
 
 // NewSkipStrategy logs errors and continues consumption, committing offsets.
@@ -64,7 +57,7 @@ func NewFailFastStrategy() ErrorStrategy {
 	return strategy.NewFailFastStrategy()
 }
 
-// Re-export retry/circuit breaker option constructors
+// Re-export retry option constructors
 var (
 	WithRetryTopic                   = strategy.WithRetryTopic
 	WithDLQTopic                     = strategy.WithDLQTopic
@@ -75,8 +68,4 @@ var (
 	WithCustomBackoff                = strategy.WithCustomBackoff
 	WithFailedMessagePayloadEncoding = strategy.WithFailedMessagePayloadEncoding
 	WithDeliveryErrorFunc            = strategy.WithDeliveryErrorFunc
-	WithFailureThreshold             = strategy.WithFailureThreshold
-	WithCooldownPeriod               = strategy.WithCooldownPeriod
-	WithHalfOpenAttempts             = strategy.WithHalfOpenAttempts
-	WithRetryOptions                 = strategy.WithRetryOptions
 )

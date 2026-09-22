@@ -35,14 +35,14 @@ offset commits, rebalancing, and error recovery.
 
 Great low-level Kafka clients already exist for Go, but they leave you to
 wire up the same boilerplate every time: retry loops, dead-letter queues,
-circuit breakers, graceful shutdown, batch accumulation, and offset
-management. Business logic ends up tangled with infrastructure concerns.
+graceful shutdown, batch accumulation, and offset management. Business logic
+ends up tangled with infrastructure concerns.
 
 **easykafka** was created to decouple message processing from error handling
 and operational plumbing. You write a plain handler function; the library
-provides high-level, composable blueprints — like retry-with-DLQ or
-circuit-breaker strategies — so you can focus on *what* to do with a message
-instead of *how* to survive when things go wrong.
+provides high-level, composable blueprints — like retry-with-DLQ — so you can
+focus on *what* to do with a message instead of *how* to survive when things
+go wrong.
 
 ## 🛠 Installation
 
@@ -199,12 +199,11 @@ whichever comes first. Offsets are committed atomically per batch.
 
 Pluggable strategies control what happens when a handler returns an error:
 
-| Strategy | Behaviour | Use Case | Production Readiness |
-|---|---|---|---|
-| **FailFast** | Stop consumer immediately | Critical processing, manual intervention | ✅ Stable |
-| **Skip** | Log error, commit offset, continue | Best-effort / analytics pipelines | ✅ Stable |
-| **Retry + DLQ** | Retry via Kafka topic with exponential backoff; route to DLQ after max attempts | Production systems with automatic recovery | ✅ Stable |
-| **CircuitBreaker** | Retry + DLQ with pause/resume on consecutive failures | Protect downstream services during outages | ⚠️ Experimental — design fine-tuning & additional testing needed. PRs welcome! |
+| Strategy | Behaviour | Use Case |
+|---|---|---|
+| **Skip** | Log error, commit offset, continue | Best-effort / analytics pipelines (the default) |
+| **FailFast** | Stop consumer immediately | Critical processing, manual intervention |
+| **Retry + DLQ** | Retry via Kafka topic with exponential backoff; route to DLQ after max attempts | Production systems with automatic recovery |
 
 ### Retry + DLQ
 
@@ -264,21 +263,6 @@ have their own goroutine. A panic is recovered and logged rather than allowed to
 
 `de.Value` carries the record body, which for a DLQ write is the last copy that exists. Useful if
 you want to spool it somewhere; usually the wrong thing to log wholesale.
-
-### Circuit Breaker
-
-```go
-cbStrategy, err := easykafka.NewCircuitBreakerStrategy(
-	easykafka.WithFailureThreshold(5),
-	easykafka.WithCooldownPeriod(30*time.Second),
-	easykafka.WithHalfOpenAttempts(2),
-	easykafka.WithRetryOptions(
-		easykafka.WithRetryTopic("orders.retry"),
-		easykafka.WithDLQTopic("orders.dlq"),
-		easykafka.WithMaxAttempts(3),
-	),
-)
-```
 
 ## ⏱ Commit Cadence
 
@@ -379,21 +363,6 @@ or (to get a more readable output):
 go install gotest.tools/gotestsum@latest
 gotestsum --format testdox -- -count=1 -timeout 1000s ./tests/integration/...
 ```
-## 🔧 Built With
-
-- [confluent-kafka-go](https://github.com/confluentinc/confluent-kafka-go) — Kafka client
-- [zerolog](https://github.com/rs/zerolog) — Structured logging
-- [testcontainers-go](https://github.com/testcontainers/testcontainers-go) — Integration test infrastructure
-
-### 🤖 Built Using speckit
-
-Spec driven development with AI (speckit) was used to generate the initial consumer implementation.
-
-For details see:
-
-- https://github.com/github/spec-kit
-- https://www.youtube.com/watch?v=a9eR1xsfvHg
-- https://github.blog/ai-and-ml/generative-ai/spec-driven-development-with-ai-get-started-with-a-new-open-source-toolkit/
 
 ## 📜 Releases
 

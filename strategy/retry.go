@@ -303,7 +303,7 @@ func (r *RetryStrategy) Name() string {
 	return "retry"
 }
 
-// Config returns the retry configuration (for use by circuit breaker).
+// Config returns the retry configuration.
 func (r *RetryStrategy) Config() RetryConfig {
 	return r.config
 }

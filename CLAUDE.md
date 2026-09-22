@@ -67,11 +67,14 @@ churn-heavy linters (`mnd`, `lll`, `dupl`, `gocognit`, `gosec`, `errcheck`,
 - `internal/metadata/` — message metadata via context decorators and header parsing
 
 ### Error strategies (`strategy/` package — public)
-Pluggable via `WithErrorStrategy()`. Four implementations:
+Pluggable via `WithErrorStrategy()`. Three implementations:
 - `skip.go` — logs error and continues (default)
 - `fail_fast.go` — stops consumer immediately on first error
 - `retry.go` — Kafka-based retry with exponential backoff, optional DLQ routing
-- `circuit_breaker.go` — wraps retry with pause/resume on consecutive failures (**experimental**)
+
+A strategy returning a non-nil error is fatal — the engine stops the poll loop and `Start` returns
+it. That is the whole of the "stop consuming" capability; there is no pause/resume, and a
+`CircuitBreaker` strategy that appeared to offer one was removed in 0.2.0 because it did not.
 
 ### Retry/DLQ writes are not confirmed — and what that means for the callback
 
@@ -109,7 +112,7 @@ reachable from `tests/`; `internal/` keeps them out of the public API.
 
 ### Testing approach
 - `tests/unit/` — pure Go logic, no Kafka dependency (strategy behavior, batch buffer, shutdown logic, options validation, delivery-error mapping)
-- `tests/integration/` — full Kafka via testcontainers-go (consumer basics, batch, retry/DLQ, circuit breaker, graceful shutdown, rebalancing, reconnection, at-least-once semantics, delivery errors)
+- `tests/integration/` — full Kafka via testcontainers-go (consumer basics, batch, retry/DLQ, fail-fast, graceful shutdown, rebalancing, reconnection, at-least-once semantics, delivery errors)
 
 **All tests live under `tests/`** — there are no in-package `_test.go` files. Unexported logic is
 therefore unreachable from tests, which is why some internals are exported within `internal/`.
