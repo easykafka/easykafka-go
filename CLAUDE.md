@@ -63,7 +63,7 @@ churn-heavy linters (`mnd`, `lll`, `dupl`, `gocognit`, `gosec`, `errcheck`,
 ### Internal packages
 - `internal/engine/` — core polling loop (`engine.go`) and batch accumulation (`batch.go`). Supports both single-message and batch modes.
 - `internal/kafka/` — wraps confluent-kafka-go consumer (`adapter.go`) and produces to retry/DLQ topics (`producer.go`)
-- `internal/types/` — core interfaces: `Handler`, `BatchHandler`, `ErrorStrategy`, `Message`, `Initializable`, `LoggerAware`
+- `internal/types/` — core interfaces: `Handler`, `BatchHandler`, `ErrorStrategy`, `Message`, `Initializable`, `LoggerAware`, `DeliveryError`/`DeliveryErrorFunc`
 - `internal/metadata/` — message metadata via context decorators and header parsing
 
 ### Error strategies (`strategy/` package — public)
@@ -73,9 +73,52 @@ Pluggable via `WithErrorStrategy()`. Four implementations:
 - `retry.go` — Kafka-based retry with exponential backoff, optional DLQ routing
 - `circuit_breaker.go` — wraps retry with pause/resume on consecutive failures (**experimental**)
 
+### Retry/DLQ writes are not confirmed — and what that means for the callback
+
+`Produce` (`internal/kafka/producer.go`) passes a **nil delivery channel**, so it returns as soon as
+the record is queued in librdkafka's local buffer. `RetryStrategy.HandleError` reads that nil as
+success and returns nil, and the engine stores the source offset on the strength of it. **A retry or
+DLQ write that never reaches the broker still advances the offset**, so the message is lost.
+
+This is known and deliberate for now: confirming the write is scheduled with the greenfield producer
+API rather than bolted onto the retry strategy. See `producer-durability-implementation-plan.md` in
+`srm-specs` — and in particular its "Read this before designing the producer API" note, which
+records that `kafka.Message.Opaque` correlates a delivery report back to its record **without** a
+per-produce delivery channel, so confirmation need not block the producing goroutine at all.
+
+`WithDeliveryErrorFunc(fn)` is the interim: it makes that loss visible so an application can log,
+count and alert on it. **It reports a loss, it does not prevent one** — the offset has already
+advanced when `fn` runs. Do not describe it as fixing the above, in code comments or docs.
+
+Three things to preserve when touching this path:
+
+- **`Produce` sets `Opaque: msg`.** librdkafka does not return headers on a delivery report, so the
+  submitted `*types.ProduceMessage` is carried through as the opaque and preferred over the report's
+  own copy in `DeliveryErrorFor`. Without it the callback cannot name the retry attempt or original
+  topic. Needs no delivery channel; costs one client-side map entry per in-flight record.
+- **`InvokeDeliveryError` recovers panics.** The callback runs inside the `range` over `Events()` on
+  a single goroutine per producer; an unrecovered panic kills it and the producer then drains
+  nothing for the life of the process — silently, since that goroutine was the only thing reporting
+  failures. The same reason the callback must not block.
+- **No `Retriable` field.** `kafka.Error.IsRetriable()` is only ever set by the transactional
+  producer API, so on a delivery report it is always false. `DeliveryError.Code` carries the error
+  kind instead, derived from `Code().String()`.
+
+`DeliveryErrorFor` and `InvokeDeliveryError` are exported from `internal/kafka` purely so they are
+reachable from `tests/`; `internal/` keeps them out of the public API.
+
 ### Testing approach
-- `tests/unit/` — pure Go logic, no Kafka dependency (strategy behavior, batch buffer, shutdown logic, options validation)
-- `tests/integration/` — full Kafka via testcontainers-go (consumer basics, batch, retry/DLQ, circuit breaker, graceful shutdown, rebalancing, reconnection, at-least-once semantics)
+- `tests/unit/` — pure Go logic, no Kafka dependency (strategy behavior, batch buffer, shutdown logic, options validation, delivery-error mapping)
+- `tests/integration/` — full Kafka via testcontainers-go (consumer basics, batch, retry/DLQ, circuit breaker, graceful shutdown, rebalancing, reconnection, at-least-once semantics, delivery errors)
+
+**All tests live under `tests/`** — there are no in-package `_test.go` files. Unexported logic is
+therefore unreachable from tests, which is why some internals are exported within `internal/`.
+
+To make a write fail deterministically in an integration test, create the target topic with
+`max.message.bytes=1` (see `delivery_error_test.go`). The record then passes librdkafka's own
+client-side size check — which would fail `Produce` synchronously and never produce a delivery
+report — and is rejected by the broker instead, which is the path that generates one. Stopping the
+broker does not work: `message.timeout.ms` is unset, so its 300 s default outlives any sane test.
 
 ### Key dependencies
 - `confluent-kafka-go/v2` — underlying Kafka client
