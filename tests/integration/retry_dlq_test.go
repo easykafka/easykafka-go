@@ -122,6 +122,56 @@ func TestRetryStrategyWritesToRetryTopic(t *testing.T) {
 		t.Logf("Retry message %d: attempt=%s, origTopic=%s, retryTime=%s, payload=%s",
 			i, attempt, origTopic, retryTime, string(msg.Value))
 	}
+
+	// The assertions above read the headers off the wire. Read them once more the
+	// way an application has to — through a consumer, off the Message the library
+	// delivers — because that path crosses a seam the wire check does not: the
+	// adapter turning Kafka headers into Message.Headers, which is what the
+	// exported accessors are handed. Writing a retry consumer is exactly this.
+	var (
+		gotAttempt int
+		gotOrigin  string
+		gotDue     time.Time
+		gotMeta    bool
+		readOnce   sync.Once
+		gotRecord  = make(chan struct{})
+	)
+
+	retryReader, err := easykafka.New(
+		easykafka.WithTopic(retryTopic),
+		easykafka.WithBrokers(cluster.Brokers...),
+		easykafka.WithConsumerGroup(fmt.Sprintf("retry-reader-%d", time.Now().UnixNano())),
+		easykafka.WithHandler(func(handlerCtx context.Context, _ []byte) error {
+			if msg, ok := easykafka.MessageFromContext(handlerCtx); ok {
+				gotMeta = true
+				gotAttempt = easykafka.GetRetryAttempt(msg)
+				gotOrigin = easykafka.GetOriginalTopic(msg)
+				gotDue = easykafka.GetRetryTime(msg)
+			}
+			readOnce.Do(func() { close(gotRecord) })
+			return nil
+		}),
+		easykafka.WithPollTimeout(100*time.Millisecond),
+	)
+	require.NoError(t, err)
+
+	readerCtx, stopReader := context.WithTimeout(ctx, 30*time.Second)
+	defer stopReader()
+	readerDone := make(chan error, 1)
+	go func() { readerDone <- retryReader.Start(readerCtx) }()
+
+	select {
+	case <-gotRecord:
+	case <-readerCtx.Done():
+		t.Fatal("retry consumer never received a republished record")
+	}
+	stopReader()
+	require.NoError(t, <-readerDone)
+
+	require.True(t, gotMeta, "MessageFromContext must report true in single-message mode")
+	assert.Equal(t, 1, gotAttempt)
+	assert.Equal(t, sourceTopic, gotOrigin, "the accessor must name the source, not the retry topic")
+	assert.False(t, gotDue.IsZero(), "the library stamps a due time when it republishes")
 }
 
 // TestRetryStrategyWritesToDLQAfterMaxAttempts verifies that when max retry attempts

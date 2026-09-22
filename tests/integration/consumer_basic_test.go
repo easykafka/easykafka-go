@@ -8,7 +8,6 @@ import (
 	"time"
 
 	easykafka "github.com/easykafka/easykafka-go"
-	"github.com/easykafka/easykafka-go/internal/metadata"
 	"github.com/easykafka/easykafka-go/tests/integration/helpers"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -50,7 +49,9 @@ func TestBasicConsumption(t *testing.T) {
 
 	// Set up handler
 	handler := func(ctx context.Context, payload []byte) error {
-		msg, ok := metadata.MessageFromContext(ctx)
+		// The public accessor, so this test guards the re-export rather than
+		// reaching past it into internal/metadata.
+		msg, ok := easykafka.MessageFromContext(ctx)
 
 		mu.Lock()
 		defer mu.Unlock()

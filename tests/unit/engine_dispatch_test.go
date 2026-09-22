@@ -8,8 +8,8 @@ import (
 	"testing"
 	"time"
 
+	easykafka "github.com/easykafka/easykafka-go"
 	"github.com/easykafka/easykafka-go/internal/engine"
-	"github.com/easykafka/easykafka-go/internal/metadata"
 	"github.com/easykafka/easykafka-go/internal/types"
 	"github.com/rs/zerolog"
 	"github.com/stretchr/testify/assert"
@@ -557,7 +557,9 @@ func TestEngineMessageContext(t *testing.T) {
 	var capturedMsg *types.Message
 
 	handler := func(ctx context.Context, payload []byte) error {
-		msg, ok := metadata.MessageFromContext(ctx)
+		// Deliberately the public accessor, not internal/metadata: this test is
+		// the guard that the re-export in handler.go stays.
+		msg, ok := easykafka.MessageFromContext(ctx)
 		if ok {
 			capturedMsg = msg
 		}

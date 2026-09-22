@@ -89,6 +89,74 @@ func main() {
 That's it — the consumer connects, polls messages, calls your handler, and
 commits offsets on success.
 
+## 🏷 Message Metadata
+
+A handler receives the payload. When it needs more — which topic, which
+partition, which offset, the timestamp, the headers — it reads the message off
+the context:
+
+```go
+easykafka.WithHandler(func(ctx context.Context, payload []byte) error {
+	msg, ok := easykafka.MessageFromContext(ctx)
+	if !ok {
+		return nil
+	}
+
+	log.Printf("%s[%d] offset %d at %s",
+		msg.Topic, msg.Partition, msg.Offset, msg.Timestamp)
+	return nil
+})
+```
+
+**`ok` is false in batch mode.** A batch handler is given many messages at once
+and its context carries none of them — there is no single message it could
+describe. Per-message metadata for batches would mean changing `BatchHandler`'s
+signature away from `[][]byte`; until then, batch handlers see payloads only.
+
+There is no exported way to *put* a message on a context. Handlers read what the
+library wrote; they cannot plant a value the library then dispatches through.
+
+### Retry headers
+
+Records the library republishes to the retry and DLQ topics carry headers
+describing why they are there. The keys are exported as constants, and the
+values are read with accessors:
+
+```go
+msg, _ := easykafka.MessageFromContext(ctx)
+
+attempt := easykafka.GetRetryAttempt(msg)    // 0 on first delivery
+origin  := easykafka.GetOriginalTopic(msg)   // "" if never retried
+due     := easykafka.GetRetryTime(msg)       // zero Time if absent
+```
+
+This is what makes the retry topic consumable. **The library writes to the retry
+topic but never reads from it** — it stamps each record with a due time and
+republishes, and honouring that time is the application's job. A retry consumer
+is an ordinary consumer subscribed to the retry topic, deciding from
+`GetRetryTime` whether a record is ready:
+
+```go
+easykafka.New(
+	easykafka.WithTopic("orders.retry"),
+	easykafka.WithBrokers("localhost:9092"),
+	easykafka.WithConsumerGroup("order-retries"),
+	easykafka.WithHandler(func(ctx context.Context, payload []byte) error {
+		msg, _ := easykafka.MessageFromContext(ctx)
+
+		if due := easykafka.GetRetryTime(msg); time.Now().Before(due) {
+			return fmt.Errorf("not due until %s", due) // let the strategy requeue it
+		}
+		return processOrder(ctx, payload)
+	}),
+)
+```
+
+The full set of header keys, for reading raw records or writing your own
+tooling: `HeaderRetryAttempt`, `HeaderRetryTime`, `HeaderRetryStep`,
+`HeaderErrorCode`, `HeaderErrorMessage`, `HeaderOriginalTopic`,
+`HeaderOriginalPartition`, `HeaderOriginalOffset`, `HeaderFailedAt`.
+
 ## 🛑 Stopping
 
 **Cancelling the context passed to `Start` is the only way to stop a consumer.**
@@ -246,7 +314,7 @@ retryStrategy, err := easykafka.NewRetryStrategy(
 		lostWrites.WithLabelValues(de.Topic, de.Code).Inc()
 		log.Error().Err(de.Err).
 			Str("topic", de.Topic).
-			Str("attempt", de.Headers["easykafka.retry.attempt"]).
+			Str("attempt", de.Headers[easykafka.HeaderRetryAttempt]).
 			Msg("retry/DLQ write lost")
 	}),
 )

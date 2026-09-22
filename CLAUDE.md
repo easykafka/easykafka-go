@@ -66,6 +66,31 @@ churn-heavy linters (`mnd`, `lll`, `dupl`, `gocognit`, `gosec`, `errcheck`,
 - `internal/types/` — core interfaces: `Handler`, `BatchHandler`, `ErrorStrategy`, `Message`, `Initializable`, `LoggerAware`, `DeliveryError`/`DeliveryErrorFunc`
 - `internal/metadata/` — message metadata via context decorators and header parsing
 
+### What of `internal/metadata` is public, and what is deliberately not
+
+`handler.go` re-exports the **read** side: `MessageFromContext`, the nine `Header*` key constants,
+and `GetRetryAttempt` / `GetRetryTime` / `GetRetryStep` / `GetOriginalTopic`.
+
+The **write** side stays internal on purpose. `WithMessage` is how the engine populates a handler
+context, and `BuildRetryHeaders` / `BuildDLQHeaders` are the retry strategy's. Exporting either
+would let an application plant a context value the engine then dispatches through, or mint headers
+that lie to the library's own accessors about attempt counts. Keep the asymmetry.
+
+Two things to preserve here:
+
+- **The exported `Header*` constants spell their values out** rather than aliasing
+  `metadata.Header*`, because `const X = metadata.X` renders in godoc as a reference into a package
+  the reader cannot open — the wire string is then invisible on pkg.go.dev. The duplication is
+  guarded by `TestHeaderKeysMatchInternal`, which fails if either side is renamed.
+- **`MessageFromContext` returns `(nil, false)` in batch mode**, because `dispatchBatch` passes the
+  raw loop context. That is documented in three places and pinned by
+  `TestMessageFromContextIsEmptyInBatchMode`. Do not "fix" it by attaching one message of the batch;
+  the honest fix is per-message batch results, which is a `BatchHandler` signature change.
+
+Tests reach the public symbols through `easykafka.` rather than `internal/metadata` wherever they
+are exercising the export, so a regression in the re-export fails a test. Nothing in-module can
+*prove* external reachability — `go doc .` is the real check.
+
 ### Error strategies (`strategy/` package — public)
 Pluggable via `WithErrorStrategy()`. Three implementations:
 - `skip.go` — logs error and continues (default)

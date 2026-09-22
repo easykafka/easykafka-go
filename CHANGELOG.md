@@ -9,6 +9,32 @@ public API may still change in a minor release.
 
 ### Added
 
+- **`MessageFromContext(ctx)`, the nine retry header keys and the four `Get*` accessors** are now
+  part of the public API. The 0.1.0 notes advertised message metadata as shipped — "handlers that
+  need more than the payload read topic, partition, offset, timestamp and headers from the `Message`
+  carried on the context" — but the accessor lived in `internal/`, so no consumer of the library
+  could reach it. The `Message` type was exported with nothing that returns one. That is now fixed
+  rather than re-promised.
+
+  **`ok` is false in batch mode.** A batch handler is given many messages at once and its context
+  carries none of them, so there is no single message to describe. Attaching one element of the
+  batch would be worse than attaching none: the accessor would report true with metadata describing
+  an arbitrary record. Real per-message metadata means changing `BatchHandler`'s signature away from
+  `[][]byte`, which is separate work.
+
+  `HeaderRetryAttempt` and its eight siblings, plus `GetRetryAttempt`, `GetRetryTime`,
+  `GetRetryStep` and `GetOriginalTopic`, go out with it. These are what make the retry topic
+  consumable: the library republishes a failed record with a due time and never reads it back, so
+  the waiting half is the application's to write, and until now the headers it needed were
+  unreachable. The README has the pattern.
+
+  Exporting the keys freezes them as API, which they effectively already were — a retry topic
+  outlives the deployment that wrote to it.
+
+  The write side stays internal. There is no exported `WithMessage`, and no `BuildRetryHeaders`: a
+  handler that could mint either would be able to plant a context value the engine then dispatches
+  through, or lie to the library's own accessors about attempt counts.
+
 - **`WithDeliveryErrorFunc(fn)`** — a retry-strategy option registering a function called for every
   retry or DLQ write that fails to reach the broker, so an application can log it in its own format,
   count it and alert on it. Until now such a failure produced one line on the library's own logger
