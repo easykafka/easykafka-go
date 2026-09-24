@@ -1,7 +1,6 @@
 package integration
 
 import (
-	"bytes"
 	"context"
 	"fmt"
 	"sync"
@@ -36,25 +35,6 @@ import (
 // unreachable in practice and remains defensive; the unit tests cover the engine's
 // reaction to it.
 
-// syncBuffer is an io.Writer safe for the logger to use from the engine goroutine
-// while the test reads it.
-type syncBuffer struct {
-	mu  sync.Mutex
-	buf bytes.Buffer
-}
-
-func (s *syncBuffer) Write(p []byte) (int, error) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	return s.buf.Write(p)
-}
-
-func (s *syncBuffer) String() string {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	return s.buf.String()
-}
-
 // TestCommitFailureDuringGroupLossIsTolerated stalls a handler until the broker
 // ejects the consumer, so the commit that follows has no group to commit to.
 //
@@ -80,7 +60,7 @@ func TestCommitFailureDuringGroupLossIsTolerated(t *testing.T) {
 	cluster.ProduceMessages(ctx, t, topic, []string{"msg-00"})
 
 	// Debug level, so both the benign and fatal branches would be visible.
-	logs := &syncBuffer{}
+	logs := &helpers.SyncBuffer{}
 	logger := zerolog.New(logs).Level(zerolog.DebugLevel)
 
 	const stallFor = 20 * time.Second

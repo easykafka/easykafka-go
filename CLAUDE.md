@@ -170,11 +170,29 @@ reachable from `tests/`; `internal/` keeps them out of the public API.
 **All tests live under `tests/`** — there are no in-package `_test.go` files. Unexported logic is
 therefore unreachable from tests, which is why some internals are exported within `internal/`.
 
+**Test files contain tests only.** Every helper — mocks, fakes, fixtures, shared setup — goes in
+the helpers folder beside the tests that use it, in a file of its own, never inside a `_test.go`
+file:
+
+- `tests/unit/helpers/` — one file per mock (`mock_kafka_client.go`, `mock_strategy.go`,
+  `mock_producer.go`, …), `fixtures.go` for `NewTestMessage` / `TestLogger`, and one file per
+  helper function (`run_batch.go`, `count_calls.go`, …).
+- `tests/integration/helpers/` — the test cluster (`kafka_helper.go`), cluster setup such as
+  `create_topic_rejecting_everything.go`, fakes such as `sync_buffer.go`, and consumer helpers
+  (`run_until.go`, `wait_for_messages.go`, …).
+
+A new helper gets a new file named after it, not a spot at the bottom of the test that first needed
+it. The helpers are a separate package, so anything a test sets or reads must be exported: settings
+as exported fields, observed state behind locking accessors (`Closed()`, `StoredOffsets()`), and
+internal state — the mutex, indices, recorded calls — unexported. Files there are plain `.go`, not
+`_test.go`, or the tests cannot import them.
+
 To make a write fail deterministically in an integration test, create the target topic with
-`max.message.bytes=1` (see `delivery_error_test.go`). The record then passes librdkafka's own
-client-side size check — which would fail `Produce` synchronously and never produce a delivery
-report — and is rejected by the broker instead, which is the path that generates one. Stopping the
-broker does not work: `message.timeout.ms` is unset, so its 300 s default outlives any sane test.
+`max.message.bytes=1` (`cluster.CreateTopicRejectingEverything`). The record then passes
+librdkafka's own client-side size check — which would fail `Produce` synchronously and never
+produce a delivery report — and is rejected by the broker instead, which is the path that generates
+one. Stopping the broker does not work: `message.timeout.ms` is unset, so its 300 s default
+outlives any sane test.
 
 ### Key dependencies
 - `confluent-kafka-go/v2` — underlying Kafka client

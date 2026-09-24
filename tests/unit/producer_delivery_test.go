@@ -12,6 +12,7 @@ import (
 
 	"github.com/easykafka/easykafka-go/internal/kafka"
 	"github.com/easykafka/easykafka-go/internal/types"
+	"github.com/easykafka/easykafka-go/tests/unit/helpers"
 )
 
 // =============================================================================
@@ -23,26 +24,10 @@ import (
 // mapping and the invocation contract; neither needs a broker.
 // =============================================================================
 
-func failedReport(topic string, err error) *kfk.Message {
-	return &kfk.Message{
-		TopicPartition: kfk.TopicPartition{
-			Topic:     &topic,
-			Partition: 7,
-			Error:     err,
-		},
-		Key:   []byte("slip-1"),
-		Value: []byte(`{"slipId":"slip-1"}`),
-		Headers: []kfk.Header{
-			{Key: "easykafka.retry.attempt", Value: []byte("2")},
-			{Key: "easykafka.original.topic", Value: []byte("orders")},
-		},
-	}
-}
-
 func TestDeliveryErrorForMapsEveryField(t *testing.T) {
 	reportErr := kfk.NewError(kfk.ErrMsgSizeTooLarge, "message too large", false)
 
-	de := kafka.DeliveryErrorFor(failedReport("orders-retry", reportErr))
+	de := kafka.DeliveryErrorFor(helpers.FailedReport("orders-retry", reportErr))
 
 	require.NotNil(t, de)
 	assert.Equal(t, "orders-retry", de.Topic)
@@ -75,7 +60,7 @@ func TestDeliveryErrorForNamesTheErrorCode(t *testing.T) {
 
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
-			de := kafka.DeliveryErrorFor(failedReport("orders-dlt", tc.err))
+			de := kafka.DeliveryErrorFor(helpers.FailedReport("orders-dlt", tc.err))
 
 			require.NotNil(t, de)
 			assert.Equal(t, tc.code, de.Code)
@@ -108,7 +93,7 @@ func TestDeliveryErrorForIgnoresSuccessAndOtherEvents(t *testing.T) {
 // attempt or the original topic — the two things worth knowing about a lost
 // retry write.
 func TestDeliveryErrorForPrefersTheSubmittedRecord(t *testing.T) {
-	report := failedReport("orders-retry", kfk.NewError(kfk.ErrMsgSizeTooLarge, "too large", false))
+	report := helpers.FailedReport("orders-retry", kfk.NewError(kfk.ErrMsgSizeTooLarge, "too large", false))
 	report.Headers = nil // as a real delivery report arrives
 	report.Opaque = &types.ProduceMessage{
 		Topic:   "orders-retry",
@@ -152,7 +137,7 @@ func TestDeliveryErrorForFallsBackWhenTheOpaqueIsUnusable(t *testing.T) {
 
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
-			report := failedReport("orders-retry", kfk.NewError(kfk.ErrTransport, "broker down", false))
+			report := helpers.FailedReport("orders-retry", kfk.NewError(kfk.ErrTransport, "broker down", false))
 			report.Opaque = tc.opaque
 
 			var de *types.DeliveryError

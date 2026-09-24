@@ -90,7 +90,7 @@ func TestBrokerReconnectionAfterRestart(t *testing.T) {
 
 	// Phase 1: Wait for pre-failure messages to be consumed
 	t.Log("Phase 1: Waiting for pre-failure messages...")
-	waitForMessages(t, &mu, &receivedPayloads, len(preFailureMessages), 30*time.Second)
+	helpers.WaitForMessages(t, &mu, &receivedPayloads, len(preFailureMessages), 30*time.Second)
 
 	mu.Lock()
 	preCount := len(receivedPayloads)
@@ -126,7 +126,7 @@ func TestBrokerReconnectionAfterRestart(t *testing.T) {
 	// Phase 5: Wait for post-recovery messages to be consumed
 	t.Log("Phase 5: Waiting for post-recovery messages...")
 	totalExpected := len(preFailureMessages) + len(postRecoveryMessages)
-	waitForMessages(t, &mu, &receivedPayloads, totalExpected, 60*time.Second)
+	helpers.WaitForMessages(t, &mu, &receivedPayloads, totalExpected, 60*time.Second)
 
 	// Stop consumer
 	cancel()
@@ -236,24 +236,5 @@ func TestConsumerSurvivesTransientErrors(t *testing.T) {
 	defer mu.Unlock()
 	for _, msg := range messages {
 		assert.Contains(t, received, msg)
-	}
-}
-
-// waitForMessages polls until at least `count` payloads are received or timeout occurs.
-func waitForMessages(t *testing.T, mu *sync.Mutex, payloads *[]string, count int, timeout time.Duration) {
-	t.Helper()
-	deadline := time.After(timeout)
-	for {
-		mu.Lock()
-		n := len(*payloads)
-		mu.Unlock()
-		if n >= count {
-			return
-		}
-		select {
-		case <-deadline:
-			t.Fatalf("timed out waiting for %d messages, only received %d", count, n)
-		case <-time.After(200 * time.Millisecond):
-		}
 	}
 }

@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/easykafka/easykafka-go/internal/engine"
+	"github.com/easykafka/easykafka-go/tests/unit/helpers"
 
 	"github.com/easykafka/easykafka-go/internal/types"
 	"github.com/stretchr/testify/assert"
@@ -38,13 +39,13 @@ func TestStoreFailureStopsConsumer(t *testing.T) {
 	}
 
 	messages := []*types.Message{
-		newTestMessage("test-topic", 0, 0, "msg-1"),
-		newTestMessage("test-topic", 0, 1, "msg-2"),
-		newTestMessage("test-topic", 0, 2, "msg-3"),
+		helpers.NewTestMessage("test-topic", 0, 0, "msg-1"),
+		helpers.NewTestMessage("test-topic", 0, 1, "msg-2"),
+		helpers.NewTestMessage("test-topic", 0, 2, "msg-3"),
 	}
 
-	client := &mockKafkaClient{messages: messages, storeErr: storeErr}
-	eng := engine.NewEngine(client, handler, &mockStrategy{}, testLogger(), 100)
+	client := &helpers.MockKafkaClient{Messages: messages, StoreErr: storeErr}
+	eng := engine.NewEngine(client, handler, &helpers.MockStrategy{}, helpers.TestLogger(), 100)
 
 	ctx, cancel := context.WithTimeout(context.Background(), 500*time.Millisecond)
 	defer cancel()
@@ -60,7 +61,7 @@ func TestStoreFailureStopsConsumer(t *testing.T) {
 	assert.Equal(t, 1, handled, "engine should stop after the first store failure")
 	mu.Unlock()
 
-	assert.Empty(t, client.getStoredOffsets(), "nothing should have been stored")
+	assert.Empty(t, client.StoredOffsets(), "nothing should have been stored")
 }
 
 // TestRevokedPartitionDoesNotStopConsumer is the counterpart to the above: the
@@ -78,16 +79,16 @@ func TestRevokedPartitionDoesNotStopConsumer(t *testing.T) {
 	}
 
 	messages := []*types.Message{
-		newTestMessage("test-topic", 0, 0, "msg-1"),
-		newTestMessage("test-topic", 0, 1, "msg-2"),
-		newTestMessage("test-topic", 0, 2, "msg-3"),
+		helpers.NewTestMessage("test-topic", 0, 0, "msg-1"),
+		helpers.NewTestMessage("test-topic", 0, 1, "msg-2"),
+		helpers.NewTestMessage("test-topic", 0, 2, "msg-3"),
 	}
 
-	client := &mockKafkaClient{
-		messages: messages,
-		storeErr: types.ErrPartitionRevoked,
+	client := &helpers.MockKafkaClient{
+		Messages: messages,
+		StoreErr: types.ErrPartitionRevoked,
 	}
-	eng := engine.NewEngine(client, handler, &mockStrategy{}, testLogger(), 100)
+	eng := engine.NewEngine(client, handler, &helpers.MockStrategy{}, helpers.TestLogger(), 100)
 
 	ctx, cancel := context.WithTimeout(context.Background(), 500*time.Millisecond)
 	defer cancel()
@@ -101,7 +102,7 @@ func TestRevokedPartitionDoesNotStopConsumer(t *testing.T) {
 	assert.Equal(t, 3, handled, "engine should continue consuming after a revoked partition")
 	mu.Unlock()
 
-	assert.Empty(t, client.getStoredOffsets())
+	assert.Empty(t, client.StoredOffsets())
 }
 
 // TestCommitFailureDoesNotStopConsumer verifies the asymmetry: unlike a store
@@ -111,16 +112,16 @@ func TestCommitFailureDoesNotStopConsumer(t *testing.T) {
 	handler := func(ctx context.Context, payload []byte) *types.Failure { return nil }
 
 	messages := []*types.Message{
-		newTestMessage("test-topic", 0, 0, "msg-1"),
-		newTestMessage("test-topic", 0, 1, "msg-2"),
-		newTestMessage("test-topic", 0, 2, "msg-3"),
+		helpers.NewTestMessage("test-topic", 0, 0, "msg-1"),
+		helpers.NewTestMessage("test-topic", 0, 1, "msg-2"),
+		helpers.NewTestMessage("test-topic", 0, 2, "msg-3"),
 	}
 
-	client := &mockKafkaClient{
-		messages:  messages,
-		commitErr: errors.New("coordinator unavailable"),
+	client := &helpers.MockKafkaClient{
+		Messages:  messages,
+		CommitErr: errors.New("coordinator unavailable"),
 	}
-	eng := engine.NewEngine(client, handler, &mockStrategy{}, testLogger(), 100)
+	eng := engine.NewEngine(client, handler, &helpers.MockStrategy{}, helpers.TestLogger(), 100)
 
 	ctx, cancel := context.WithTimeout(context.Background(), 500*time.Millisecond)
 	defer cancel()
@@ -129,7 +130,7 @@ func TestCommitFailureDoesNotStopConsumer(t *testing.T) {
 	require.NoError(t, err, "a commit failure is recoverable and must not stop the consumer")
 
 	// Every message was still recorded as processed; only publishing failed.
-	stored := client.getStoredOffsets()
+	stored := client.StoredOffsets()
 	require.Len(t, stored, 3)
 	assert.Equal(t, int64(2), stored[2].Offset)
 }
@@ -145,21 +146,21 @@ func TestBatchStoreFailureStoresRemainingPartitions(t *testing.T) {
 	// One batch spanning three partitions: 0 fails outright, 1 was revoked,
 	// 2 is still ours and must still be stored.
 	messages := []*types.Message{
-		newTestMessage("test-topic", 0, 10, "p0"),
-		newTestMessage("test-topic", 1, 20, "p1"),
-		newTestMessage("test-topic", 2, 30, "p2"),
+		helpers.NewTestMessage("test-topic", 0, 10, "p0"),
+		helpers.NewTestMessage("test-topic", 1, 20, "p1"),
+		helpers.NewTestMessage("test-topic", 2, 30, "p2"),
 	}
 
-	client := &mockKafkaClient{
-		messages: messages,
-		storeErrByPartition: map[int32]error{
+	client := &helpers.MockKafkaClient{
+		Messages: messages,
+		StoreErrByPartition: map[int32]error{
 			0: storeErr,
 			1: types.ErrPartitionRevoked,
 		},
 	}
 
 	eng := engine.NewBatchEngine(
-		client, batchHandler, &mockStrategy{}, testLogger(),
+		client, batchHandler, &helpers.MockStrategy{}, helpers.TestLogger(),
 		100, len(messages), time.Second,
 	)
 
@@ -173,13 +174,13 @@ func TestBatchStoreFailureStoresRemainingPartitions(t *testing.T) {
 
 	// Partition 2 was still ours, so it must have been stored despite partition 0
 	// failing earlier in the same loop.
-	stored := client.getStoredOffsets()
+	stored := client.StoredOffsets()
 	require.Len(t, stored, 1, "the surviving partition should still be stored")
 	assert.Equal(t, int32(2), stored[0].Partition)
 	assert.Equal(t, int64(30), stored[0].Offset)
 
 	// And committed — on the fatal path too, so the restart replays less.
-	assert.Positive(t, client.getCommitCount(), "stored offsets should be committed before stopping")
+	assert.Positive(t, client.CommitCount(), "stored offsets should be committed before stopping")
 }
 
 // TestBatchRevokedPartitionOnlyDoesNotStopConsumer verifies that a batch whose
@@ -188,19 +189,19 @@ func TestBatchRevokedPartitionOnlyDoesNotStopConsumer(t *testing.T) {
 	batchHandler := func(ctx context.Context, batch *types.Batch) *types.Failure { return nil }
 
 	messages := []*types.Message{
-		newTestMessage("test-topic", 0, 10, "p0"),
-		newTestMessage("test-topic", 1, 20, "p1"),
+		helpers.NewTestMessage("test-topic", 0, 10, "p0"),
+		helpers.NewTestMessage("test-topic", 1, 20, "p1"),
 	}
 
-	client := &mockKafkaClient{
-		messages: messages,
-		storeErrByPartition: map[int32]error{
+	client := &helpers.MockKafkaClient{
+		Messages: messages,
+		StoreErrByPartition: map[int32]error{
 			0: types.ErrPartitionRevoked,
 		},
 	}
 
 	eng := engine.NewBatchEngine(
-		client, batchHandler, &mockStrategy{}, testLogger(),
+		client, batchHandler, &helpers.MockStrategy{}, helpers.TestLogger(),
 		100, len(messages), time.Second,
 	)
 
@@ -210,7 +211,7 @@ func TestBatchRevokedPartitionOnlyDoesNotStopConsumer(t *testing.T) {
 	err := eng.Start(ctx)
 	require.NoError(t, err, "a revoked partition alone must not stop the consumer")
 
-	stored := client.getStoredOffsets()
+	stored := client.StoredOffsets()
 	require.Len(t, stored, 1)
 	assert.Equal(t, int32(1), stored[0].Partition)
 }
@@ -230,9 +231,9 @@ func TestBatchRevokedPartitionOnlyDoesNotStopConsumer(t *testing.T) {
 //   - Batch size is 100, far above the two messages, so size alone never
 //     dispatches. The batch timeout is the only path left, which is what makes
 //     the 100ms meaningful.
-//   - revokeAtPoll is 2, and the mock fires the hook once pollIndex reaches it —
-//     so the revoke lands on the *third* poll: poll 1 delivers msg-1, poll 2
-//     delivers msg-2, poll 3 finds the list exhausted and fires. mockKafkaClient
+//   - RevokeAtPoll is 2, and the mock fires the hook once its poll index reaches
+//     it — so the revoke lands on the *third* poll: poll 1 delivers msg-1, poll 2
+//     delivers msg-2, poll 3 finds the list exhausted and fires. MockKafkaClient
 //     does not sleep on that path, so all three happen within microseconds,
 //     roughly 100ms before the batch timeout could fire. The revoke therefore
 //     always wins the race.
@@ -255,20 +256,20 @@ func TestRevokeDropsBatchBuffer(t *testing.T) {
 	}
 
 	messages := []*types.Message{
-		newTestMessage("test-topic", 0, 0, "msg-1"),
-		newTestMessage("test-topic", 0, 1, "msg-2"),
+		helpers.NewTestMessage("test-topic", 0, 0, "msg-1"),
+		helpers.NewTestMessage("test-topic", 0, 1, "msg-2"),
 	}
 
 	// Revoke once both messages are buffered. The mock fires the hook from inside
 	// Poll, which is where librdkafka runs the rebalance callback — so the buffer
 	// is only ever touched by the polling goroutine, exactly as in production.
-	client := &mockKafkaClient{messages: messages, revokeAtPoll: len(messages)}
+	client := &helpers.MockKafkaClient{Messages: messages, RevokeAtPoll: len(messages)}
 
 	// pollTimeout 10ms, batch size 100, batch timeout 100ms — see the timing note
 	// on the test. Size can never dispatch; the timeout is the path a surviving
 	// buffer would take, and the drop is what must stop it.
 	eng := engine.NewBatchEngine(
-		client, batchHandler, &mockStrategy{}, testLogger(),
+		client, batchHandler, &helpers.MockStrategy{}, helpers.TestLogger(),
 		10, 100, 100*time.Millisecond,
 	)
 
@@ -278,7 +279,7 @@ func TestRevokeDropsBatchBuffer(t *testing.T) {
 	done := make(chan error, 1)
 	go func() { done <- eng.Start(ctx) }()
 
-	require.Eventually(t, client.didRevoke, time.Second, 5*time.Millisecond,
+	require.Eventually(t, client.DidRevoke, time.Second, 5*time.Millisecond,
 		"the revoke hook should have fired")
 
 	// Five batch timeouts' worth of polling with the engine still running. This is
@@ -292,5 +293,5 @@ func TestRevokeDropsBatchBuffer(t *testing.T) {
 	assert.Zero(t, dispatched, "buffered messages should be dropped on revoke, not dispatched")
 	mu.Unlock()
 
-	assert.Empty(t, client.getStoredOffsets(), "dropped messages must not advance any offset")
+	assert.Empty(t, client.StoredOffsets(), "dropped messages must not advance any offset")
 }

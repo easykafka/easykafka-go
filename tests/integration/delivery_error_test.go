@@ -50,7 +50,7 @@ func TestDeliveryErrorCallbackFiresOnRejectedWrite(t *testing.T) {
 
 	cluster.CreateTopic(ctx, t, sourceTopic, 1)
 	cluster.CreateTopic(ctx, t, dlqTopic, 1)
-	createTopicRejectingEverything(ctx, t, cluster, retryTopic)
+	cluster.CreateTopicRejectingEverything(ctx, t, retryTopic)
 
 	const payload = "a message far larger than the retry topic will accept"
 	cluster.ProduceMessages(ctx, t, sourceTopic, []string{payload})
@@ -136,44 +136,4 @@ func TestDeliveryErrorCallbackFiresOnRejectedWrite(t *testing.T) {
 		"retry headers are carried through")
 
 	t.Logf("delivery error: topic=%s code=%s err=%v", de.Topic, de.Code, de.Err)
-}
-
-// createTopicRejectingEverything creates a topic whose max.message.bytes is too
-// small for any real record, so the broker rejects the produce request and
-// reports it through a delivery report.
-func createTopicRejectingEverything(
-	ctx context.Context,
-	t *testing.T,
-	cluster *helpers.KafkaTestCluster,
-	topic string,
-) {
-
-	t.Helper()
-
-	admin, err := kfk.NewAdminClient(&kfk.ConfigMap{
-		"bootstrap.servers": cluster.Brokers[0],
-	})
-	require.NoError(t, err)
-	defer admin.Close()
-
-	adminCtx, cancel := context.WithTimeout(ctx, 30*time.Second)
-	defer cancel()
-
-	results, err := admin.CreateTopics(adminCtx, []kfk.TopicSpecification{{
-		Topic:             topic,
-		NumPartitions:     1,
-		ReplicationFactor: 1,
-		Config: map[string]string{
-			// Smaller than any record the retry strategy writes, but large
-			// enough that the topic is valid.
-			"max.message.bytes": "1",
-		},
-	}})
-	require.NoError(t, err)
-
-	for _, r := range results {
-		require.Equal(t, kfk.ErrNoError, r.Error.Code(), "creating topic %s: %v", r.Topic, r.Error)
-	}
-
-	t.Logf("created topic %s with max.message.bytes=1", topic)
 }

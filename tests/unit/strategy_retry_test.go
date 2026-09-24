@@ -4,7 +4,6 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"sync"
 	"testing"
 	"time"
 
@@ -12,6 +11,7 @@ import (
 	"github.com/easykafka/easykafka-go/internal/metadata"
 	"github.com/easykafka/easykafka-go/internal/types"
 	"github.com/easykafka/easykafka-go/strategy"
+	"github.com/easykafka/easykafka-go/tests/unit/helpers"
 	"github.com/rs/zerolog"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -20,49 +20,6 @@ import (
 // =============================================================================
 // T029 [US3] Unit tests for retry headers/backoff and strategy behavior
 // =============================================================================
-
-// =============================================================================
-// Mock Producer for Testing
-// =============================================================================
-
-type producedMessage struct {
-	Topic   string
-	Key     []byte
-	Value   []byte
-	Headers map[string]string
-}
-
-type mockProducer struct {
-	mu       sync.Mutex
-	messages []producedMessage
-	err      error
-}
-
-func (m *mockProducer) Produce(_ context.Context, msg *types.ProduceMessage) error {
-	m.mu.Lock()
-	defer m.mu.Unlock()
-	if m.err != nil {
-		return m.err
-	}
-	m.messages = append(m.messages, producedMessage{
-		Topic:   msg.Topic,
-		Key:     msg.Key,
-		Value:   msg.Value,
-		Headers: msg.Headers,
-	})
-	return nil
-}
-
-func (m *mockProducer) Flush(timeoutMs int) int { return 0 }
-func (m *mockProducer) Close()                  {}
-
-func (m *mockProducer) getMessages() []producedMessage {
-	m.mu.Lock()
-	defer m.mu.Unlock()
-	result := make([]producedMessage, len(m.messages))
-	copy(result, m.messages)
-	return result
-}
 
 // =============================================================================
 // Header Encoding Tests
@@ -332,23 +289,8 @@ func TestRetryOptionValidation(t *testing.T) {
 // Retry Strategy HandleError Tests (with mock producers)
 // =============================================================================
 
-func newRetryStrategyWithMocks(maxAttempts int) (*strategy.RetryStrategy, *mockProducer, *mockProducer) {
-	retryProd := &mockProducer{}
-	dlqProd := &mockProducer{}
-	cfg := strategy.RetryConfig{
-		RetryTopic:   "test.retry",
-		DLQTopic:     "test.dlq",
-		MaxAttempts:  maxAttempts,
-		InitialDelay: 1 * time.Second,
-		MaxDelay:     30 * time.Second,
-		Multiplier:   2.0,
-	}
-	s := strategy.NewRetryStrategyWithProducers(cfg, retryProd, dlqProd, zerolog.Nop())
-	return s, retryProd, dlqProd
-}
-
 func TestRetryStrategySendsToRetryQueueOnFirstFailure(t *testing.T) {
-	s, retryProd, dlqProd := newRetryStrategyWithMocks(3)
+	s, retryProd, dlqProd := helpers.NewRetryStrategyWithMocks(3)
 	ctx := context.Background()
 
 	msg := &types.Message{
@@ -363,7 +305,7 @@ func TestRetryStrategySendsToRetryQueueOnFirstFailure(t *testing.T) {
 	require.NoError(t, err, "retry should return nil to continue consumption")
 
 	// Should be sent to retry queue
-	retryMsgs := retryProd.getMessages()
+	retryMsgs := retryProd.Messages()
 	require.Len(t, retryMsgs, 1)
 	assert.Equal(t, "test.retry", retryMsgs[0].Topic)
 	assert.JSONEq(t, `{"orderId":"12345"}`, string(retryMsgs[0].Value))
@@ -375,11 +317,11 @@ func TestRetryStrategySendsToRetryQueueOnFirstFailure(t *testing.T) {
 	assert.Equal(t, "db connection failed", retryMsgs[0].Headers[metadata.HeaderErrorMessage])
 
 	// DLQ should be empty
-	assert.Empty(t, dlqProd.getMessages())
+	assert.Empty(t, dlqProd.Messages())
 }
 
 func TestRetryStrategySendsToDLQAfterMaxAttempts(t *testing.T) {
-	s, retryProd, dlqProd := newRetryStrategyWithMocks(3)
+	s, retryProd, dlqProd := helpers.NewRetryStrategyWithMocks(3)
 	ctx := context.Background()
 
 	// Simulate a message that has already been retried twice (attempt=2). Its
@@ -402,10 +344,10 @@ func TestRetryStrategySendsToDLQAfterMaxAttempts(t *testing.T) {
 	require.NoError(t, err, "should continue after sending to DLQ")
 
 	// Retry queue should be empty (max attempts reached)
-	assert.Empty(t, retryProd.getMessages())
+	assert.Empty(t, retryProd.Messages())
 
 	// DLQ should have the message
-	dlqMsgs := dlqProd.getMessages()
+	dlqMsgs := dlqProd.Messages()
 	require.Len(t, dlqMsgs, 1)
 	assert.Equal(t, "test.dlq", dlqMsgs[0].Topic)
 
@@ -420,7 +362,7 @@ func TestRetryStrategySendsToDLQAfterMaxAttempts(t *testing.T) {
 }
 
 func TestRetryStrategyHandlesMultipleMessages(t *testing.T) {
-	s, retryProd, _ := newRetryStrategyWithMocks(3)
+	s, retryProd, _ := helpers.NewRetryStrategyWithMocks(3)
 	ctx := context.Background()
 
 	msgs := []*types.Message{
@@ -433,7 +375,7 @@ func TestRetryStrategyHandlesMultipleMessages(t *testing.T) {
 	require.NoError(t, err)
 
 	// Each message should be sent individually to retry queue
-	retryMsgs := retryProd.getMessages()
+	retryMsgs := retryProd.Messages()
 	require.Len(t, retryMsgs, 3)
 	assert.Equal(t, []byte("msg-1"), retryMsgs[0].Value)
 	assert.Equal(t, []byte("msg-2"), retryMsgs[1].Value)
@@ -441,8 +383,8 @@ func TestRetryStrategyHandlesMultipleMessages(t *testing.T) {
 }
 
 func TestRetryStrategyReturnsFatalOnProducerError(t *testing.T) {
-	retryProd := &mockProducer{err: errors.New("kafka unavailable")}
-	dlqProd := &mockProducer{}
+	retryProd := &helpers.MockProducer{Err: errors.New("kafka unavailable")}
+	dlqProd := &helpers.MockProducer{}
 	cfg := strategy.RetryConfig{
 		RetryTopic:   "test.retry",
 		DLQTopic:     "test.dlq",
@@ -465,8 +407,8 @@ func TestRetryStrategyReturnsFatalOnProducerError(t *testing.T) {
 }
 
 func TestRetryStrategyDLQProducerError(t *testing.T) {
-	retryProd := &mockProducer{}
-	dlqProd := &mockProducer{err: errors.New("dlq unavailable")}
+	retryProd := &helpers.MockProducer{}
+	dlqProd := &helpers.MockProducer{Err: errors.New("dlq unavailable")}
 	cfg := strategy.RetryConfig{
 		RetryTopic:   "test.retry",
 		DLQTopic:     "test.dlq",
@@ -530,14 +472,14 @@ func TestRetryStrategyNotInitializedError(t *testing.T) {
 // =============================================================================
 
 func TestExponentialBackoff(t *testing.T) {
-	s, retryProd, _ := newRetryStrategyWithMocks(10)
+	s, retryProd, _ := helpers.NewRetryStrategyWithMocks(10)
 	ctx := context.Background()
 
 	// First failure -> attempt 1 -> delay = 1s * 2^0 = 1s
 	msg1 := &types.Message{Topic: "t", Headers: make(map[string]string), Payload: []byte("m")}
 	_ = s.HandleError(ctx, []*types.Message{msg1}, types.Failure{Err: errors.New("err")})
 
-	retryMsgs := retryProd.getMessages()
+	retryMsgs := retryProd.Messages()
 	require.Len(t, retryMsgs, 1)
 	rt1 := retryMsgs[0].Headers[metadata.HeaderRetryTime]
 	parsedTime1, err := time.Parse(time.RFC3339, rt1)
@@ -555,7 +497,7 @@ func TestExponentialBackoff(t *testing.T) {
 	}
 	_ = s.HandleError(ctx, []*types.Message{msg2}, types.Failure{Err: errors.New("err")})
 
-	retryMsgs = retryProd.getMessages()
+	retryMsgs = retryProd.Messages()
 	require.Len(t, retryMsgs, 2)
 	rt2 := retryMsgs[1].Headers[metadata.HeaderRetryTime]
 	parsedTime2, err := time.Parse(time.RFC3339, rt2)
@@ -585,8 +527,8 @@ func TestCustomBackoff(t *testing.T) {
 }
 
 func TestMaxDelayCappedBackoff(t *testing.T) {
-	retryProd := &mockProducer{}
-	dlqProd := &mockProducer{}
+	retryProd := &helpers.MockProducer{}
+	dlqProd := &helpers.MockProducer{}
 	cfg := strategy.RetryConfig{
 		RetryTopic:   "test.retry",
 		DLQTopic:     "test.dlq",
@@ -605,7 +547,7 @@ func TestMaxDelayCappedBackoff(t *testing.T) {
 	}
 	_ = s.HandleError(context.Background(), []*types.Message{msg}, types.Failure{Err: errors.New("err")})
 
-	retryMsgs := retryProd.getMessages()
+	retryMsgs := retryProd.Messages()
 	require.Len(t, retryMsgs, 1)
 	rt := retryMsgs[0].Headers[metadata.HeaderRetryTime]
 	parsedTime, err := time.Parse(time.RFC3339, rt)
@@ -625,7 +567,7 @@ func TestMaxDelayCappedBackoff(t *testing.T) {
 // original position, the error, the attempt count and the failure time in
 // headers.
 func TestDLQRecordIsTheConsumedMessage(t *testing.T) {
-	s, _, dlqProd := newRetryStrategyWithMocks(1) // straight to the DLQ
+	s, _, dlqProd := helpers.NewRetryStrategyWithMocks(1) // straight to the DLQ
 
 	payload := []byte{0x00, 0xFF, 0xFE, '{', 0x80} // not valid UTF-8
 	msg := &types.Message{
@@ -640,7 +582,7 @@ func TestDLQRecordIsTheConsumedMessage(t *testing.T) {
 	err := s.HandleError(context.Background(), []*types.Message{msg}, types.Failure{Err: errors.New("processing failed")})
 	require.NoError(t, err)
 
-	dlqMsgs := dlqProd.getMessages()
+	dlqMsgs := dlqProd.Messages()
 	require.Len(t, dlqMsgs, 1)
 	assert.Equal(t, payload, dlqMsgs[0].Value)
 	assert.Equal(t, []byte("order-42"), dlqMsgs[0].Key)
@@ -656,12 +598,12 @@ func TestDLQRecordIsTheConsumedMessage(t *testing.T) {
 
 // TestRetryRecordKeepsTheKey verifies a retry record is keyed like its source.
 func TestRetryRecordKeepsTheKey(t *testing.T) {
-	s, retryProd, _ := newRetryStrategyWithMocks(3)
+	s, retryProd, _ := helpers.NewRetryStrategyWithMocks(3)
 
 	msg := &types.Message{Topic: "orders", Key: []byte("order-42"), Headers: map[string]string{}, Payload: []byte("m")}
 	require.NoError(t, s.HandleError(context.Background(), []*types.Message{msg}, types.Failure{Err: errors.New("x")}))
 
-	retryMsgs := retryProd.getMessages()
+	retryMsgs := retryProd.Messages()
 	require.Len(t, retryMsgs, 1)
 	assert.Equal(t, []byte("order-42"), retryMsgs[0].Key)
 }
@@ -673,15 +615,15 @@ func TestRetryRecordKeepsTheKey(t *testing.T) {
 // TestPermanentFailureGoesStraightToDLQ verifies ErrPermanent skips the retry
 // ladder on the very first attempt.
 func TestPermanentFailureGoesStraightToDLQ(t *testing.T) {
-	s, retryProd, dlqProd := newRetryStrategyWithMocks(10)
+	s, retryProd, dlqProd := helpers.NewRetryStrategyWithMocks(10)
 
 	msg := &types.Message{Topic: "orders", Headers: map[string]string{}, Payload: []byte("not json")}
 	f := types.Failure{Err: fmt.Errorf("%w: unmarshal: bad input", types.ErrPermanent)}
 
 	require.NoError(t, s.HandleError(context.Background(), []*types.Message{msg}, f))
 
-	assert.Empty(t, retryProd.getMessages(), "a permanent failure must not be retried")
-	dlqMsgs := dlqProd.getMessages()
+	assert.Empty(t, retryProd.Messages(), "a permanent failure must not be retried")
+	dlqMsgs := dlqProd.Messages()
 	require.Len(t, dlqMsgs, 1)
 	assert.Equal(t, "1", dlqMsgs[0].Headers[metadata.HeaderRetryAttempt], "the attempt count is left as it is")
 }
@@ -689,15 +631,15 @@ func TestPermanentFailureGoesStraightToDLQ(t *testing.T) {
 // TestPermanentMarkerLostToPercentV pins the trap the design warns about: %v
 // drops the marker, so the message walks the retry ladder after all.
 func TestPermanentMarkerLostToPercentV(t *testing.T) {
-	s, retryProd, dlqProd := newRetryStrategyWithMocks(10)
+	s, retryProd, dlqProd := helpers.NewRetryStrategyWithMocks(10)
 
 	msg := &types.Message{Topic: "orders", Headers: map[string]string{}, Payload: []byte("not json")}
 	f := types.Failure{Err: fmt.Errorf("%v: unmarshal: bad input", types.ErrPermanent)}
 
 	require.NoError(t, s.HandleError(context.Background(), []*types.Message{msg}, f))
 
-	assert.Len(t, retryProd.getMessages(), 1)
-	assert.Empty(t, dlqProd.getMessages())
+	assert.Len(t, retryProd.Messages(), 1)
+	assert.Empty(t, dlqProd.Messages())
 }
 
 // TestStepAndCodeReachRetryAndDLQRecords verifies Failure.Step and Failure.Code
@@ -715,7 +657,7 @@ func TestStepAndCodeReachRetryAndDLQRecords(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			s, retryProd, dlqProd := newRetryStrategyWithMocks(3)
+			s, retryProd, dlqProd := helpers.NewRetryStrategyWithMocks(3)
 			msg := &types.Message{
 				Topic:   "orders",
 				Headers: map[string]string{metadata.HeaderRetryAttempt: tc.inbound},
@@ -723,10 +665,10 @@ func TestStepAndCodeReachRetryAndDLQRecords(t *testing.T) {
 			}
 			require.NoError(t, s.HandleError(context.Background(), []*types.Message{msg}, f))
 
-			produced := retryProd.getMessages()
+			produced := retryProd.Messages()
 			if tc.toDLQ {
 				assert.Empty(t, produced)
-				produced = dlqProd.getMessages()
+				produced = dlqProd.Messages()
 			}
 			require.Len(t, produced, 1)
 
@@ -741,7 +683,7 @@ func TestStepAndCodeReachRetryAndDLQRecords(t *testing.T) {
 // several messages keeps each record's own inbound step and writes the
 // fallback code for all of them.
 func TestBatchLevelFailureKeepsEachRecordsStep(t *testing.T) {
-	s, retryProd, _ := newRetryStrategyWithMocks(10)
+	s, retryProd, _ := helpers.NewRetryStrategyWithMocks(10)
 
 	msgs := []*types.Message{
 		{Topic: "orders", Headers: map[string]string{}, Payload: []byte("fresh")},
@@ -751,7 +693,7 @@ func TestBatchLevelFailureKeepsEachRecordsStep(t *testing.T) {
 	}
 	require.NoError(t, s.HandleError(context.Background(), msgs, types.Failure{Err: errors.New("db down")}))
 
-	retryMsgs := retryProd.getMessages()
+	retryMsgs := retryProd.Messages()
 	require.Len(t, retryMsgs, 2)
 	assert.NotContains(t, retryMsgs[0].Headers, metadata.HeaderRetryStep)
 	assert.Equal(t, "2", retryMsgs[1].Headers[metadata.HeaderRetryStep])
@@ -763,7 +705,7 @@ func TestBatchLevelFailureKeepsEachRecordsStep(t *testing.T) {
 // TestAttemptIsAlwaysInboundPlusOne verifies nothing a handler reports moves
 // the attempt count.
 func TestAttemptIsAlwaysInboundPlusOne(t *testing.T) {
-	s, retryProd, _ := newRetryStrategyWithMocks(10)
+	s, retryProd, _ := helpers.NewRetryStrategyWithMocks(10)
 
 	msg := &types.Message{
 		Topic:   "orders.retry",
@@ -773,7 +715,7 @@ func TestAttemptIsAlwaysInboundPlusOne(t *testing.T) {
 	f := types.Failure{Err: errors.New("x"), Step: 9, Code: "whatever"}
 	require.NoError(t, s.HandleError(context.Background(), []*types.Message{msg}, f))
 
-	retryMsgs := retryProd.getMessages()
+	retryMsgs := retryProd.Messages()
 	require.Len(t, retryMsgs, 1)
 	assert.Equal(t, "5", retryMsgs[0].Headers[metadata.HeaderRetryAttempt])
 }
@@ -781,7 +723,7 @@ func TestAttemptIsAlwaysInboundPlusOne(t *testing.T) {
 // TestOriginalPositionSurvivesTwoHops runs a record source → retry → retry → DLQ
 // and checks every republished record still names the source record.
 func TestOriginalPositionSurvivesTwoHops(t *testing.T) {
-	s, retryProd, dlqProd := newRetryStrategyWithMocks(3)
+	s, retryProd, dlqProd := helpers.NewRetryStrategyWithMocks(3)
 	f := types.Failure{Err: errors.New("x")}
 
 	// Hop 1: consumed from the source topic.
@@ -789,16 +731,16 @@ func TestOriginalPositionSurvivesTwoHops(t *testing.T) {
 	require.NoError(t, s.HandleError(context.Background(), []*types.Message{source}, f))
 
 	// Hop 2: consumed from the retry topic, at a position of its own.
-	first := retryProd.getMessages()[0]
+	first := retryProd.Messages()[0]
 	hop2 := &types.Message{Topic: "test.retry", Partition: 0, Offset: 7, Headers: first.Headers, Payload: first.Value}
 	require.NoError(t, s.HandleError(context.Background(), []*types.Message{hop2}, f))
 
 	// Hop 3: consumed from the retry topic again; attempts are exhausted.
-	second := retryProd.getMessages()[1]
+	second := retryProd.Messages()[1]
 	hop3 := &types.Message{Topic: "test.retry", Partition: 1, Offset: 3, Headers: second.Headers, Payload: second.Value}
 	require.NoError(t, s.HandleError(context.Background(), []*types.Message{hop3}, f))
 
-	dlqMsgs := dlqProd.getMessages()
+	dlqMsgs := dlqProd.Messages()
 	require.Len(t, dlqMsgs, 1)
 
 	for name, headers := range map[string]map[string]string{

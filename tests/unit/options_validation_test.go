@@ -1,11 +1,11 @@
 package unit
 
 import (
-	"context"
 	"testing"
 	"time"
 
 	easykafka "github.com/easykafka/easykafka-go"
+	"github.com/easykafka/easykafka-go/tests/unit/helpers"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -14,24 +14,12 @@ import (
 // T023 [US2] Unit tests for option validation
 // =============================================================================
 
-// =============================================================================
-// Helpers
-// =============================================================================
-
-func noopHandler(ctx context.Context, payload []byte) *easykafka.Failure {
-	return nil
-}
-
-func noopBatchHandler(ctx context.Context, batch *easykafka.Batch) *easykafka.Failure {
-	return nil
-}
-
 // TestNewRequiresTopicOption verifies that New() fails when WithTopic is missing.
 func TestNewRequiresTopicOption(t *testing.T) {
 	_, err := easykafka.New(
 		easykafka.WithBrokers("localhost:9092"),
 		easykafka.WithConsumerGroup("test-group"),
-		easykafka.WithHandler(noopHandler),
+		easykafka.WithHandler(helpers.NoopHandler),
 	)
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "topic")
@@ -42,7 +30,7 @@ func TestNewRequiresBrokersOption(t *testing.T) {
 	_, err := easykafka.New(
 		easykafka.WithTopic("test-topic"),
 		easykafka.WithConsumerGroup("test-group"),
-		easykafka.WithHandler(noopHandler),
+		easykafka.WithHandler(helpers.NoopHandler),
 	)
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "broker")
@@ -53,7 +41,7 @@ func TestNewRequiresConsumerGroupOption(t *testing.T) {
 	_, err := easykafka.New(
 		easykafka.WithTopic("test-topic"),
 		easykafka.WithBrokers("localhost:9092"),
-		easykafka.WithHandler(noopHandler),
+		easykafka.WithHandler(helpers.NoopHandler),
 	)
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "consumer group")
@@ -76,8 +64,8 @@ func TestNewRejectsBothHandlers(t *testing.T) {
 		easykafka.WithTopic("test-topic"),
 		easykafka.WithBrokers("localhost:9092"),
 		easykafka.WithConsumerGroup("test-group"),
-		easykafka.WithHandler(noopHandler),
-		easykafka.WithBatchHandler(noopBatchHandler),
+		easykafka.WithHandler(helpers.NoopHandler),
+		easykafka.WithBatchHandler(helpers.NoopBatchHandler),
 	)
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "only one")
@@ -89,7 +77,7 @@ func TestWithTopicRejectsEmpty(t *testing.T) {
 		easykafka.WithTopic(""),
 		easykafka.WithBrokers("localhost:9092"),
 		easykafka.WithConsumerGroup("test-group"),
-		easykafka.WithHandler(noopHandler),
+		easykafka.WithHandler(helpers.NoopHandler),
 	)
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "empty")
@@ -101,7 +89,7 @@ func TestWithBrokersRejectsEmpty(t *testing.T) {
 		easykafka.WithTopic("test-topic"),
 		easykafka.WithBrokers(),
 		easykafka.WithConsumerGroup("test-group"),
-		easykafka.WithHandler(noopHandler),
+		easykafka.WithHandler(helpers.NoopHandler),
 	)
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "broker")
@@ -113,7 +101,7 @@ func TestWithBrokersRejectsEmptyStrings(t *testing.T) {
 		easykafka.WithTopic("test-topic"),
 		easykafka.WithBrokers("localhost:9092", ""),
 		easykafka.WithConsumerGroup("test-group"),
-		easykafka.WithHandler(noopHandler),
+		easykafka.WithHandler(helpers.NoopHandler),
 	)
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "broker")
@@ -125,7 +113,7 @@ func TestWithConsumerGroupRejectsEmpty(t *testing.T) {
 		easykafka.WithTopic("test-topic"),
 		easykafka.WithBrokers("localhost:9092"),
 		easykafka.WithConsumerGroup(""),
-		easykafka.WithHandler(noopHandler),
+		easykafka.WithHandler(helpers.NoopHandler),
 	)
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "empty")
@@ -161,7 +149,7 @@ func TestWithErrorStrategyRejectsNil(t *testing.T) {
 		easykafka.WithTopic("test-topic"),
 		easykafka.WithBrokers("localhost:9092"),
 		easykafka.WithConsumerGroup("test-group"),
-		easykafka.WithHandler(noopHandler),
+		easykafka.WithHandler(helpers.NoopHandler),
 		easykafka.WithErrorStrategy(nil),
 	)
 	require.Error(t, err)
@@ -174,7 +162,7 @@ func TestWithBatchSizeRejectsZero(t *testing.T) {
 		easykafka.WithTopic("test-topic"),
 		easykafka.WithBrokers("localhost:9092"),
 		easykafka.WithConsumerGroup("test-group"),
-		easykafka.WithBatchHandler(noopBatchHandler),
+		easykafka.WithBatchHandler(helpers.NoopBatchHandler),
 		easykafka.WithBatchSize(0),
 	)
 	require.Error(t, err)
@@ -187,7 +175,7 @@ func TestWithBatchSizeRejectsNegative(t *testing.T) {
 		easykafka.WithTopic("test-topic"),
 		easykafka.WithBrokers("localhost:9092"),
 		easykafka.WithConsumerGroup("test-group"),
-		easykafka.WithBatchHandler(noopBatchHandler),
+		easykafka.WithBatchHandler(helpers.NoopBatchHandler),
 		easykafka.WithBatchSize(-1),
 	)
 	require.Error(t, err)
@@ -200,7 +188,7 @@ func TestWithBatchTimeoutRejectsZero(t *testing.T) {
 		easykafka.WithTopic("test-topic"),
 		easykafka.WithBrokers("localhost:9092"),
 		easykafka.WithConsumerGroup("test-group"),
-		easykafka.WithBatchHandler(noopBatchHandler),
+		easykafka.WithBatchHandler(helpers.NoopBatchHandler),
 		easykafka.WithBatchTimeout(0),
 	)
 	require.Error(t, err)
@@ -213,7 +201,7 @@ func TestWithPollTimeoutRejectsTooSmall(t *testing.T) {
 		easykafka.WithTopic("test-topic"),
 		easykafka.WithBrokers("localhost:9092"),
 		easykafka.WithConsumerGroup("test-group"),
-		easykafka.WithHandler(noopHandler),
+		easykafka.WithHandler(helpers.NoopHandler),
 		easykafka.WithPollTimeout(1*time.Millisecond),
 	)
 	require.Error(t, err)
@@ -231,7 +219,7 @@ func TestWithAutoCommitEveryRejectsNonPositive(t *testing.T) {
 				easykafka.WithTopic("test-topic"),
 				easykafka.WithBrokers("localhost:9092"),
 				easykafka.WithConsumerGroup("test-group"),
-				easykafka.WithHandler(noopHandler),
+				easykafka.WithHandler(helpers.NoopHandler),
 				easykafka.WithAutoCommitEvery(d),
 			)
 			require.Error(t, err)
@@ -247,7 +235,7 @@ func TestAutoCommitEveryDefaultsToUnset(t *testing.T) {
 		easykafka.WithTopic("test-topic"),
 		easykafka.WithBrokers("localhost:9092"),
 		easykafka.WithConsumerGroup("test-group"),
-		easykafka.WithHandler(noopHandler),
+		easykafka.WithHandler(helpers.NoopHandler),
 	)
 	require.NoError(t, err)
 
@@ -261,7 +249,7 @@ func TestWithAutoCommitEveryCustomValue(t *testing.T) {
 		easykafka.WithTopic("test-topic"),
 		easykafka.WithBrokers("localhost:9092"),
 		easykafka.WithConsumerGroup("test-group"),
-		easykafka.WithHandler(noopHandler),
+		easykafka.WithHandler(helpers.NoopHandler),
 		easykafka.WithAutoCommitEvery(3*time.Second),
 	)
 	require.NoError(t, err)
@@ -275,7 +263,7 @@ func TestWithKafkaConfigRejectsNil(t *testing.T) {
 		easykafka.WithTopic("test-topic"),
 		easykafka.WithBrokers("localhost:9092"),
 		easykafka.WithConsumerGroup("test-group"),
-		easykafka.WithHandler(noopHandler),
+		easykafka.WithHandler(helpers.NoopHandler),
 		easykafka.WithKafkaConfig(nil),
 	)
 	require.Error(t, err)
@@ -308,7 +296,7 @@ func TestWithKafkaConfigRejectsManagedKeys(t *testing.T) {
 				easykafka.WithTopic("test-topic"),
 				easykafka.WithBrokers("localhost:9092"),
 				easykafka.WithConsumerGroup("test-group"),
-				easykafka.WithHandler(noopHandler),
+				easykafka.WithHandler(helpers.NoopHandler),
 				easykafka.WithKafkaConfig(map[string]any{
 					tc.key: "override-value",
 				}),
@@ -329,7 +317,7 @@ func TestNewAppliesPollTimeoutDefault(t *testing.T) {
 		easykafka.WithTopic("test-topic"),
 		easykafka.WithBrokers("localhost:9092"),
 		easykafka.WithConsumerGroup("test-group"),
-		easykafka.WithHandler(noopHandler),
+		easykafka.WithHandler(helpers.NoopHandler),
 	)
 	require.NoError(t, err)
 	require.NotNil(t, consumer)
@@ -344,7 +332,7 @@ func TestNewAppliesDefaultErrorStrategy(t *testing.T) {
 		easykafka.WithTopic("test-topic"),
 		easykafka.WithBrokers("localhost:9092"),
 		easykafka.WithConsumerGroup("test-group"),
-		easykafka.WithHandler(noopHandler),
+		easykafka.WithHandler(helpers.NoopHandler),
 	)
 	require.NoError(t, err)
 	require.NotNil(t, consumer)
@@ -360,7 +348,7 @@ func TestNewInitializesKafkaConfigMap(t *testing.T) {
 		easykafka.WithTopic("test-topic"),
 		easykafka.WithBrokers("localhost:9092"),
 		easykafka.WithConsumerGroup("test-group"),
-		easykafka.WithHandler(noopHandler),
+		easykafka.WithHandler(helpers.NoopHandler),
 	)
 	require.NoError(t, err)
 	require.NotNil(t, consumer)
@@ -379,7 +367,7 @@ func TestWithPollTimeoutCustomValue(t *testing.T) {
 		easykafka.WithTopic("test-topic"),
 		easykafka.WithBrokers("localhost:9092"),
 		easykafka.WithConsumerGroup("test-group"),
-		easykafka.WithHandler(noopHandler),
+		easykafka.WithHandler(helpers.NoopHandler),
 		easykafka.WithPollTimeout(250*time.Millisecond),
 	)
 	require.NoError(t, err)
@@ -394,7 +382,7 @@ func TestWithBatchHandlerSetsDefaults(t *testing.T) {
 		easykafka.WithTopic("test-topic"),
 		easykafka.WithBrokers("localhost:9092"),
 		easykafka.WithConsumerGroup("test-group"),
-		easykafka.WithBatchHandler(noopBatchHandler),
+		easykafka.WithBatchHandler(helpers.NoopBatchHandler),
 	)
 	require.NoError(t, err)
 
@@ -410,7 +398,7 @@ func TestWithBatchHandlerCustomBatchSize(t *testing.T) {
 		easykafka.WithTopic("test-topic"),
 		easykafka.WithBrokers("localhost:9092"),
 		easykafka.WithConsumerGroup("test-group"),
-		easykafka.WithBatchHandler(noopBatchHandler),
+		easykafka.WithBatchHandler(helpers.NoopBatchHandler),
 		easykafka.WithBatchSize(50),
 	)
 	require.NoError(t, err)
@@ -425,7 +413,7 @@ func TestWithKafkaConfigPassthroughValues(t *testing.T) {
 		easykafka.WithTopic("test-topic"),
 		easykafka.WithBrokers("localhost:9092"),
 		easykafka.WithConsumerGroup("test-group"),
-		easykafka.WithHandler(noopHandler),
+		easykafka.WithHandler(helpers.NoopHandler),
 		easykafka.WithKafkaConfig(map[string]any{
 			"session.timeout.ms":   30000,
 			"max.poll.interval.ms": 300000,
@@ -446,7 +434,7 @@ func TestWithMultipleBrokers(t *testing.T) {
 		easykafka.WithTopic("test-topic"),
 		easykafka.WithBrokers("broker1:9092", "broker2:9092", "broker3:9092"),
 		easykafka.WithConsumerGroup("test-group"),
-		easykafka.WithHandler(noopHandler),
+		easykafka.WithHandler(helpers.NoopHandler),
 	)
 	require.NoError(t, err)
 
@@ -460,7 +448,7 @@ func TestNewSuccessfulMinimalConfig(t *testing.T) {
 		easykafka.WithTopic("test-topic"),
 		easykafka.WithBrokers("localhost:9092"),
 		easykafka.WithConsumerGroup("test-group"),
-		easykafka.WithHandler(noopHandler),
+		easykafka.WithHandler(helpers.NoopHandler),
 	)
 	require.NoError(t, err)
 	require.NotNil(t, consumer)

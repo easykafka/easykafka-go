@@ -88,7 +88,7 @@ func TestRebalanceDuplicateProcessingAcceptable(t *testing.T) {
 	}()
 
 	// Let consumer 1 start processing (wait for some messages)
-	waitForMessages(t, &mu, &allReceived, 5, 30*time.Second)
+	helpers.WaitForMessages(t, &mu, &allReceived, 5, 30*time.Second)
 	t.Log("Consumer 1 processing started, launching consumer 2 to trigger rebalance")
 
 	// Consumer 2: joins the same group, triggering a rebalance
@@ -115,7 +115,7 @@ func TestRebalanceDuplicateProcessingAcceptable(t *testing.T) {
 	}()
 
 	// Wait for all messages across both consumers
-	waitForMessages(t, &mu, &allReceived, messageCount, 30*time.Second)
+	helpers.WaitForMessages(t, &mu, &allReceived, messageCount, 30*time.Second)
 
 	// Stop both consumers
 	c1Cancel()
@@ -266,7 +266,7 @@ stopC1:
 	<-c1Done
 
 	// Consumer 2 should now pick up all remaining messages
-	waitForMessages(t, &mu, &allReceived, messageCount, 30*time.Second)
+	helpers.WaitForMessages(t, &mu, &allReceived, messageCount, 30*time.Second)
 
 	c2Cancel()
 	<-c2Done
@@ -347,7 +347,7 @@ func TestRebalanceCommitsBeforeRevocation(t *testing.T) {
 	go func() { c1Err = c1.Start(c1Ctx); close(c1Done) }()
 
 	// Wait for all messages to be consumed
-	waitForMessages(t, &mu, &c1Received, len(messages), 30*time.Second)
+	helpers.WaitForMessages(t, &mu, &c1Received, len(messages), 30*time.Second)
 	t.Log("Consumer 1 consumed all messages, stopping to trigger revocation + commit")
 
 	// Stop consumer 1 - rebalance callback should commit offsets
@@ -495,7 +495,7 @@ func TestRebalanceWithSlowHandler(t *testing.T) {
 	go func() { c2Err = c2.Start(c2Ctx); close(c2Done) }()
 
 	// Wait for all messages across both consumers
-	waitForMessages(t, &mu, &allReceived, messageCount, 45*time.Second)
+	helpers.WaitForMessages(t, &mu, &allReceived, messageCount, 45*time.Second)
 
 	c1Cancel()
 	c2Cancel()
@@ -577,7 +577,7 @@ func TestRebalanceNoDataLossWithDirectConsumer(t *testing.T) {
 	var cErr error
 	go func() { cErr = c.Start(cCtx); close(cDone) }()
 
-	waitForMessages(t, &mu, &received, len(produced), 30*time.Second)
+	helpers.WaitForMessages(t, &mu, &received, len(produced), 30*time.Second)
 	cCancel()
 	<-cDone
 	require.NoError(t, cErr)

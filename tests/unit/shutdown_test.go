@@ -9,6 +9,7 @@ import (
 
 	"github.com/easykafka/easykafka-go/internal/engine"
 	"github.com/easykafka/easykafka-go/internal/types"
+	"github.com/easykafka/easykafka-go/tests/unit/helpers"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -22,19 +23,19 @@ func TestShutdownStopsFetching(t *testing.T) {
 	var pollCount atomic.Int32
 
 	// Client that tracks poll calls and blocks after first message
-	client := &slowPollClient{
-		messages: []*types.Message{
-			newTestMessage("topic", 0, 0, "msg-1"),
+	client := &helpers.SlowPollClient{
+		Messages: []*types.Message{
+			helpers.NewTestMessage("topic", 0, 0, "msg-1"),
 		},
-		pollCount: &pollCount,
+		PollCount: &pollCount,
 	}
 
 	handler := func(ctx context.Context, payload []byte) *types.Failure {
 		return nil
 	}
-	strat := &mockStrategy{}
+	strat := &helpers.MockStrategy{}
 
-	eng := engine.NewEngine(client, handler, strat, testLogger(), 50)
+	eng := engine.NewEngine(client, handler, strat, helpers.TestLogger(), 50)
 
 	ctx, cancel := context.WithCancel(context.Background())
 
@@ -78,9 +79,9 @@ func TestShutdownWaitsForInFlightHandler(t *testing.T) {
 	handlerCompleted := atomic.Bool{}
 
 	// One message that takes time to process
-	client := &mockKafkaClient{
-		messages: []*types.Message{
-			newTestMessage("topic", 0, 0, "slow-msg"),
+	client := &helpers.MockKafkaClient{
+		Messages: []*types.Message{
+			helpers.NewTestMessage("topic", 0, 0, "slow-msg"),
 		},
 	}
 
@@ -91,9 +92,9 @@ func TestShutdownWaitsForInFlightHandler(t *testing.T) {
 		handlerCompleted.Store(true)
 		return nil
 	}
-	strat := &mockStrategy{}
+	strat := &helpers.MockStrategy{}
 
-	eng := engine.NewEngine(client, handler, strat, testLogger(), 50)
+	eng := engine.NewEngine(client, handler, strat, helpers.TestLogger(), 50)
 
 	ctx, cancel := context.WithCancel(context.Background())
 
@@ -122,7 +123,7 @@ func TestShutdownWaitsForInFlightHandler(t *testing.T) {
 	}
 
 	// Verify offset was committed for the completed message
-	commits := client.getStoredOffsets()
+	commits := client.StoredOffsets()
 	assert.Len(t, commits, 1, "offset should be committed for completed in-flight message")
 }
 
@@ -131,16 +132,16 @@ func TestShutdownWaitsForInFlightHandler(t *testing.T) {
 // The final commit and the adapter close have both already happened, and no
 // further call reaches the adapter afterwards.
 func TestShutdownReturnsAfterFinalCommitAndClose(t *testing.T) {
-	client := &recordingClient{
-		messages: []*types.Message{
-			newTestMessage("topic", 0, 0, "msg-1"),
+	client := &helpers.RecordingClient{
+		Messages: []*types.Message{
+			helpers.NewTestMessage("topic", 0, 0, "msg-1"),
 		},
 	}
 
 	handler := func(ctx context.Context, payload []byte) *types.Failure { return nil }
-	strat := &mockStrategy{}
+	strat := &helpers.MockStrategy{}
 
-	eng := engine.NewEngine(client, handler, strat, testLogger(), 50)
+	eng := engine.NewEngine(client, handler, strat, helpers.TestLogger(), 50)
 
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
@@ -148,7 +149,7 @@ func TestShutdownReturnsAfterFinalCommitAndClose(t *testing.T) {
 	done := make(chan error, 1)
 	go func() { done <- eng.Start(ctx) }()
 
-	require.Eventually(t, func() bool { return client.polls() > 0 }, 2*time.Second, 10*time.Millisecond,
+	require.Eventually(t, func() bool { return client.Polls() > 0 }, 2*time.Second, 10*time.Millisecond,
 		"engine never polled")
 
 	cancel()
@@ -160,7 +161,7 @@ func TestShutdownReturnsAfterFinalCommitAndClose(t *testing.T) {
 		t.Fatal("engine did not stop after context cancellation")
 	}
 
-	calls := client.calls()
+	calls := client.Calls()
 	require.GreaterOrEqual(t, len(calls), 2)
 	assert.Equal(t, "close", calls[len(calls)-1], "the adapter should be closed before Start returns")
 	assert.Equal(t, "commit", calls[len(calls)-2], "the final commit should happen before the close")
@@ -168,7 +169,7 @@ func TestShutdownReturnsAfterFinalCommitAndClose(t *testing.T) {
 	// Nothing may still be running once Start has returned.
 	settled := len(calls)
 	time.Sleep(200 * time.Millisecond)
-	assert.Len(t, client.calls(), settled, "the adapter was called after Start returned")
+	assert.Len(t, client.Calls(), settled, "the adapter was called after Start returned")
 }
 
 // TestShutdownContextCancelsHandlerContext verifies that cancelling the context
@@ -180,8 +181,8 @@ func TestShutdownContextCancelsHandlerContext(t *testing.T) {
 	handlerCtxCancelled := atomic.Bool{}
 	handlerStarted := make(chan struct{})
 
-	client := &blockingPollClient{
-		firstMessage: newTestMessage("topic", 0, 0, "ctx-msg"),
+	client := &helpers.BlockingPollClient{
+		FirstMessage: helpers.NewTestMessage("topic", 0, 0, "ctx-msg"),
 	}
 
 	handler := func(ctx context.Context, payload []byte) *types.Failure {
@@ -191,9 +192,9 @@ func TestShutdownContextCancelsHandlerContext(t *testing.T) {
 		handlerCtxCancelled.Store(true)
 		return &types.Failure{Err: ctx.Err()}
 	}
-	strat := &mockStrategy{}
+	strat := &helpers.MockStrategy{}
 
-	eng := engine.NewEngine(client, handler, strat, testLogger(), 50)
+	eng := engine.NewEngine(client, handler, strat, helpers.TestLogger(), 50)
 
 	ctx, cancel := context.WithCancel(context.Background())
 
@@ -220,22 +221,22 @@ func TestShutdownContextCancelsHandlerContext(t *testing.T) {
 
 	// The abandoned message reached the error strategy: the engine cannot tell
 	// "this failed" from "this was abandoned", and does not try.
-	assert.Len(t, strat.getHandleCalls(), 1, "the interrupted message should reach the error strategy")
+	assert.Len(t, strat.HandleCalls(), 1, "the interrupted message should reach the error strategy")
 }
 
 // TestShutdownClosesAdapter verifies that the Kafka adapter is closed
 // during shutdown.
 func TestShutdownClosesAdapter(t *testing.T) {
-	client := &mockKafkaClient{
-		messages: []*types.Message{
-			newTestMessage("topic", 0, 0, "msg-1"),
+	client := &helpers.MockKafkaClient{
+		Messages: []*types.Message{
+			helpers.NewTestMessage("topic", 0, 0, "msg-1"),
 		},
 	}
 
 	handler := func(ctx context.Context, payload []byte) *types.Failure { return nil }
-	strat := &mockStrategy{}
+	strat := &helpers.MockStrategy{}
 
-	eng := engine.NewEngine(client, handler, strat, testLogger(), 50)
+	eng := engine.NewEngine(client, handler, strat, helpers.TestLogger(), 50)
 
 	ctx, cancel := context.WithTimeout(context.Background(), 500*time.Millisecond)
 	defer cancel()
@@ -243,9 +244,7 @@ func TestShutdownClosesAdapter(t *testing.T) {
 	err := eng.Start(ctx)
 	require.NoError(t, err)
 
-	client.mu.Lock()
-	closed := client.closed
-	client.mu.Unlock()
+	closed := client.Closed()
 
 	assert.True(t, closed, "adapter should be closed after engine stops")
 }
@@ -263,10 +262,10 @@ func TestShutdownBatchModeDropsBuffered(t *testing.T) {
 
 	messages := make([]*types.Message, 5)
 	for i := range 5 {
-		messages[i] = newTestMessage("topic", 0, int64(i), "msg")
+		messages[i] = helpers.NewTestMessage("topic", 0, int64(i), "msg")
 	}
 
-	client := &mockKafkaClient{messages: messages}
+	client := &helpers.MockKafkaClient{Messages: messages}
 
 	batchHandler := func(ctx context.Context, batch *types.Batch) *types.Failure {
 		mu.Lock()
@@ -274,11 +273,11 @@ func TestShutdownBatchModeDropsBuffered(t *testing.T) {
 		mu.Unlock()
 		return nil
 	}
-	strat := &mockStrategy{}
+	strat := &helpers.MockStrategy{}
 
 	// Batch size well above the message count and a timeout far longer than the
 	// test, so the buffer fills and shutdown is the only thing that could flush it.
-	eng := engine.NewBatchEngine(client, batchHandler, strat, testLogger(), 10, 100, time.Hour)
+	eng := engine.NewBatchEngine(client, batchHandler, strat, helpers.TestLogger(), 10, 100, time.Hour)
 
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
@@ -286,7 +285,7 @@ func TestShutdownBatchModeDropsBuffered(t *testing.T) {
 	done := make(chan error, 1)
 	go func() { done <- eng.Start(ctx) }()
 
-	require.Eventually(t, func() bool { return client.getPolledCount() == len(messages) },
+	require.Eventually(t, func() bool { return client.PolledCount() == len(messages) },
 		2*time.Second, 10*time.Millisecond, "engine did not buffer all messages")
 
 	cancel()
@@ -295,196 +294,5 @@ func TestShutdownBatchModeDropsBuffered(t *testing.T) {
 	mu.Lock()
 	defer mu.Unlock()
 	assert.Zero(t, dispatched, "buffered messages must not be dispatched on shutdown")
-	assert.Empty(t, client.getStoredOffsets(), "dropped messages must not advance any offset")
-}
-
-// ============================================================================
-// Test Helper Types
-// ============================================================================
-
-// slowPollClient tracks poll count and returns messages, then nil.
-type slowPollClient struct {
-	mu        sync.Mutex
-	messages  []*types.Message
-	pollIndex int
-	pollCount *atomic.Int32
-	connected bool
-	closed    bool
-}
-
-func (c *slowPollClient) Connect(ctx context.Context) error {
-	c.mu.Lock()
-	defer c.mu.Unlock()
-	c.connected = true
-	return nil
-}
-
-func (c *slowPollClient) SubscribeToTopic(ctx context.Context) error { return nil }
-
-func (c *slowPollClient) Poll(ctx context.Context, timeoutMs int) (*types.Message, error) {
-	c.pollCount.Add(1)
-	c.mu.Lock()
-	defer c.mu.Unlock()
-	if c.pollIndex >= len(c.messages) {
-		// Simulate blocking poll behavior
-		time.Sleep(time.Duration(timeoutMs) * time.Millisecond)
-		return nil, nil //nolint:nilnil // nil,nil is the mock poll contract for "no message"
-	}
-	msg := c.messages[c.pollIndex]
-	c.pollIndex++
-	return msg, nil
-}
-
-func (c *slowPollClient) StoreOffset(topic string, partition int32, offset int64) error {
-	return nil
-}
-
-func (c *slowPollClient) MaybeCommitStored() error { return c.CommitStored() }
-
-func (c *slowPollClient) CommitStored() error {
-	return nil
-}
-
-func (c *slowPollClient) SetOnRevoke(fn func()) {}
-
-func (c *slowPollClient) Close(ctx context.Context) error {
-	c.mu.Lock()
-	defer c.mu.Unlock()
-	c.closed = true
-	return nil
-}
-
-// blockingPollClient returns one message, then blocks until context is cancelled.
-type blockingPollClient struct {
-	mu           sync.Mutex
-	firstMessage *types.Message
-	returned     bool
-	connected    bool
-	closed       bool
-}
-
-func (c *blockingPollClient) Connect(ctx context.Context) error {
-	c.mu.Lock()
-	defer c.mu.Unlock()
-	c.connected = true
-	return nil
-}
-
-func (c *blockingPollClient) SubscribeToTopic(ctx context.Context) error { return nil }
-
-func (c *blockingPollClient) Poll(ctx context.Context, timeoutMs int) (*types.Message, error) {
-	c.mu.Lock()
-	if !c.returned {
-		c.returned = true
-		msg := c.firstMessage
-		c.mu.Unlock()
-		return msg, nil
-	}
-	c.mu.Unlock()
-	// Block until context is cancelled
-	select {
-	case <-ctx.Done():
-		return nil, nil //nolint:nilnil // nil,nil is the mock poll contract for "no message"
-	case <-time.After(time.Duration(timeoutMs) * time.Millisecond):
-		return nil, nil //nolint:nilnil // nil,nil is the mock poll contract for "no message"
-	}
-}
-
-func (c *blockingPollClient) StoreOffset(topic string, partition int32, offset int64) error {
-	return nil
-}
-
-func (c *blockingPollClient) MaybeCommitStored() error { return c.CommitStored() }
-
-func (c *blockingPollClient) CommitStored() error {
-	return nil
-}
-
-func (c *blockingPollClient) SetOnRevoke(fn func()) {}
-
-func (c *blockingPollClient) Close(ctx context.Context) error {
-	c.mu.Lock()
-	defer c.mu.Unlock()
-	c.closed = true
-	return nil
-}
-
-// recordingClient records the order of the calls the engine makes, so a test can
-// assert what has already happened by the time Start returns. Poll is counted
-// rather than recorded — it fires on every loop iteration and would bury the
-// sequence the tests care about.
-type recordingClient struct {
-	mu        sync.Mutex
-	events    []string
-	pollCount int
-	messages  []*types.Message
-	pollIndex int
-	// autoCommit puts the client in interval mode, where MaybeCommitStored does
-	// nothing and only the unconditional CommitStored calls are recorded.
-	autoCommit bool
-}
-
-func (c *recordingClient) Connect(ctx context.Context) error { return nil }
-
-func (c *recordingClient) SubscribeToTopic(ctx context.Context) error { return nil }
-
-func (c *recordingClient) Poll(ctx context.Context, timeoutMs int) (*types.Message, error) {
-	c.mu.Lock()
-	c.pollCount++
-	if c.pollIndex >= len(c.messages) {
-		c.mu.Unlock()
-		time.Sleep(time.Duration(timeoutMs) * time.Millisecond)
-		return nil, nil //nolint:nilnil // nil,nil is the mock poll contract for "no message"
-	}
-	msg := c.messages[c.pollIndex]
-	c.pollIndex++
-	c.mu.Unlock()
-	return msg, nil
-}
-
-func (c *recordingClient) StoreOffset(topic string, partition int32, offset int64) error {
-	c.record("store")
-	return nil
-}
-
-// MaybeCommitStored mirrors the adapter: in interval mode librdkafka's
-// background committer owns timing, so nothing is recorded here.
-func (c *recordingClient) MaybeCommitStored() error {
-	c.mu.Lock()
-	auto := c.autoCommit
-	c.mu.Unlock()
-	if auto {
-		return nil
-	}
-	return c.CommitStored()
-}
-
-func (c *recordingClient) CommitStored() error {
-	c.record("commit")
-	return nil
-}
-
-func (c *recordingClient) SetOnRevoke(fn func()) {}
-
-func (c *recordingClient) Close(ctx context.Context) error {
-	c.record("close")
-	return nil
-}
-
-func (c *recordingClient) record(event string) {
-	c.mu.Lock()
-	defer c.mu.Unlock()
-	c.events = append(c.events, event)
-}
-
-func (c *recordingClient) calls() []string {
-	c.mu.Lock()
-	defer c.mu.Unlock()
-	return append([]string(nil), c.events...)
-}
-
-func (c *recordingClient) polls() int {
-	c.mu.Lock()
-	defer c.mu.Unlock()
-	return c.pollCount
+	assert.Empty(t, client.StoredOffsets(), "dropped messages must not advance any offset")
 }

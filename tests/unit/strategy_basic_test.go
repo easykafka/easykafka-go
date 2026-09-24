@@ -7,6 +7,7 @@ import (
 
 	"github.com/easykafka/easykafka-go/internal/types"
 	"github.com/easykafka/easykafka-go/strategy"
+	"github.com/easykafka/easykafka-go/tests/unit/helpers"
 	"github.com/rs/zerolog"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -15,16 +16,6 @@ import (
 // =============================================================================
 // T028 [US3] Unit tests for fail-fast and skip strategies
 // =============================================================================
-
-func newStrategyTestMessage(topic string, partition int32, offset int64, payload string) *types.Message {
-	return &types.Message{
-		Topic:     topic,
-		Partition: partition,
-		Offset:    offset,
-		Headers:   make(map[string]string),
-		Payload:   []byte(payload),
-	}
-}
 
 // =============================================================================
 // FailFast Strategy Tests
@@ -36,7 +27,7 @@ func TestFailFastStrategyReturnsError(t *testing.T) {
 	s := strategy.NewFailFastStrategy()
 
 	msgs := []*types.Message{
-		newStrategyTestMessage("test-topic", 0, 42, "payload"),
+		helpers.NewTestMessage("test-topic", 0, 42, "payload"),
 	}
 	handlerErr := assert.AnError
 
@@ -72,7 +63,7 @@ func TestFailFastStrategyAlwaysStopsConsumer(t *testing.T) {
 	// Call multiple times — always returns error
 	for i := range 5 {
 		msgs := []*types.Message{
-			newStrategyTestMessage("topic", 0, int64(i), "msg"),
+			helpers.NewTestMessage("topic", 0, int64(i), "msg"),
 		}
 		err := s.HandleError(context.Background(), msgs, types.Failure{Err: assert.AnError})
 		require.Error(t, err, "fail-fast should always return error on attempt %d", i)
@@ -89,7 +80,7 @@ func TestSkipStrategyReturnsNil(t *testing.T) {
 	s := strategy.NewSkipStrategy(zerolog.Nop())
 
 	msgs := []*types.Message{
-		newStrategyTestMessage("test-topic", 0, 42, "payload"),
+		helpers.NewTestMessage("test-topic", 0, 42, "payload"),
 	}
 
 	err := s.HandleError(context.Background(), msgs, types.Failure{Err: assert.AnError})
@@ -108,7 +99,7 @@ func TestSkipStrategyAlwaysContinues(t *testing.T) {
 
 	for i := range 10 {
 		msgs := []*types.Message{
-			newStrategyTestMessage("topic", 0, int64(i), "msg"),
+			helpers.NewTestMessage("topic", 0, int64(i), "msg"),
 		}
 		err := s.HandleError(context.Background(), msgs, types.Failure{Err: assert.AnError})
 		require.NoError(t, err, "skip should always return nil on attempt %d", i)
@@ -120,9 +111,9 @@ func TestSkipStrategyWithMultipleMessages(t *testing.T) {
 	s := strategy.NewSkipStrategy(zerolog.Nop())
 
 	msgs := []*types.Message{
-		newStrategyTestMessage("topic", 0, 0, "msg-1"),
-		newStrategyTestMessage("topic", 0, 1, "msg-2"),
-		newStrategyTestMessage("topic", 0, 2, "msg-3"),
+		helpers.NewTestMessage("topic", 0, 0, "msg-1"),
+		helpers.NewTestMessage("topic", 0, 1, "msg-2"),
+		helpers.NewTestMessage("topic", 0, 2, "msg-3"),
 	}
 
 	err := s.HandleError(context.Background(), msgs, types.Failure{Err: assert.AnError})
@@ -133,7 +124,7 @@ func TestSkipStrategyWithMultipleMessages(t *testing.T) {
 // for the strategies without a retry ladder: skip still continues, fail-fast
 // still stops.
 func TestSkipAndFailFastIgnorePermanence(t *testing.T) {
-	msgs := []*types.Message{newStrategyTestMessage("topic", 0, 0, "msg")}
+	msgs := []*types.Message{helpers.NewTestMessage("topic", 0, 0, "msg")}
 	permanent := types.Failure{Err: fmt.Errorf("%w: unmarshal", types.ErrPermanent)}
 
 	require.NoError(t, strategy.NewSkipStrategy(zerolog.Nop()).HandleError(context.Background(), msgs, permanent))
@@ -148,7 +139,7 @@ func TestSkipNopStrategy(t *testing.T) {
 	s := strategy.NewSkipStrategy(zerolog.Nop())
 
 	msgs := []*types.Message{
-		newStrategyTestMessage("topic", 0, 0, "msg"),
+		helpers.NewTestMessage("topic", 0, 0, "msg"),
 	}
 
 	err := s.HandleError(context.Background(), msgs, types.Failure{Err: assert.AnError})

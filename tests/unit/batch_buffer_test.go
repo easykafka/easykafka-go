@@ -9,6 +9,7 @@ import (
 
 	"github.com/easykafka/easykafka-go/internal/engine"
 	"github.com/easykafka/easykafka-go/internal/types"
+	"github.com/easykafka/easykafka-go/tests/unit/helpers"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -20,8 +21,8 @@ import (
 func TestBatchBuffer_AccumulatesMessages(t *testing.T) {
 	buf := engine.NewBatchBuffer(5, 10*time.Second)
 
-	msg1 := newTestMessage("topic", 0, 0, "msg-1")
-	msg2 := newTestMessage("topic", 0, 1, "msg-2")
+	msg1 := helpers.NewTestMessage("topic", 0, 0, "msg-1")
+	msg2 := helpers.NewTestMessage("topic", 0, 1, "msg-2")
 
 	buf.Add(msg1)
 	buf.Add(msg2)
@@ -33,20 +34,20 @@ func TestBatchBuffer_AccumulatesMessages(t *testing.T) {
 func TestBatchBuffer_ReadyWhenFull(t *testing.T) {
 	buf := engine.NewBatchBuffer(3, 10*time.Second)
 
-	buf.Add(newTestMessage("topic", 0, 0, "a"))
-	buf.Add(newTestMessage("topic", 0, 1, "b"))
+	buf.Add(helpers.NewTestMessage("topic", 0, 0, "a"))
+	buf.Add(helpers.NewTestMessage("topic", 0, 1, "b"))
 	assert.False(t, buf.Ready())
 
-	buf.Add(newTestMessage("topic", 0, 2, "c"))
+	buf.Add(helpers.NewTestMessage("topic", 0, 2, "c"))
 	assert.True(t, buf.Ready(), "should be ready when batch size reached")
 }
 
 func TestBatchBuffer_FlushReturnsMessagesAndResets(t *testing.T) {
 	buf := engine.NewBatchBuffer(5, 10*time.Second)
 
-	buf.Add(newTestMessage("topic", 0, 0, "a"))
-	buf.Add(newTestMessage("topic", 0, 1, "b"))
-	buf.Add(newTestMessage("topic", 0, 2, "c"))
+	buf.Add(helpers.NewTestMessage("topic", 0, 0, "a"))
+	buf.Add(helpers.NewTestMessage("topic", 0, 1, "b"))
+	buf.Add(helpers.NewTestMessage("topic", 0, 2, "c"))
 
 	flushed := buf.Flush()
 	require.Len(t, flushed, 3)
@@ -69,7 +70,7 @@ func TestBatchBuffer_MaintainsOrder(t *testing.T) {
 	buf := engine.NewBatchBuffer(10, 10*time.Second)
 
 	for i := range 5 {
-		buf.Add(newTestMessage("topic", 0, int64(i), "msg-"+string(rune('a'+i))))
+		buf.Add(helpers.NewTestMessage("topic", 0, int64(i), "msg-"+string(rune('a'+i))))
 	}
 
 	flushed := buf.Flush()
@@ -83,7 +84,7 @@ func TestBatchBuffer_TimedOutAfterTimeout(t *testing.T) {
 	// Very short timeout for test
 	buf := engine.NewBatchBuffer(100, 50*time.Millisecond)
 
-	buf.Add(newTestMessage("topic", 0, 0, "msg"))
+	buf.Add(helpers.NewTestMessage("topic", 0, 0, "msg"))
 
 	// Should not be timed out immediately
 	assert.False(t, buf.TimedOut())
@@ -104,7 +105,7 @@ func TestBatchBuffer_TimedOutNotTriggeredWhenEmpty(t *testing.T) {
 func TestBatchBuffer_TimeoutResetsAfterFlush(t *testing.T) {
 	buf := engine.NewBatchBuffer(100, 50*time.Millisecond)
 
-	buf.Add(newTestMessage("topic", 0, 0, "msg"))
+	buf.Add(helpers.NewTestMessage("topic", 0, 0, "msg"))
 	time.Sleep(60 * time.Millisecond)
 	assert.True(t, buf.TimedOut())
 
@@ -113,7 +114,7 @@ func TestBatchBuffer_TimeoutResetsAfterFlush(t *testing.T) {
 	assert.False(t, buf.TimedOut(), "timeout should reset after flush")
 
 	// Add new message - timer resets
-	buf.Add(newTestMessage("topic", 0, 1, "msg2"))
+	buf.Add(helpers.NewTestMessage("topic", 0, 1, "msg2"))
 	assert.False(t, buf.TimedOut(), "should not be timed out right after adding new message")
 }
 
@@ -138,18 +139,18 @@ func TestBatchEngine_DispatchesBatchWhenFull(t *testing.T) {
 
 	// 6 messages with batch size 3 => should produce 2 batches
 	messages := []*types.Message{
-		newTestMessage("topic", 0, 0, "a"),
-		newTestMessage("topic", 0, 1, "b"),
-		newTestMessage("topic", 0, 2, "c"),
-		newTestMessage("topic", 0, 3, "d"),
-		newTestMessage("topic", 0, 4, "e"),
-		newTestMessage("topic", 0, 5, "f"),
+		helpers.NewTestMessage("topic", 0, 0, "a"),
+		helpers.NewTestMessage("topic", 0, 1, "b"),
+		helpers.NewTestMessage("topic", 0, 2, "c"),
+		helpers.NewTestMessage("topic", 0, 3, "d"),
+		helpers.NewTestMessage("topic", 0, 4, "e"),
+		helpers.NewTestMessage("topic", 0, 5, "f"),
 	}
 
-	client := &mockKafkaClient{messages: messages}
-	strat := &mockStrategy{}
+	client := &helpers.MockKafkaClient{Messages: messages}
+	strat := &helpers.MockStrategy{}
 
-	eng := engine.NewBatchEngine(client, batchHandler, strat, testLogger(), 100, 3, 5*time.Second)
+	eng := engine.NewBatchEngine(client, batchHandler, strat, helpers.TestLogger(), 100, 3, 5*time.Second)
 
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 	defer cancel()
@@ -164,7 +165,7 @@ func TestBatchEngine_DispatchesBatchWhenFull(t *testing.T) {
 	assert.Equal(t, []string{"d", "e", "f"}, receivedBatches[1])
 
 	// All 6 offsets should be committed (committed after each batch)
-	commits := client.getStoredOffsets()
+	commits := client.StoredOffsets()
 	// Each batch commit commits the last offset in the batch
 	require.Len(t, commits, 2)
 	assert.Equal(t, int64(2), commits[0].Offset) // last offset in batch 1
@@ -188,14 +189,14 @@ func TestBatchEngine_DispatchesPartialBatchOnTimeout(t *testing.T) {
 
 	// 2 messages with batch size 10 => partial batch should be flushed on timeout
 	messages := []*types.Message{
-		newTestMessage("topic", 0, 0, "x"),
-		newTestMessage("topic", 0, 1, "y"),
+		helpers.NewTestMessage("topic", 0, 0, "x"),
+		helpers.NewTestMessage("topic", 0, 1, "y"),
 	}
 
-	client := &mockKafkaClient{messages: messages}
-	strat := &mockStrategy{}
+	client := &helpers.MockKafkaClient{Messages: messages}
+	strat := &helpers.MockStrategy{}
 
-	eng := engine.NewBatchEngine(client, batchHandler, strat, testLogger(), 100, 10, 200*time.Millisecond)
+	eng := engine.NewBatchEngine(client, batchHandler, strat, helpers.TestLogger(), 100, 10, 200*time.Millisecond)
 
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 	defer cancel()
@@ -215,15 +216,15 @@ func TestBatchEngine_AtomicCommitOnSuccess(t *testing.T) {
 	}
 
 	messages := []*types.Message{
-		newTestMessage("topic", 0, 0, "a"),
-		newTestMessage("topic", 0, 1, "b"),
-		newTestMessage("topic", 0, 2, "c"),
+		helpers.NewTestMessage("topic", 0, 0, "a"),
+		helpers.NewTestMessage("topic", 0, 1, "b"),
+		helpers.NewTestMessage("topic", 0, 2, "c"),
 	}
 
-	client := &mockKafkaClient{messages: messages}
-	strat := &mockStrategy{}
+	client := &helpers.MockKafkaClient{Messages: messages}
+	strat := &helpers.MockStrategy{}
 
-	eng := engine.NewBatchEngine(client, batchHandler, strat, testLogger(), 100, 3, 5*time.Second)
+	eng := engine.NewBatchEngine(client, batchHandler, strat, helpers.TestLogger(), 100, 3, 5*time.Second)
 
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 	defer cancel()
@@ -232,7 +233,7 @@ func TestBatchEngine_AtomicCommitOnSuccess(t *testing.T) {
 	require.NoError(t, err)
 
 	// Atomic commit: only the highest offset in the batch should be committed
-	commits := client.getStoredOffsets()
+	commits := client.StoredOffsets()
 	require.Len(t, commits, 1)
 	assert.Equal(t, int64(2), commits[0].Offset)
 }
@@ -245,15 +246,15 @@ func TestBatchEngine_ErrorStrategyOnBatchFailure(t *testing.T) {
 	}
 
 	messages := []*types.Message{
-		newTestMessage("topic", 0, 0, "a"),
-		newTestMessage("topic", 0, 1, "b"),
-		newTestMessage("topic", 0, 2, "c"),
+		helpers.NewTestMessage("topic", 0, 0, "a"),
+		helpers.NewTestMessage("topic", 0, 1, "b"),
+		helpers.NewTestMessage("topic", 0, 2, "c"),
 	}
 
-	client := &mockKafkaClient{messages: messages}
-	strat := &mockStrategy{} // returns nil => continue
+	client := &helpers.MockKafkaClient{Messages: messages}
+	strat := &helpers.MockStrategy{} // returns nil => continue
 
-	eng := engine.NewBatchEngine(client, batchHandler, strat, testLogger(), 100, 3, 5*time.Second)
+	eng := engine.NewBatchEngine(client, batchHandler, strat, helpers.TestLogger(), 100, 3, 5*time.Second)
 
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 	defer cancel()
@@ -262,7 +263,7 @@ func TestBatchEngine_ErrorStrategyOnBatchFailure(t *testing.T) {
 	require.NoError(t, err)
 
 	// Error strategy should receive all messages in the batch
-	calls := strat.getHandleCalls()
+	calls := strat.HandleCalls()
 	require.Len(t, calls, 1)
 	assert.Equal(t, batchErr, calls[0].HandlerErr)
 	require.Len(t, calls[0].Msgs, 3, "strategy should receive entire batch")
@@ -277,15 +278,15 @@ func TestBatchEngine_FatalStrategyStopsEngine(t *testing.T) {
 	}
 
 	messages := []*types.Message{
-		newTestMessage("topic", 0, 0, "a"),
-		newTestMessage("topic", 0, 1, "b"),
-		newTestMessage("topic", 0, 2, "c"),
+		helpers.NewTestMessage("topic", 0, 0, "a"),
+		helpers.NewTestMessage("topic", 0, 1, "b"),
+		helpers.NewTestMessage("topic", 0, 2, "c"),
 	}
 
-	client := &mockKafkaClient{messages: messages}
-	strat := &mockStrategy{returnErr: errors.New("fatal: stop consumer")}
+	client := &helpers.MockKafkaClient{Messages: messages}
+	strat := &helpers.MockStrategy{ReturnErr: errors.New("fatal: stop consumer")}
 
-	eng := engine.NewBatchEngine(client, batchHandler, strat, testLogger(), 100, 3, 5*time.Second)
+	eng := engine.NewBatchEngine(client, batchHandler, strat, helpers.TestLogger(), 100, 3, 5*time.Second)
 
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 	defer cancel()
@@ -301,14 +302,14 @@ func TestBatchEngine_PanicRecoveryInBatchHandler(t *testing.T) {
 	}
 
 	messages := []*types.Message{
-		newTestMessage("topic", 0, 0, "a"),
-		newTestMessage("topic", 0, 1, "b"),
+		helpers.NewTestMessage("topic", 0, 0, "a"),
+		helpers.NewTestMessage("topic", 0, 1, "b"),
 	}
 
-	client := &mockKafkaClient{messages: messages}
-	strat := &mockStrategy{}
+	client := &helpers.MockKafkaClient{Messages: messages}
+	strat := &helpers.MockStrategy{}
 
-	eng := engine.NewBatchEngine(client, batchHandler, strat, testLogger(), 100, 2, 5*time.Second)
+	eng := engine.NewBatchEngine(client, batchHandler, strat, helpers.TestLogger(), 100, 2, 5*time.Second)
 
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 	defer cancel()
@@ -317,7 +318,7 @@ func TestBatchEngine_PanicRecoveryInBatchHandler(t *testing.T) {
 	require.NoError(t, err) // strategy returned nil => engine continues
 
 	// Panic should be recovered and treated as handler error
-	calls := strat.getHandleCalls()
+	calls := strat.HandleCalls()
 	require.Len(t, calls, 1)
 	assert.Contains(t, calls[0].HandlerErr.Error(), "handler panic")
 }
@@ -329,15 +330,15 @@ func TestBatchEngine_CommitsAfterStrategySuccess(t *testing.T) {
 	}
 
 	messages := []*types.Message{
-		newTestMessage("topic", 0, 0, "a"),
-		newTestMessage("topic", 0, 1, "b"),
-		newTestMessage("topic", 0, 2, "c"),
+		helpers.NewTestMessage("topic", 0, 0, "a"),
+		helpers.NewTestMessage("topic", 0, 1, "b"),
+		helpers.NewTestMessage("topic", 0, 2, "c"),
 	}
 
-	client := &mockKafkaClient{messages: messages}
-	strat := &mockStrategy{} // returns nil => continue
+	client := &helpers.MockKafkaClient{Messages: messages}
+	strat := &helpers.MockStrategy{} // returns nil => continue
 
-	eng := engine.NewBatchEngine(client, batchHandler, strat, testLogger(), 100, 3, 5*time.Second)
+	eng := engine.NewBatchEngine(client, batchHandler, strat, helpers.TestLogger(), 100, 3, 5*time.Second)
 
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 	defer cancel()
@@ -346,7 +347,7 @@ func TestBatchEngine_CommitsAfterStrategySuccess(t *testing.T) {
 	require.NoError(t, err)
 
 	// Even though handler failed, strategy said continue => commit offset
-	commits := client.getStoredOffsets()
+	commits := client.StoredOffsets()
 	require.Len(t, commits, 1)
 	assert.Equal(t, int64(2), commits[0].Offset)
 }
@@ -361,18 +362,18 @@ func TestBatchEngine_CommitsHighestOffsetPerPartition(t *testing.T) {
 
 	// Batch with interleaved messages from 3 partitions
 	messages := []*types.Message{
-		newTestMessage("topic", 0, 0, "p0-a"),
-		newTestMessage("topic", 1, 0, "p1-a"),
-		newTestMessage("topic", 2, 0, "p2-a"),
-		newTestMessage("topic", 0, 1, "p0-b"),
-		newTestMessage("topic", 1, 1, "p1-b"),
-		newTestMessage("topic", 0, 2, "p0-c"),
+		helpers.NewTestMessage("topic", 0, 0, "p0-a"),
+		helpers.NewTestMessage("topic", 1, 0, "p1-a"),
+		helpers.NewTestMessage("topic", 2, 0, "p2-a"),
+		helpers.NewTestMessage("topic", 0, 1, "p0-b"),
+		helpers.NewTestMessage("topic", 1, 1, "p1-b"),
+		helpers.NewTestMessage("topic", 0, 2, "p0-c"),
 	}
 
-	client := &mockKafkaClient{messages: messages}
-	strat := &mockStrategy{}
+	client := &helpers.MockKafkaClient{Messages: messages}
+	strat := &helpers.MockStrategy{}
 
-	eng := engine.NewBatchEngine(client, batchHandler, strat, testLogger(), 100, 6, 5*time.Second)
+	eng := engine.NewBatchEngine(client, batchHandler, strat, helpers.TestLogger(), 100, 6, 5*time.Second)
 
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 	defer cancel()
@@ -380,7 +381,7 @@ func TestBatchEngine_CommitsHighestOffsetPerPartition(t *testing.T) {
 	err := eng.Start(ctx)
 	require.NoError(t, err)
 
-	commits := client.getStoredOffsets()
+	commits := client.StoredOffsets()
 	// Should have exactly 3 commits — one per partition
 	require.Len(t, commits, 3)
 
@@ -403,16 +404,16 @@ func TestBatchEngine_CommitsHighestOffsetPerPartitionOnError(t *testing.T) {
 	}
 
 	messages := []*types.Message{
-		newTestMessage("topic", 0, 5, "p0-x"),
-		newTestMessage("topic", 1, 3, "p1-x"),
-		newTestMessage("topic", 0, 10, "p0-y"),
-		newTestMessage("topic", 1, 7, "p1-y"),
+		helpers.NewTestMessage("topic", 0, 5, "p0-x"),
+		helpers.NewTestMessage("topic", 1, 3, "p1-x"),
+		helpers.NewTestMessage("topic", 0, 10, "p0-y"),
+		helpers.NewTestMessage("topic", 1, 7, "p1-y"),
 	}
 
-	client := &mockKafkaClient{messages: messages}
-	strat := &mockStrategy{} // returns nil => continue
+	client := &helpers.MockKafkaClient{Messages: messages}
+	strat := &helpers.MockStrategy{} // returns nil => continue
 
-	eng := engine.NewBatchEngine(client, batchHandler, strat, testLogger(), 100, 4, 5*time.Second)
+	eng := engine.NewBatchEngine(client, batchHandler, strat, helpers.TestLogger(), 100, 4, 5*time.Second)
 
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 	defer cancel()
@@ -420,7 +421,7 @@ func TestBatchEngine_CommitsHighestOffsetPerPartitionOnError(t *testing.T) {
 	err := eng.Start(ctx)
 	require.NoError(t, err)
 
-	commits := client.getStoredOffsets()
+	commits := client.StoredOffsets()
 	require.Len(t, commits, 2)
 
 	commitMap := make(map[int32]int64)

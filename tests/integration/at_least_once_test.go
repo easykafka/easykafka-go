@@ -71,7 +71,7 @@ func TestAtLeastOnceDelivery(t *testing.T) {
 	}()
 
 	// Wait until we have received at least all produced messages
-	waitForMessages(t, &mu, &received, messageCount, 30*time.Second)
+	helpers.WaitForMessages(t, &mu, &received, messageCount, 30*time.Second)
 
 	cancel()
 	<-done
@@ -166,7 +166,7 @@ func TestAtLeastOnceAfterBrokerRestart(t *testing.T) {
 	}()
 
 	// Wait for pre-restart messages
-	waitForMessages(t, &mu, &received, len(preMessages), 30*time.Second)
+	helpers.WaitForMessages(t, &mu, &received, len(preMessages), 30*time.Second)
 	t.Log("Phase 1 complete: pre-restart messages received")
 
 	// Phase 2: broker restart
@@ -182,7 +182,7 @@ func TestAtLeastOnceAfterBrokerRestart(t *testing.T) {
 
 	// Wait for all messages (pre + post), allowing duplicates
 	totalExpected := len(preMessages) + len(postMessages)
-	waitForMessages(t, &mu, &received, totalExpected, 60*time.Second)
+	helpers.WaitForMessages(t, &mu, &received, totalExpected, 60*time.Second)
 
 	cancel()
 	<-done

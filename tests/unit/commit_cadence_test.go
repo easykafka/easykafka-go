@@ -8,6 +8,7 @@ import (
 
 	"github.com/easykafka/easykafka-go/internal/engine"
 	"github.com/easykafka/easykafka-go/internal/types"
+	"github.com/easykafka/easykafka-go/tests/unit/helpers"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -26,18 +27,18 @@ import (
 // difference to exactly one thing: whether a commit follows each store.
 func TestCommitCadence(t *testing.T) {
 	messages := []*types.Message{
-		newTestMessage("topic", 0, 0, "msg-1"),
-		newTestMessage("topic", 0, 1, "msg-2"),
-		newTestMessage("topic", 0, 2, "msg-3"),
+		helpers.NewTestMessage("topic", 0, 0, "msg-1"),
+		helpers.NewTestMessage("topic", 0, 1, "msg-2"),
+		helpers.NewTestMessage("topic", 0, 2, "msg-3"),
 	}
 
 	run := func(t *testing.T, autoCommit bool) []string {
 		t.Helper()
 
-		client := &recordingClient{autoCommit: autoCommit, messages: messages}
+		client := &helpers.RecordingClient{AutoCommit: autoCommit, Messages: messages}
 		handler := func(ctx context.Context, payload []byte) *types.Failure { return nil }
 
-		eng := engine.NewEngine(client, handler, &mockStrategy{}, testLogger(), 10)
+		eng := engine.NewEngine(client, handler, &helpers.MockStrategy{}, helpers.TestLogger(), 10)
 
 		ctx, cancel := context.WithCancel(context.Background())
 		defer cancel()
@@ -46,7 +47,7 @@ func TestCommitCadence(t *testing.T) {
 		go func() { done <- eng.Start(ctx) }()
 
 		require.Eventually(t, func() bool {
-			return countCalls(client.calls(), "store") == len(messages)
+			return helpers.CountCalls(client.Calls(), "store") == len(messages)
 		}, 2*time.Second, 10*time.Millisecond, "engine did not store every message")
 
 		cancel()
@@ -57,15 +58,15 @@ func TestCommitCadence(t *testing.T) {
 			t.Fatal("engine did not stop")
 		}
 
-		return client.calls()
+		return client.Calls()
 	}
 
 	t.Run("default commits after every message", func(t *testing.T) {
 		calls := run(t, false)
 
-		assert.Equal(t, len(messages), countCalls(calls, "store"))
+		assert.Equal(t, len(messages), helpers.CountCalls(calls, "store"))
 		// One commit per message, plus the unconditional final one.
-		assert.Equal(t, len(messages)+1, countCalls(calls, "commit"),
+		assert.Equal(t, len(messages)+1, helpers.CountCalls(calls, "commit"),
 			"the default cadence commits after every message")
 	})
 
@@ -74,12 +75,12 @@ func TestCommitCadence(t *testing.T) {
 
 		// The correctness half is untouched: every message still stores its
 		// offset, so the background committer has something true to publish.
-		assert.Equal(t, len(messages), countCalls(calls, "store"),
+		assert.Equal(t, len(messages), helpers.CountCalls(calls, "store"),
 			"storing must not depend on commit cadence")
 
 		// The whole point: no per-message commits. The one that remains is the
 		// unconditional commit on the way out, and it lands before the close.
-		assert.Equal(t, 1, countCalls(calls, "commit"),
+		assert.Equal(t, 1, helpers.CountCalls(calls, "commit"),
 			"interval mode must leave commit timing to librdkafka")
 		require.GreaterOrEqual(t, len(calls), 2)
 		assert.Equal(t, "close", calls[len(calls)-1])
@@ -92,17 +93,17 @@ func TestCommitCadence(t *testing.T) {
 // commit is conditional in the same way, and the final one is not.
 func TestCommitCadenceBatchMode(t *testing.T) {
 	messages := []*types.Message{
-		newTestMessage("topic", 0, 0, "msg-1"),
-		newTestMessage("topic", 0, 1, "msg-2"),
+		helpers.NewTestMessage("topic", 0, 0, "msg-1"),
+		helpers.NewTestMessage("topic", 0, 1, "msg-2"),
 	}
 
-	client := &recordingClient{autoCommit: true, messages: messages}
+	client := &helpers.RecordingClient{AutoCommit: true, Messages: messages}
 	batchHandler := func(ctx context.Context, batch *types.Batch) *types.Failure { return nil }
 
 	// Batch size equal to the message count, so the batch dispatches on its own
 	// and its commit is reached rather than skipped by the shutdown drop.
 	eng := engine.NewBatchEngine(
-		client, batchHandler, &mockStrategy{}, testLogger(), 10, len(messages), time.Minute,
+		client, batchHandler, &helpers.MockStrategy{}, helpers.TestLogger(), 10, len(messages), time.Minute,
 	)
 
 	ctx, cancel := context.WithCancel(context.Background())
@@ -112,42 +113,32 @@ func TestCommitCadenceBatchMode(t *testing.T) {
 	go func() { done <- eng.Start(ctx) }()
 
 	require.Eventually(t, func() bool {
-		return countCalls(client.calls(), "store") > 0
+		return helpers.CountCalls(client.Calls(), "store") > 0
 	}, 2*time.Second, 10*time.Millisecond, "batch never dispatched")
 
 	cancel()
 	require.NoError(t, <-done)
 
-	calls := client.calls()
-	assert.Equal(t, 1, countCalls(calls, "commit"),
+	calls := client.Calls()
+	assert.Equal(t, 1, helpers.CountCalls(calls, "commit"),
 		"the per-batch commit must be skipped in interval mode, leaving only the final one")
 	assert.Equal(t, "close", calls[len(calls)-1])
 	assert.Equal(t, "commit", calls[len(calls)-2])
 }
 
-func countCalls(calls []string, want string) int {
-	n := 0
-	for _, c := range calls {
-		if c == want {
-			n++
-		}
-	}
-	return n
-}
-
-// guard against the helper above silently matching nothing if the event names
-// in recordingClient are ever renamed.
+// TestRecordingClientEventNames guards against helpers.CountCalls silently
+// matching nothing if the event names in helpers.RecordingClient are ever renamed.
 func TestRecordingClientEventNames(t *testing.T) {
-	client := &recordingClient{messages: []*types.Message{newTestMessage("topic", 0, 0, "m")}}
+	client := &helpers.RecordingClient{Messages: []*types.Message{helpers.NewTestMessage("topic", 0, 0, "m")}}
 	handler := func(ctx context.Context, payload []byte) *types.Failure { return nil }
 
-	eng := engine.NewEngine(client, handler, &mockStrategy{}, testLogger(), 10)
+	eng := engine.NewEngine(client, handler, &helpers.MockStrategy{}, helpers.TestLogger(), 10)
 	ctx, cancel := context.WithTimeout(context.Background(), 300*time.Millisecond)
 	defer cancel()
 	require.NoError(t, eng.Start(ctx))
 
-	calls := client.calls()
+	calls := client.Calls()
 	for _, name := range []string{"store", "commit", "close"} {
-		assert.True(t, slices.Contains(calls, name), "recordingClient no longer records %q", name)
+		assert.True(t, slices.Contains(calls, name), "helpers.RecordingClient no longer records %q", name)
 	}
 }

@@ -10,6 +10,7 @@ import (
 	"github.com/easykafka/easykafka-go/internal/engine"
 	"github.com/easykafka/easykafka-go/internal/metadata"
 	"github.com/easykafka/easykafka-go/internal/types"
+	"github.com/easykafka/easykafka-go/tests/unit/helpers"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -117,12 +118,12 @@ func TestMessageFromContextIsEmptyInBatchMode(t *testing.T) {
 	}
 
 	messages := []*types.Message{
-		newTestMessage("topic", 0, 0, "a"),
-		newTestMessage("topic", 0, 1, "b"),
+		helpers.NewTestMessage("topic", 0, 0, "a"),
+		helpers.NewTestMessage("topic", 0, 1, "b"),
 	}
 
-	client := &mockKafkaClient{messages: messages}
-	eng := engine.NewBatchEngine(client, batchHandler, &mockStrategy{}, testLogger(), 100, 2, 5*time.Second)
+	client := &helpers.MockKafkaClient{Messages: messages}
+	eng := engine.NewBatchEngine(client, batchHandler, &helpers.MockStrategy{}, helpers.TestLogger(), 100, 2, 5*time.Second)
 
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 	defer cancel()

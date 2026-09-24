@@ -200,7 +200,7 @@ func TestAutoCommitFailureIsLogged(t *testing.T) {
 	cluster.CreateTopic(ctx, t, topic, 1)
 	cluster.ProduceMessages(ctx, t, topic, []string{"msg-1"})
 
-	logs := &syncBuffer{}
+	logs := &helpers.SyncBuffer{}
 	logger := zerolog.New(logs).Level(zerolog.DebugLevel)
 
 	const stallFor = 20 * time.Second
