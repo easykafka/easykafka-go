@@ -294,6 +294,52 @@ func (k *KafkaTestCluster) ProduceMessages(ctx context.Context, t *testing.T, to
 	t.Logf("Produced %d messages to topic %s", len(messages), topic)
 }
 
+// Record is a message to produce with ProduceRecords. A nil Partition lets the
+// producer choose.
+type Record struct {
+	Key       []byte
+	Value     []byte
+	Partition *int32
+}
+
+// ProduceRecords produces records — with keys, raw bytes and, optionally, a
+// fixed partition — and waits for delivery, in order.
+func (k *KafkaTestCluster) ProduceRecords(ctx context.Context, t *testing.T, topic string, records []Record) {
+	t.Helper()
+
+	producer, err := kfk.NewProducer(&kfk.ConfigMap{
+		"bootstrap.servers": k.Brokers[0],
+	})
+	if err != nil {
+		t.Fatalf("failed to create producer: %v", err)
+	}
+	defer producer.Close()
+
+	deliveryChan := make(chan kfk.Event, 1)
+
+	// One at a time, so the records land in the order given.
+	for i, r := range records {
+		partition := kfk.PartitionAny
+		if r.Partition != nil {
+			partition = *r.Partition
+		}
+		err := producer.Produce(&kfk.Message{
+			TopicPartition: kfk.TopicPartition{Topic: &topic, Partition: partition},
+			Key:            r.Key,
+			Value:          r.Value,
+		}, deliveryChan)
+		if err != nil {
+			t.Fatalf("failed to produce record %d: %v", i, err)
+		}
+		m := (<-deliveryChan).(*kfk.Message)
+		if m.TopicPartition.Error != nil {
+			t.Fatalf("delivery failed for record %d: %v", i, m.TopicPartition.Error)
+		}
+	}
+
+	t.Logf("Produced %d records to topic %s", len(records), topic)
+}
+
 // ConsumeMessages reads up to expectedCount messages from a topic within a timeout.
 // Returns the raw Kafka messages read from the topic.
 func (k *KafkaTestCluster) ConsumeMessages(ctx context.Context, t *testing.T, topic, group string, expectedCount int, timeout time.Duration) []*kfk.Message {
