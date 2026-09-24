@@ -29,7 +29,7 @@ func TestShutdownStopsFetching(t *testing.T) {
 		pollCount: &pollCount,
 	}
 
-	handler := func(ctx context.Context, payload []byte) error {
+	handler := func(ctx context.Context, payload []byte) *types.Failure {
 		return nil
 	}
 	strat := &mockStrategy{}
@@ -84,7 +84,7 @@ func TestShutdownWaitsForInFlightHandler(t *testing.T) {
 		},
 	}
 
-	handler := func(ctx context.Context, payload []byte) error {
+	handler := func(ctx context.Context, payload []byte) *types.Failure {
 		close(handlerStarted)
 		// Simulate slow processing
 		time.Sleep(500 * time.Millisecond)
@@ -137,7 +137,7 @@ func TestShutdownReturnsAfterFinalCommitAndClose(t *testing.T) {
 		},
 	}
 
-	handler := func(ctx context.Context, payload []byte) error { return nil }
+	handler := func(ctx context.Context, payload []byte) *types.Failure { return nil }
 	strat := &mockStrategy{}
 
 	eng := engine.NewEngine(client, handler, strat, testLogger(), 50)
@@ -184,12 +184,12 @@ func TestShutdownContextCancelsHandlerContext(t *testing.T) {
 		firstMessage: newTestMessage("topic", 0, 0, "ctx-msg"),
 	}
 
-	handler := func(ctx context.Context, payload []byte) error {
+	handler := func(ctx context.Context, payload []byte) *types.Failure {
 		close(handlerStarted)
 		// Wait for context cancellation
 		<-ctx.Done()
 		handlerCtxCancelled.Store(true)
-		return ctx.Err()
+		return &types.Failure{Err: ctx.Err()}
 	}
 	strat := &mockStrategy{}
 
@@ -232,7 +232,7 @@ func TestShutdownClosesAdapter(t *testing.T) {
 		},
 	}
 
-	handler := func(ctx context.Context, payload []byte) error { return nil }
+	handler := func(ctx context.Context, payload []byte) *types.Failure { return nil }
 	strat := &mockStrategy{}
 
 	eng := engine.NewEngine(client, handler, strat, testLogger(), 50)
@@ -268,9 +268,9 @@ func TestShutdownBatchModeDropsBuffered(t *testing.T) {
 
 	client := &mockKafkaClient{messages: messages}
 
-	batchHandler := func(ctx context.Context, payloads [][]byte) error {
+	batchHandler := func(ctx context.Context, batch *types.Batch) *types.Failure {
 		mu.Lock()
-		dispatched += len(payloads)
+		dispatched += batch.Len()
 		mu.Unlock()
 		return nil
 	}

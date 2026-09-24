@@ -61,8 +61,8 @@ func TestRebalanceDoesNotCommitUnprocessedBatch(t *testing.T) {
 			easykafka.WithTopic(topic),
 			easykafka.WithBrokers(cluster.Brokers...),
 			easykafka.WithConsumerGroup(group),
-			easykafka.WithBatchHandler(func(_ context.Context, batch [][]byte) error {
-				dispatched.Add(int32(len(batch)))
+			easykafka.WithBatchHandler(func(_ context.Context, batch *easykafka.Batch) *easykafka.Failure {
+				dispatched.Add(int32(batch.Len()))
 				return nil
 			}),
 			easykafka.WithBatchSize(1000),
@@ -165,7 +165,7 @@ func TestRedeliveryResumesAtExactOffset(t *testing.T) {
 		easykafka.WithTopic(topic),
 		easykafka.WithBrokers(cluster.Brokers...),
 		easykafka.WithConsumerGroup(group),
-		easykafka.WithHandler(func(_ context.Context, payload []byte) error {
+		easykafka.WithHandler(func(_ context.Context, payload []byte) *easykafka.Failure {
 			firstRun = append(firstRun, string(payload))
 			handled := len(firstRun)
 
@@ -197,7 +197,7 @@ func TestRedeliveryResumesAtExactOffset(t *testing.T) {
 		easykafka.WithTopic(topic),
 		easykafka.WithBrokers(cluster.Brokers...),
 		easykafka.WithConsumerGroup(group),
-		easykafka.WithHandler(func(_ context.Context, payload []byte) error {
+		easykafka.WithHandler(func(_ context.Context, payload []byte) *easykafka.Failure {
 			secondRun = append(secondRun, string(payload))
 			handled := len(secondRun)
 

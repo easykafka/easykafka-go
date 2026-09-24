@@ -46,7 +46,7 @@ func TestBrokerReconnectionAfterRestart(t *testing.T) {
 	var mu sync.Mutex
 	var receivedPayloads []string
 
-	handler := func(ctx context.Context, payload []byte) error {
+	handler := func(ctx context.Context, payload []byte) *easykafka.Failure {
 		mu.Lock()
 		defer mu.Unlock()
 		receivedPayloads = append(receivedPayloads, string(payload))
@@ -174,7 +174,7 @@ func TestConsumerSurvivesTransientErrors(t *testing.T) {
 	var mu sync.Mutex
 	var received []string
 
-	handler := func(ctx context.Context, payload []byte) error {
+	handler := func(ctx context.Context, payload []byte) *easykafka.Failure {
 		mu.Lock()
 		received = append(received, string(payload))
 		mu.Unlock()

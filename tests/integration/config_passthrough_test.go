@@ -40,7 +40,7 @@ func TestKafkaConfigPassthrough(t *testing.T) {
 	var mu sync.Mutex
 	var receivedPayloads []string
 
-	handler := func(ctx context.Context, payload []byte) error {
+	handler := func(ctx context.Context, payload []byte) *easykafka.Failure {
 		mu.Lock()
 		receivedPayloads = append(receivedPayloads, string(payload))
 		t.Logf("handler received message: %s", string(payload))
@@ -129,7 +129,7 @@ func TestKafkaConfigSessionTimeout(t *testing.T) {
 	var mu sync.Mutex
 	var receivedPayloads []string
 
-	handler := func(ctx context.Context, payload []byte) error {
+	handler := func(ctx context.Context, payload []byte) *easykafka.Failure {
 		mu.Lock()
 		receivedPayloads = append(receivedPayloads, string(payload))
 		mu.Unlock()
@@ -219,7 +219,7 @@ func TestKafkaConfigManagedKeyRejection(t *testing.T) {
 				easykafka.WithTopic("test-topic"),
 				easykafka.WithBrokers("localhost:9092"),
 				easykafka.WithConsumerGroup("test-group"),
-				easykafka.WithHandler(func(ctx context.Context, payload []byte) error {
+				easykafka.WithHandler(func(ctx context.Context, payload []byte) *easykafka.Failure {
 					return nil
 				}),
 				easykafka.WithKafkaConfig(map[string]any{

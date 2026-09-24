@@ -45,7 +45,7 @@ func TestAtLeastOnceDelivery(t *testing.T) {
 	var mu sync.Mutex
 	var received []string
 
-	handler := func(ctx context.Context, payload []byte) error {
+	handler := func(ctx context.Context, payload []byte) *easykafka.Failure {
 		mu.Lock()
 		received = append(received, string(payload))
 		mu.Unlock()
@@ -134,7 +134,7 @@ func TestAtLeastOnceAfterBrokerRestart(t *testing.T) {
 	var mu sync.Mutex
 	var received []string
 
-	handler := func(ctx context.Context, payload []byte) error {
+	handler := func(ctx context.Context, payload []byte) *easykafka.Failure {
 		mu.Lock()
 		received = append(received, string(payload))
 		mu.Unlock()
@@ -238,13 +238,13 @@ func TestAtLeastOnceWithHandlerErrors(t *testing.T) {
 	var successPayloads []string
 	var errorPayloads []string
 
-	handler := func(ctx context.Context, payload []byte) error {
+	handler := func(ctx context.Context, payload []byte) *easykafka.Failure {
 		msg := string(payload)
 		if msg == "fail-msg" {
 			mu.Lock()
 			errorPayloads = append(errorPayloads, msg)
 			mu.Unlock()
-			return fmt.Errorf("simulated failure for %s", msg)
+			return &easykafka.Failure{Err: fmt.Errorf("simulated failure for %s", msg)}
 		}
 		mu.Lock()
 		successPayloads = append(successPayloads, msg)

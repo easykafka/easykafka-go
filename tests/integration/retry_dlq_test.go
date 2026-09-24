@@ -2,7 +2,6 @@ package integration
 
 import (
 	"context"
-	"encoding/json"
 	"fmt"
 	"sync"
 	"testing"
@@ -45,11 +44,11 @@ func TestRetryStrategyWritesToRetryTopic(t *testing.T) {
 	var mu sync.Mutex
 	var handlerCalls int
 
-	handler := func(ctx context.Context, payload []byte) error {
+	handler := func(ctx context.Context, payload []byte) *easykafka.Failure {
 		mu.Lock()
 		handlerCalls++
 		mu.Unlock()
-		return fmt.Errorf("simulated failure for: %s", string(payload))
+		return &easykafka.Failure{Err: fmt.Errorf("simulated failure for: %s", string(payload))}
 	}
 
 	retryStrategy, err := easykafka.NewRetryStrategy(
@@ -141,7 +140,7 @@ func TestRetryStrategyWritesToRetryTopic(t *testing.T) {
 		easykafka.WithTopic(retryTopic),
 		easykafka.WithBrokers(cluster.Brokers...),
 		easykafka.WithConsumerGroup(fmt.Sprintf("retry-reader-%d", time.Now().UnixNano())),
-		easykafka.WithHandler(func(handlerCtx context.Context, _ []byte) error {
+		easykafka.WithHandler(func(handlerCtx context.Context, _ []byte) *easykafka.Failure {
 			if msg, ok := easykafka.MessageFromContext(handlerCtx); ok {
 				gotMeta = true
 				gotAttempt = easykafka.GetRetryAttempt(msg)
@@ -175,7 +174,8 @@ func TestRetryStrategyWritesToRetryTopic(t *testing.T) {
 }
 
 // TestRetryStrategyWritesToDLQAfterMaxAttempts verifies that when max retry attempts
-// are exhausted, the message is written to the DLQ topic with a JSON envelope.
+// are exhausted, the message is written to the DLQ topic as it was consumed, with
+// the failure described in headers.
 func TestRetryStrategyWritesToDLQAfterMaxAttempts(t *testing.T) {
 	t.Log("TestRetryStrategyWritesToDLQAfterMaxAttempts started")
 	defer t.Log("TestRetryStrategyWritesToDLQAfterMaxAttempts finished")
@@ -199,17 +199,17 @@ func TestRetryStrategyWritesToDLQAfterMaxAttempts(t *testing.T) {
 	cluster.CreateTopic(ctx, t, retryTopic, 1)
 	cluster.CreateTopic(ctx, t, dlqTopic, 1)
 
-	cluster.ProduceMessages(ctx, t, sourceTopic, []string{`{"orderId":"DLQ-001"}`})
+	body := `{"orderId":"DLQ-001"}`
+	cluster.ProduceMessages(ctx, t, sourceTopic, []string{body})
 
-	handler := func(ctx context.Context, payload []byte) error {
-		return fmt.Errorf("permanent failure")
+	handler := func(ctx context.Context, payload []byte) *easykafka.Failure {
+		return &easykafka.Failure{Err: fmt.Errorf("permanent failure")}
 	}
 
 	retryStrategy, err := easykafka.NewRetryStrategy(
 		easykafka.WithRetryTopic(retryTopic),
 		easykafka.WithDLQTopic(dlqTopic),
 		easykafka.WithMaxAttempts(1),
-		easykafka.WithFailedMessagePayloadEncoding(easykafka.PayloadEncodingJSON),
 	)
 	require.NoError(t, err)
 
@@ -242,19 +242,14 @@ func TestRetryStrategyWritesToDLQAfterMaxAttempts(t *testing.T) {
 
 	require.Len(t, dlqMsgs, 1, "expected 1 message in DLQ")
 
-	var envelope map[string]any
-	err = json.Unmarshal(dlqMsgs[0].Value, &envelope)
-	require.NoError(t, err, "DLQ message should be valid JSON")
+	assert.Equal(t, body, string(dlqMsgs[0].Value), "DLQ body should be the consumed payload, byte for byte")
 
-	assert.Equal(t, sourceTopic, envelope["originalTopic"], "originalTopic should match source")
-	assert.Contains(t, envelope["error"], "permanent failure", "error should contain handler error")
-	assert.Contains(t, envelope["payload"], "DLQ-001", "payload should contain original message")
-	assert.Equal(t, "json", envelope["payloadEncoding"], "payloadEncoding should be json")
-	assert.NotNil(t, envelope["timestamp"], "timestamp should be set")
-	assert.NotNil(t, envelope["attemptCount"], "attemptCount should be set")
-
-	origTopic := helpers.GetHeader(dlqMsgs[0], metadata.HeaderOriginalTopic)
-	assert.Equal(t, sourceTopic, origTopic, "DLQ header original topic should match source")
+	assert.Equal(t, sourceTopic, helpers.GetHeader(dlqMsgs[0], metadata.HeaderOriginalTopic))
+	assert.Equal(t, "0", helpers.GetHeader(dlqMsgs[0], metadata.HeaderOriginalPartition))
+	assert.Equal(t, "0", helpers.GetHeader(dlqMsgs[0], metadata.HeaderOriginalOffset))
+	assert.Contains(t, helpers.GetHeader(dlqMsgs[0], metadata.HeaderErrorMessage), "permanent failure")
+	assert.Equal(t, "1", helpers.GetHeader(dlqMsgs[0], metadata.HeaderRetryAttempt))
+	assert.NotEmpty(t, helpers.GetHeader(dlqMsgs[0], metadata.HeaderFailedAt))
 
 	t.Logf("DLQ message: %s", string(dlqMsgs[0].Value))
 }

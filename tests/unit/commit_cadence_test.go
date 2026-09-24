@@ -35,7 +35,7 @@ func TestCommitCadence(t *testing.T) {
 		t.Helper()
 
 		client := &recordingClient{autoCommit: autoCommit, messages: messages}
-		handler := func(ctx context.Context, payload []byte) error { return nil }
+		handler := func(ctx context.Context, payload []byte) *types.Failure { return nil }
 
 		eng := engine.NewEngine(client, handler, &mockStrategy{}, testLogger(), 10)
 
@@ -97,7 +97,7 @@ func TestCommitCadenceBatchMode(t *testing.T) {
 	}
 
 	client := &recordingClient{autoCommit: true, messages: messages}
-	batchHandler := func(ctx context.Context, payloads [][]byte) error { return nil }
+	batchHandler := func(ctx context.Context, batch *types.Batch) *types.Failure { return nil }
 
 	// Batch size equal to the message count, so the batch dispatches on its own
 	// and its commit is reached rather than skipped by the shutdown drop.
@@ -139,7 +139,7 @@ func countCalls(calls []string, want string) int {
 // in recordingClient are ever renamed.
 func TestRecordingClientEventNames(t *testing.T) {
 	client := &recordingClient{messages: []*types.Message{newTestMessage("topic", 0, 0, "m")}}
-	handler := func(ctx context.Context, payload []byte) error { return nil }
+	handler := func(ctx context.Context, payload []byte) *types.Failure { return nil }
 
 	eng := engine.NewEngine(client, handler, &mockStrategy{}, testLogger(), 10)
 	ctx, cancel := context.WithTimeout(context.Background(), 300*time.Millisecond)

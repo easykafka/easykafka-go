@@ -18,11 +18,11 @@ import (
 // Helpers
 // =============================================================================
 
-func noopHandler(ctx context.Context, payload []byte) error {
+func noopHandler(ctx context.Context, payload []byte) *easykafka.Failure {
 	return nil
 }
 
-func noopBatchHandler(ctx context.Context, payloads [][]byte) error {
+func noopBatchHandler(ctx context.Context, batch *easykafka.Batch) *easykafka.Failure {
 	return nil
 }
 

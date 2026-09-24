@@ -55,7 +55,7 @@ func TestRebalanceDuplicateProcessingAcceptable(t *testing.T) {
 	var allReceived []string
 
 	makeHandler := func(id string) easykafka.Handler {
-		return func(ctx context.Context, payload []byte) error {
+		return func(ctx context.Context, payload []byte) *easykafka.Failure {
 			mu.Lock()
 			t.Logf("Consumer %s received: %s", id, payload)
 			allReceived = append(allReceived, string(payload))
@@ -183,7 +183,7 @@ func TestRebalanceOnConsumerLeave(t *testing.T) {
 	// Counter used to stop consumer 1 after a few messages
 	var c1Count atomic.Int32
 
-	c1Handler := func(ctx context.Context, payload []byte) error {
+	c1Handler := func(ctx context.Context, payload []byte) *easykafka.Failure {
 		c1Count.Add(1)
 		mu.Lock()
 		t.Logf("Consumer 1 received: %s", payload)
@@ -192,7 +192,7 @@ func TestRebalanceOnConsumerLeave(t *testing.T) {
 		return nil
 	}
 
-	c2Handler := func(ctx context.Context, payload []byte) error {
+	c2Handler := func(ctx context.Context, payload []byte) *easykafka.Failure {
 		mu.Lock()
 		t.Logf("Consumer 2 received: %s", payload)
 		allReceived = append(allReceived, string(payload))
@@ -325,7 +325,7 @@ func TestRebalanceCommitsBeforeRevocation(t *testing.T) {
 	var mu sync.Mutex
 	var c1Received []string
 
-	c1Handler := func(ctx context.Context, payload []byte) error {
+	c1Handler := func(ctx context.Context, payload []byte) *easykafka.Failure {
 		mu.Lock()
 		c1Received = append(c1Received, string(payload))
 		mu.Unlock()
@@ -358,7 +358,7 @@ func TestRebalanceCommitsBeforeRevocation(t *testing.T) {
 	// Phase 2: consumer 2 joins the same group and should NOT re-receive
 	// messages already committed by consumer 1 (beyond at-least-once margin)
 	var c2Received []string
-	c2Handler := func(ctx context.Context, payload []byte) error {
+	c2Handler := func(ctx context.Context, payload []byte) *easykafka.Failure {
 		mu.Lock()
 		c2Received = append(c2Received, string(payload))
 		mu.Unlock()
@@ -436,7 +436,7 @@ func TestRebalanceWithSlowHandler(t *testing.T) {
 	var c1Count atomic.Int32
 
 	// Consumer 1 handler: deliberately slow on the first few messages
-	c1Handler := func(ctx context.Context, payload []byte) error {
+	c1Handler := func(ctx context.Context, payload []byte) *easykafka.Failure {
 		n := c1Count.Add(1)
 		if n <= 3 {
 			time.Sleep(500 * time.Millisecond) // simulate slow processing
@@ -447,7 +447,7 @@ func TestRebalanceWithSlowHandler(t *testing.T) {
 		return nil
 	}
 
-	c2Handler := func(ctx context.Context, payload []byte) error {
+	c2Handler := func(ctx context.Context, payload []byte) *easykafka.Failure {
 		mu.Lock()
 		allReceived = append(allReceived, string(payload))
 		mu.Unlock()
@@ -555,7 +555,7 @@ func TestRebalanceNoDataLossWithDirectConsumer(t *testing.T) {
 	// Use the library consumer to process and commit all messages
 	var mu sync.Mutex
 	var received []string
-	handler := func(ctx context.Context, payload []byte) error {
+	handler := func(ctx context.Context, payload []byte) *easykafka.Failure {
 		mu.Lock()
 		t.Logf("consumer 1 received: %s", payload)
 		received = append(received, string(payload))

@@ -60,16 +60,19 @@ func TestPublicAccessorsReadRetryHeaders(t *testing.T) {
 		Payload:   []byte("body"),
 	}
 
-	// Built by the library, read back through the public API.
+	// Built by the library from what a handler reported, read back through the
+	// public API — the round trip a resume point and an error code exist for.
+	failure := easykafka.Failure{Err: errors.New("db connection failed"), Step: 2, Code: "write_failed"}
 	republished := &easykafka.Message{
 		Topic:   "orders.retry",
-		Headers: metadata.BuildRetryHeaders(original, 2, retryTime, errors.New("db connection failed")),
+		Headers: metadata.BuildRetryHeaders(original, 2, retryTime, failure),
 	}
 
 	assert.Equal(t, 2, easykafka.GetRetryAttempt(republished))
 	assert.Equal(t, retryTime, easykafka.GetRetryTime(republished).UTC())
 	assert.Equal(t, "orders", easykafka.GetOriginalTopic(republished))
-	assert.Equal(t, int32(0), easykafka.GetRetryStep(republished))
+	assert.Equal(t, int32(2), easykafka.GetRetryStep(republished))
+	assert.Equal(t, "write_failed", easykafka.GetErrorCode(republished))
 }
 
 // TestPublicAccessorsOnFirstDelivery pins the zero values a handler branches on
@@ -80,12 +83,15 @@ func TestPublicAccessorsOnFirstDelivery(t *testing.T) {
 	assert.Equal(t, 0, easykafka.GetRetryAttempt(msg), "a first delivery has no attempts behind it")
 	assert.True(t, easykafka.GetRetryTime(msg).IsZero())
 	assert.Empty(t, easykafka.GetOriginalTopic(msg))
+	assert.Zero(t, easykafka.GetRetryStep(msg))
+	assert.Empty(t, easykafka.GetErrorCode(msg))
 
 	// Nil is tolerated rather than panicking: MessageFromContext returns
 	// (nil, false) in batch mode, and a caller may not check ok.
 	assert.Equal(t, 0, easykafka.GetRetryAttempt(nil))
 	assert.True(t, easykafka.GetRetryTime(nil).IsZero())
 	assert.Empty(t, easykafka.GetOriginalTopic(nil))
+	assert.Empty(t, easykafka.GetErrorCode(nil))
 }
 
 // TestMessageFromContextIsEmptyInBatchMode pins a documented limitation rather
@@ -94,9 +100,9 @@ func TestPublicAccessorsOnFirstDelivery(t *testing.T) {
 //
 // This is deliberate. Attaching one message of the batch would be worse than
 // attaching none — the accessor would report true with metadata describing a
-// single arbitrary element. Real per-message metadata for batches means changing
-// BatchHandler's signature away from [][]byte, which is separate work. If that
-// ever lands, this test should be replaced, not deleted quietly.
+// single arbitrary element. Nor is anything missing: a batch handler reads each
+// message's metadata from item.Message(), which a shared context could not do
+// better.
 func TestMessageFromContextIsEmptyInBatchMode(t *testing.T) {
 	var (
 		sawOK       bool
@@ -104,9 +110,9 @@ func TestMessageFromContextIsEmptyInBatchMode(t *testing.T) {
 		payloadSeen int
 	)
 
-	batchHandler := func(ctx context.Context, payloads [][]byte) error {
+	batchHandler := func(ctx context.Context, batch *types.Batch) *types.Failure {
 		sawMsg, sawOK = easykafka.MessageFromContext(ctx)
-		payloadSeen = len(payloads)
+		payloadSeen = batch.Len()
 		return nil
 	}
 

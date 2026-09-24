@@ -53,7 +53,7 @@ func TestAutoCommitEveryWidensTheDuplicateWindow(t *testing.T) {
 		easykafka.WithTopic(topic),
 		easykafka.WithBrokers(cluster.Brokers...),
 		easykafka.WithConsumerGroup(group),
-		easykafka.WithHandler(func(context.Context, []byte) error {
+		easykafka.WithHandler(func(context.Context, []byte) *easykafka.Failure {
 			handled.Add(1)
 			return nil
 		}),
@@ -109,7 +109,7 @@ func TestAutoCommitEveryCleanShutdownLeavesNothingToReplay(t *testing.T) {
 			easykafka.WithTopic(topic),
 			easykafka.WithBrokers(cluster.Brokers...),
 			easykafka.WithConsumerGroup(group),
-			easykafka.WithHandler(func(context.Context, []byte) error {
+			easykafka.WithHandler(func(context.Context, []byte) *easykafka.Failure {
 				handled.Add(1)
 				return nil
 			}),
@@ -222,7 +222,7 @@ func TestAutoCommitFailureIsLogged(t *testing.T) {
 			"session.timeout.ms":    6000,
 			"heartbeat.interval.ms": 2000,
 		}),
-		easykafka.WithHandler(func(handlerCtx context.Context, _ []byte) error {
+		easykafka.WithHandler(func(handlerCtx context.Context, _ []byte) *easykafka.Failure {
 			mu.Lock()
 			deliveries++
 			first := deliveries == 1

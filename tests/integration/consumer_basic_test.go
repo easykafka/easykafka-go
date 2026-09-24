@@ -48,7 +48,7 @@ func TestBasicConsumption(t *testing.T) {
 	var receivedOffsets []int64
 
 	// Set up handler
-	handler := func(ctx context.Context, payload []byte) error {
+	handler := func(ctx context.Context, payload []byte) *easykafka.Failure {
 		// The public accessor, so this test guards the re-export rather than
 		// reaching past it into internal/metadata.
 		msg, ok := easykafka.MessageFromContext(ctx)
@@ -151,10 +151,10 @@ func TestBasicConsumptionWithErrorStrategy(t *testing.T) {
 	var mu sync.Mutex
 	var processedPayloads []string
 
-	handler := func(ctx context.Context, payload []byte) error {
+	handler := func(ctx context.Context, payload []byte) *easykafka.Failure {
 		msg := string(payload)
 		if msg == "bad-msg" {
-			return fmt.Errorf("simulated processing failure")
+			return &easykafka.Failure{Err: fmt.Errorf("simulated processing failure")}
 		}
 		mu.Lock()
 		processedPayloads = append(processedPayloads, msg)
@@ -238,7 +238,7 @@ func TestBasicConsumptionPanicRecovery(t *testing.T) {
 	var mu sync.Mutex
 	var receivedPayloads []string
 
-	handler := func(ctx context.Context, payload []byte) error {
+	handler := func(ctx context.Context, payload []byte) *easykafka.Failure {
 		if string(payload) == "panic-me" {
 			panic("test panic!")
 		}

@@ -102,7 +102,7 @@ func TestCommitFailureDuringGroupLossIsTolerated(t *testing.T) {
 			"session.timeout.ms":    6000,
 			"heartbeat.interval.ms": 2000,
 		}),
-		easykafka.WithHandler(func(handlerCtx context.Context, _ []byte) error {
+		easykafka.WithHandler(func(handlerCtx context.Context, _ []byte) *easykafka.Failure {
 			mu.Lock()
 			handledCount++
 			first := handledCount == 1

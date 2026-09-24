@@ -30,7 +30,7 @@ func TestStoreFailureStopsConsumer(t *testing.T) {
 
 	var handled int
 	var mu sync.Mutex
-	handler := func(ctx context.Context, payload []byte) error {
+	handler := func(ctx context.Context, payload []byte) *types.Failure {
 		mu.Lock()
 		handled++
 		mu.Unlock()
@@ -70,7 +70,7 @@ func TestStoreFailureStopsConsumer(t *testing.T) {
 func TestRevokedPartitionDoesNotStopConsumer(t *testing.T) {
 	var handled int
 	var mu sync.Mutex
-	handler := func(ctx context.Context, payload []byte) error {
+	handler := func(ctx context.Context, payload []byte) *types.Failure {
 		mu.Lock()
 		handled++
 		mu.Unlock()
@@ -108,7 +108,7 @@ func TestRevokedPartitionDoesNotStopConsumer(t *testing.T) {
 // failure, a failed commit loses nothing, because the offset stays in the store
 // and the next commit covers it.
 func TestCommitFailureDoesNotStopConsumer(t *testing.T) {
-	handler := func(ctx context.Context, payload []byte) error { return nil }
+	handler := func(ctx context.Context, payload []byte) *types.Failure { return nil }
 
 	messages := []*types.Message{
 		newTestMessage("test-topic", 0, 0, "msg-1"),
@@ -140,7 +140,7 @@ func TestCommitFailureDoesNotStopConsumer(t *testing.T) {
 func TestBatchStoreFailureStoresRemainingPartitions(t *testing.T) {
 	storeErr := errors.New("offsets store failed")
 
-	batchHandler := func(ctx context.Context, payloads [][]byte) error { return nil }
+	batchHandler := func(ctx context.Context, batch *types.Batch) *types.Failure { return nil }
 
 	// One batch spanning three partitions: 0 fails outright, 1 was revoked,
 	// 2 is still ours and must still be stored.
@@ -185,7 +185,7 @@ func TestBatchStoreFailureStoresRemainingPartitions(t *testing.T) {
 // TestBatchRevokedPartitionOnlyDoesNotStopConsumer verifies that a batch whose
 // only store failure is a revoked partition keeps the consumer running.
 func TestBatchRevokedPartitionOnlyDoesNotStopConsumer(t *testing.T) {
-	batchHandler := func(ctx context.Context, payloads [][]byte) error { return nil }
+	batchHandler := func(ctx context.Context, batch *types.Batch) *types.Failure { return nil }
 
 	messages := []*types.Message{
 		newTestMessage("test-topic", 0, 10, "p0"),
@@ -247,9 +247,9 @@ func TestBatchRevokedPartitionOnlyDoesNotStopConsumer(t *testing.T) {
 func TestRevokeDropsBatchBuffer(t *testing.T) {
 	var dispatched int
 	var mu sync.Mutex
-	batchHandler := func(ctx context.Context, payloads [][]byte) error {
+	batchHandler := func(ctx context.Context, batch *types.Batch) *types.Failure {
 		mu.Lock()
-		dispatched += len(payloads)
+		dispatched += batch.Len()
 		mu.Unlock()
 		return nil
 	}

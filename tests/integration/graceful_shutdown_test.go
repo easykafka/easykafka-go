@@ -45,7 +45,7 @@ func TestGracefulShutdownCompletesInFlight(t *testing.T) {
 	var processedPayloads []string
 	handlerStarted := make(chan struct{}, 3)
 
-	handler := func(ctx context.Context, payload []byte) error {
+	handler := func(ctx context.Context, payload []byte) *easykafka.Failure {
 		handlerStarted <- struct{}{}
 		// Simulate some processing time
 		time.Sleep(200 * time.Millisecond)
@@ -128,7 +128,7 @@ func TestGracefulShutdownNoNewMessages(t *testing.T) {
 	var received []string
 	beforeDone := make(chan struct{})
 
-	handler := func(ctx context.Context, payload []byte) error {
+	handler := func(ctx context.Context, payload []byte) *easykafka.Failure {
 		mu.Lock()
 		received = append(received, string(payload))
 		count := len(received)
@@ -229,9 +229,9 @@ func TestGracefulShutdownBatchBufferIsRedelivered(t *testing.T) {
 		easykafka.WithTopic(topic),
 		easykafka.WithBrokers(cluster.Brokers...),
 		easykafka.WithConsumerGroup(group),
-		easykafka.WithBatchHandler(func(ctx context.Context, batch [][]byte) error {
+		easykafka.WithBatchHandler(func(ctx context.Context, batch *easykafka.Batch) *easykafka.Failure {
 			mu.Lock()
-			firstDispatched += len(batch)
+			firstDispatched += batch.Len()
 			mu.Unlock()
 			return nil
 		}),
@@ -274,11 +274,11 @@ func TestGracefulShutdownBatchBufferIsRedelivered(t *testing.T) {
 		easykafka.WithTopic(topic),
 		easykafka.WithBrokers(cluster.Brokers...),
 		easykafka.WithConsumerGroup(group),
-		easykafka.WithBatchHandler(func(ctx context.Context, batch [][]byte) error {
+		easykafka.WithBatchHandler(func(ctx context.Context, batch *easykafka.Batch) *easykafka.Failure {
 			mu2.Lock()
 			defer mu2.Unlock()
-			for _, p := range batch {
-				received = append(received, string(p))
+			for _, item := range batch.Items() {
+				received = append(received, string(item.Message().Payload))
 			}
 			if len(received) == len(payloads) {
 				close(allReceived)

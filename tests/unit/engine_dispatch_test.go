@@ -202,13 +202,14 @@ type mockStrategy struct {
 
 type handleCall struct {
 	Msgs       []*types.Message
-	HandlerErr error
+	HandlerErr error // Failure.Err, kept separately for brevity in assertions
+	Failure    types.Failure
 }
 
-func (s *mockStrategy) HandleError(ctx context.Context, msgs []*types.Message, handlerErr error) error {
+func (s *mockStrategy) HandleError(ctx context.Context, msgs []*types.Message, f types.Failure) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	s.handleCalls = append(s.handleCalls, handleCall{Msgs: msgs, HandlerErr: handlerErr})
+	s.handleCalls = append(s.handleCalls, handleCall{Msgs: msgs, HandlerErr: f.Err, Failure: f})
 	return s.returnErr
 }
 
@@ -247,7 +248,7 @@ func TestEngineDispatchSuccess(t *testing.T) {
 	var receivedPayloads []string
 	var mu sync.Mutex
 
-	handler := func(ctx context.Context, payload []byte) error {
+	handler := func(ctx context.Context, payload []byte) *types.Failure {
 		mu.Lock()
 		defer mu.Unlock()
 		receivedPayloads = append(receivedPayloads, string(payload))
@@ -298,9 +299,9 @@ func TestEngineDispatchSuccess(t *testing.T) {
 func TestEngineDispatchHandlerError(t *testing.T) {
 	handlerErr := errors.New("processing failed")
 
-	handler := func(ctx context.Context, payload []byte) error {
+	handler := func(ctx context.Context, payload []byte) *types.Failure {
 		if string(payload) == "bad-msg" {
-			return handlerErr
+			return &types.Failure{Err: handlerErr}
 		}
 		return nil
 	}
@@ -341,8 +342,8 @@ func TestEngineDispatchHandlerError(t *testing.T) {
 func TestEngineDispatchStrategyFatal(t *testing.T) {
 	strategyErr := errors.New("fatal: must stop")
 
-	handler := func(ctx context.Context, payload []byte) error {
-		return errors.New("handler error")
+	handler := func(ctx context.Context, payload []byte) *types.Failure {
+		return &types.Failure{Err: errors.New("handler error")}
 	}
 
 	messages := []*types.Message{
@@ -375,7 +376,7 @@ func TestEngineDispatchStrategyFatal(t *testing.T) {
 // TestEngineDispatchPanicRecovery verifies that handler panics are recovered
 // and treated as errors.
 func TestEngineDispatchPanicRecovery(t *testing.T) {
-	handler := func(ctx context.Context, payload []byte) error {
+	handler := func(ctx context.Context, payload []byte) *types.Failure {
 		if string(payload) == "panic-msg" {
 			panic("unexpected crash!")
 		}
@@ -420,7 +421,7 @@ func TestEngineContextCancellation(t *testing.T) {
 
 	ctx, cancel := context.WithCancel(context.Background())
 
-	handler := func(ctx context.Context, payload []byte) error {
+	handler := func(ctx context.Context, payload []byte) *types.Failure {
 		mu.Lock()
 		callCount++
 		count := callCount
@@ -459,7 +460,7 @@ func TestEngineConnectError(t *testing.T) {
 	client := &mockKafkaClient{connectErr: errors.New("connection refused")}
 	strat := &mockStrategy{}
 
-	handler := func(ctx context.Context, payload []byte) error { return nil }
+	handler := func(ctx context.Context, payload []byte) *types.Failure { return nil }
 
 	eng := engine.NewEngine(client, handler, strat, testLogger(), 100)
 
@@ -474,7 +475,7 @@ func TestEngineSubscribeError(t *testing.T) {
 	client := &mockKafkaClient{subscribeErr: errors.New("subscription failed")}
 	strat := &mockStrategy{}
 
-	handler := func(ctx context.Context, payload []byte) error { return nil }
+	handler := func(ctx context.Context, payload []byte) *types.Failure { return nil }
 
 	eng := engine.NewEngine(client, handler, strat, testLogger(), 100)
 
@@ -533,7 +534,7 @@ func (f *fatalPollClient) Close(ctx context.Context) error {
 func TestEnginePollError(t *testing.T) {
 	strat := &mockStrategy{}
 
-	handler := func(ctx context.Context, payload []byte) error { return nil }
+	handler := func(ctx context.Context, payload []byte) *types.Failure { return nil }
 
 	// Use a client that returns an error on second poll
 	fatalClient := &fatalPollClient{
@@ -556,7 +557,7 @@ func TestEnginePollError(t *testing.T) {
 func TestEngineMessageContext(t *testing.T) {
 	var capturedMsg *types.Message
 
-	handler := func(ctx context.Context, payload []byte) error {
+	handler := func(ctx context.Context, payload []byte) *types.Failure {
 		// Deliberately the public accessor, not internal/metadata: this test is
 		// the guard that the re-export in handler.go stays.
 		msg, ok := easykafka.MessageFromContext(ctx)
@@ -600,7 +601,7 @@ func TestEngineDoubleStartError(t *testing.T) {
 	client := &mockKafkaClient{}
 	strat := &mockStrategy{}
 
-	handler := func(ctx context.Context, payload []byte) error { return nil }
+	handler := func(ctx context.Context, payload []byte) *types.Failure { return nil }
 
 	eng := engine.NewEngine(client, handler, strat, testLogger(), 100)
 

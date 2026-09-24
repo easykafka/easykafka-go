@@ -125,14 +125,14 @@ func TestBatchEngine_DispatchesBatchWhenFull(t *testing.T) {
 	var mu sync.Mutex
 	var receivedBatches [][]string
 
-	batchHandler := func(ctx context.Context, payloads [][]byte) error {
+	batchHandler := func(ctx context.Context, batch *types.Batch) *types.Failure {
 		mu.Lock()
 		defer mu.Unlock()
-		batch := make([]string, len(payloads))
-		for i, p := range payloads {
-			batch[i] = string(p)
+		payloads := make([]string, batch.Len())
+		for i, item := range batch.Items() {
+			payloads[i] = string(item.Message().Payload)
 		}
-		receivedBatches = append(receivedBatches, batch)
+		receivedBatches = append(receivedBatches, payloads)
 		return nil
 	}
 
@@ -175,14 +175,14 @@ func TestBatchEngine_DispatchesPartialBatchOnTimeout(t *testing.T) {
 	var mu sync.Mutex
 	var receivedBatches [][]string
 
-	batchHandler := func(ctx context.Context, payloads [][]byte) error {
+	batchHandler := func(ctx context.Context, batch *types.Batch) *types.Failure {
 		mu.Lock()
 		defer mu.Unlock()
-		batch := make([]string, len(payloads))
-		for i, p := range payloads {
-			batch[i] = string(p)
+		payloads := make([]string, batch.Len())
+		for i, item := range batch.Items() {
+			payloads[i] = string(item.Message().Payload)
 		}
-		receivedBatches = append(receivedBatches, batch)
+		receivedBatches = append(receivedBatches, payloads)
 		return nil
 	}
 
@@ -210,7 +210,7 @@ func TestBatchEngine_DispatchesPartialBatchOnTimeout(t *testing.T) {
 }
 
 func TestBatchEngine_AtomicCommitOnSuccess(t *testing.T) {
-	batchHandler := func(ctx context.Context, payloads [][]byte) error {
+	batchHandler := func(ctx context.Context, batch *types.Batch) *types.Failure {
 		return nil
 	}
 
@@ -240,8 +240,8 @@ func TestBatchEngine_AtomicCommitOnSuccess(t *testing.T) {
 func TestBatchEngine_ErrorStrategyOnBatchFailure(t *testing.T) {
 	batchErr := errors.New("batch processing failed")
 
-	batchHandler := func(ctx context.Context, payloads [][]byte) error {
-		return batchErr
+	batchHandler := func(ctx context.Context, batch *types.Batch) *types.Failure {
+		return &types.Failure{Err: batchErr}
 	}
 
 	messages := []*types.Message{
@@ -272,8 +272,8 @@ func TestBatchEngine_ErrorStrategyOnBatchFailure(t *testing.T) {
 }
 
 func TestBatchEngine_FatalStrategyStopsEngine(t *testing.T) {
-	batchHandler := func(ctx context.Context, payloads [][]byte) error {
-		return errors.New("fail")
+	batchHandler := func(ctx context.Context, batch *types.Batch) *types.Failure {
+		return &types.Failure{Err: errors.New("fail")}
 	}
 
 	messages := []*types.Message{
@@ -296,7 +296,7 @@ func TestBatchEngine_FatalStrategyStopsEngine(t *testing.T) {
 }
 
 func TestBatchEngine_PanicRecoveryInBatchHandler(t *testing.T) {
-	batchHandler := func(ctx context.Context, payloads [][]byte) error {
+	batchHandler := func(ctx context.Context, batch *types.Batch) *types.Failure {
 		panic("batch handler exploded")
 	}
 
@@ -324,8 +324,8 @@ func TestBatchEngine_PanicRecoveryInBatchHandler(t *testing.T) {
 
 func TestBatchEngine_CommitsAfterStrategySuccess(t *testing.T) {
 	// When error strategy returns nil (continue), offsets should still be committed
-	batchHandler := func(ctx context.Context, payloads [][]byte) error {
-		return errors.New("temporary error")
+	batchHandler := func(ctx context.Context, batch *types.Batch) *types.Failure {
+		return &types.Failure{Err: errors.New("temporary error")}
 	}
 
 	messages := []*types.Message{
@@ -355,7 +355,7 @@ func TestBatchEngine_CommitsAfterStrategySuccess(t *testing.T) {
 // contains messages from multiple partitions, the engine commits the highest
 // offset for each partition independently.
 func TestBatchEngine_CommitsHighestOffsetPerPartition(t *testing.T) {
-	batchHandler := func(ctx context.Context, payloads [][]byte) error {
+	batchHandler := func(ctx context.Context, batch *types.Batch) *types.Failure {
 		return nil
 	}
 
@@ -398,8 +398,8 @@ func TestBatchEngine_CommitsHighestOffsetPerPartition(t *testing.T) {
 // TestBatchEngine_CommitsHighestOffsetPerPartitionOnError verifies per-partition
 // commits work correctly even when the handler fails and the strategy continues.
 func TestBatchEngine_CommitsHighestOffsetPerPartitionOnError(t *testing.T) {
-	batchHandler := func(ctx context.Context, payloads [][]byte) error {
-		return errors.New("handler error")
+	batchHandler := func(ctx context.Context, batch *types.Batch) *types.Failure {
+		return &types.Failure{Err: errors.New("handler error")}
 	}
 
 	messages := []*types.Message{

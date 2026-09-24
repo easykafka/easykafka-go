@@ -73,8 +73,8 @@ func TestDeliveryErrorCallbackFiresOnRejectedWrite(t *testing.T) {
 	)
 	require.NoError(t, err)
 
-	handler := func(_ context.Context, _ []byte) error {
-		return fmt.Errorf("simulated failure")
+	handler := func(_ context.Context, _ []byte) *easykafka.Failure {
+		return &easykafka.Failure{Err: fmt.Errorf("simulated failure")}
 	}
 
 	consumer, err := easykafka.New(

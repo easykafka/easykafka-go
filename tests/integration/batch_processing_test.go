@@ -38,14 +38,14 @@ func TestBatchProcessing_SizeTrigger(t *testing.T) {
 	var mu sync.Mutex
 	var batches [][]string
 
-	batchHandler := func(ctx context.Context, payloads [][]byte) error {
+	batchHandler := func(ctx context.Context, batch *easykafka.Batch) *easykafka.Failure {
 		mu.Lock()
 		defer mu.Unlock()
-		batch := make([]string, len(payloads))
-		for i, p := range payloads {
-			batch[i] = string(p)
+		payloads := make([]string, batch.Len())
+		for i, item := range batch.Items() {
+			payloads[i] = string(item.Message().Payload)
 		}
-		batches = append(batches, batch)
+		batches = append(batches, payloads)
 		return nil
 	}
 
@@ -133,14 +133,14 @@ func TestBatchProcessing_TimeoutTrigger(t *testing.T) {
 	var mu sync.Mutex
 	var batches [][]string
 
-	batchHandler := func(ctx context.Context, payloads [][]byte) error {
+	batchHandler := func(ctx context.Context, batch *easykafka.Batch) *easykafka.Failure {
 		mu.Lock()
 		defer mu.Unlock()
-		batch := make([]string, len(payloads))
-		for i, p := range payloads {
-			batch[i] = string(p)
+		payloads := make([]string, batch.Len())
+		for i, item := range batch.Items() {
+			payloads[i] = string(item.Message().Payload)
 		}
-		batches = append(batches, batch)
+		batches = append(batches, payloads)
 		return nil
 	}
 
@@ -229,10 +229,10 @@ func TestBatchProcessing_AtomicCommit(t *testing.T) {
 	var mu sync.Mutex
 	processedCount := 0
 
-	batchHandler := func(ctx context.Context, payloads [][]byte) error {
+	batchHandler := func(ctx context.Context, batch *easykafka.Batch) *easykafka.Failure {
 		mu.Lock()
 		defer mu.Unlock()
-		processedCount += len(payloads)
+		processedCount += batch.Len()
 		return nil
 	}
 
@@ -288,10 +288,10 @@ func TestBatchProcessing_AtomicCommit(t *testing.T) {
 		easykafka.WithTopic(topic),
 		easykafka.WithBrokers(cluster.Brokers...),
 		easykafka.WithConsumerGroup(groupID),
-		easykafka.WithBatchHandler(func(ctx context.Context, payloads [][]byte) error {
+		easykafka.WithBatchHandler(func(ctx context.Context, batch *easykafka.Batch) *easykafka.Failure {
 			mu.Lock()
 			defer mu.Unlock()
-			processedCount += len(payloads)
+			processedCount += batch.Len()
 			return nil
 		}),
 		easykafka.WithBatchSize(10),
