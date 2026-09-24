@@ -192,11 +192,12 @@ func (e *Engine) runSingleLoop(ctx context.Context) error {
 		handlerCtx := metadata.WithMessage(ctx, msg)
 
 		// Call handler with panic recovery
-		handlerErr := e.dispatchMessage(handlerCtx, msg)
+		failure := e.dispatchMessage(handlerCtx, msg)
 
-		if handlerErr != nil {
+		if failure != nil {
 			// Handler failed, apply error strategy
-			strategyErr := e.strategy.HandleError(ctx, []*types.Message{msg}, handlerErr)
+			failed := []*types.Message{msg}
+			strategyErr := e.strategy.HandleError(ctx, failed, e.withReason(*failure, failed))
 			if strategyErr != nil {
 				// Strategy says stop consumer (e.g., fail-fast)
 				e.logger.Error().Err(strategyErr).Msg("error strategy returned fatal error, stopping")
@@ -256,8 +257,8 @@ func (e *Engine) runSingleLoop(ctx context.Context) error {
 
 // runBatchLoop runs the batch-mode polling loop.
 // Messages are accumulated in a buffer and dispatched when the batch is
-// full or the batch timeout expires. Offsets are committed atomically
-// for the highest offset in each batch.
+// full or the batch timeout expires. Once every message in a batch is
+// resolved, the highest offset per partition is stored and committed.
 func (e *Engine) runBatchLoop(ctx context.Context) error {
 	buf := e.buf
 	var loopErr error
@@ -308,31 +309,88 @@ func (e *Engine) runBatchLoop(ctx context.Context) error {
 	return loopErr
 }
 
-// dispatchBatch calls the batch handler with panic recovery,
-// applies the error strategy on failure, and commits offsets atomically.
+// dispatchBatch calls the batch handler with panic recovery, routes each
+// failure to the error strategy, and stores the highest offset per partition.
 func (e *Engine) dispatchBatch(ctx context.Context, msgs []*types.Message) error {
-	// Build payloads slice
-	payloads := make([][]byte, len(msgs))
-	for i, m := range msgs {
-		payloads[i] = m.Payload
+	batch := types.NewBatchFromBuffer(msgs)
+
+	// Call batch handler with panic recovery; a panic comes back as a failure.
+	whole := e.invokeBatchHandler(ctx, batch)
+
+	// A strategy error skips the offset store below: a message the strategy
+	// could not resolve exists nowhere else, and storing a higher offset from
+	// the same partition would lose it.
+	if err := e.routeBatchFailures(ctx, msgs, batch, whole); err != nil {
+		e.logger.Error().Err(err).Msg("error strategy returned fatal error, stopping")
+		return fmt.Errorf("error strategy: %w", err)
 	}
 
-	// Call batch handler with panic recovery
-	handlerErr := e.invokeBatchHandler(ctx, payloads)
+	// Reachable only when every message in the batch is resolved.
+	fatal := e.storeHighestOffsetPerPartition(msgs)
 
-	if handlerErr != nil {
-		// Apply error strategy to the entire batch
-		strategyErr := e.strategy.HandleError(ctx, msgs, handlerErr)
-		if strategyErr != nil {
-			e.logger.Error().Err(strategyErr).Msg("error strategy returned fatal error, stopping")
-			return fmt.Errorf("error strategy: %w", strategyErr)
+	// Commit whatever did store, including on the fatal path: those offsets are
+	// legitimately processed, and committing them shrinks the replay on restart.
+	//
+	// Maybe, not must: under WithAutoCommitEvery this does nothing and
+	// librdkafka's background committer publishes the store on its own schedule.
+	if err := e.adapter.MaybeCommitStored(); err != nil {
+		e.logger.Warn().Err(err).Msg("commit failed, batch offsets remain stored")
+	}
+
+	if fatal != nil {
+		e.logger.Error().Err(fatal).Msg("failed to store batch offset, stopping consumer")
+		return fmt.Errorf("store offset: %w", fatal)
+	}
+
+	return nil
+}
+
+// routeBatchFailures hands the batch's failures to the error strategy and
+// returns the first error it reports.
+//
+// A whole-batch failure — returned by the handler, or a recovered panic — sends
+// every message to the strategy in one call and discards any verdicts recorded
+// per item. Otherwise each failed item goes on its own, in batch order, and the
+// walk stops at the first strategy error without offering the rest.
+func (e *Engine) routeBatchFailures(
+	ctx context.Context,
+	msgs []*types.Message,
+	batch *types.Batch,
+	whole *types.Failure,
+) error {
+
+	if whole != nil {
+		return e.strategy.HandleError(ctx, msgs, e.withReason(*whole, msgs))
+	}
+
+	for _, item := range batch.Items() {
+		failure := item.Failed()
+		if failure == nil {
+			continue
+		}
+		msg := item.Message()
+		failed := []*types.Message{&msg}
+		if err := e.strategy.HandleError(ctx, failed, e.withReason(*failure, failed)); err != nil {
+			return err
 		}
 	}
+	return nil
+}
 
-	// Store the highest offset per topic-partition in the batch. A batch may span
-	// several partitions, so find the maximum offset for each (topic, partition)
-	// pair. Storing the maximum asserts that everything below it is accounted for,
-	// which holds because the batch is handled — or written off — as a unit.
+// storeHighestOffsetPerPartition stores the highest offset per topic-partition
+// in the batch and returns every store failure other than a revoked partition,
+// joined. It does not commit.
+//
+// A batch may span several partitions, so it finds the maximum offset for each
+// (topic, partition) pair. Storing the maximum asserts that everything below it
+// is accounted for, which holds only because the caller has resolved every
+// message first: it succeeded, or the strategy has written it off. Anything that
+// defers a message's outcome past the call turns the maximum into a claim about
+// work not yet done.
+//
+// The offsets come from the buffered messages, not from the batch items, so
+// nothing a handler does to its copies can move them.
+func (e *Engine) storeHighestOffsetPerPartition(msgs []*types.Message) error {
 	type topicPartition struct {
 		Topic     string
 		Partition int32
@@ -368,55 +426,75 @@ func (e *Engine) dispatchBatch(ctx context.Context, msgs []*types.Message) error
 		}
 	}
 
-	// Commit whatever did store, including on the fatal path: those offsets are
-	// legitimately processed, and committing them shrinks the replay on restart.
-	//
-	// Maybe, not must: under WithAutoCommitEvery this does nothing and
-	// librdkafka's background committer publishes the store on its own schedule.
-	if err := e.adapter.MaybeCommitStored(); err != nil {
-		e.logger.Warn().Err(err).Msg("commit failed, batch offsets remain stored")
-	}
-
-	if fatal != nil {
-		e.logger.Error().Err(fatal).Msg("failed to store batch offset, stopping consumer")
-		return fmt.Errorf("store offset: %w", fatal)
-	}
-
-	return nil
+	return fatal
 }
 
-// invokeBatchHandler calls the batch handler with panic recovery.
-func (e *Engine) invokeBatchHandler(ctx context.Context, payloads [][]byte) (err error) {
+// invokeBatchHandler calls the batch handler with panic recovery. A recovered
+// panic comes back as a failure describing it, with no step and no code. The
+// result is named so the deferred recover can set it; see dispatchMessage.
+func (e *Engine) invokeBatchHandler(ctx context.Context, batch *types.Batch) (failure *types.Failure) {
 	defer func() {
 		if r := recover(); r != nil {
 			stack := string(debug.Stack())
-			err = fmt.Errorf("handler panic: %v", r)
+			err := fmt.Errorf("handler panic: %v", r)
 			e.logger.Error().
 				Err(err).
 				Str("stack", stack).
-				Int("batch_size", len(payloads)).
+				Int("batch_size", batch.Len()).
 				Msg("batch handler panic recovered")
+			failure = &types.Failure{Err: err}
 		}
 	}()
 
-	return e.batchHandler(ctx, payloads)
+	return e.batchHandler(ctx, batch)
 }
 
 // dispatchMessage calls the handler with panic recovery.
-// Any panics in the handler are recovered and returned as errors.
-func (e *Engine) dispatchMessage(ctx context.Context, msg *types.Message) (err error) {
+// Any panics in the handler are recovered and returned as a failure.
+//
+// The result is named so the deferred recover can set it. A panicking handler
+// never reaches the return, so failure is still nil when the deferred function
+// runs; it assigns the panic, and that is what the caller gets. With an unnamed
+// result the recover would still stop the panic, but the function would return
+// nil — a panic read as success, and the message's offset stored. When the
+// handler returns normally, recover yields nil and its result stands.
+func (e *Engine) dispatchMessage(ctx context.Context, msg *types.Message) (failure *types.Failure) {
 	defer func() {
 		if r := recover(); r != nil {
 			stack := string(debug.Stack())
-			err = fmt.Errorf("handler panic: %v", r)
+			err := fmt.Errorf("handler panic: %v", r)
 			e.logger.Error().
 				Err(err).
 				Str("stack", stack).
 				Int64("offset", msg.Offset).
 				Int32("partition", msg.Partition).
 				Msg("handler panic recovered")
+			failure = &types.Failure{Err: err}
 		}
 	}()
 
 	return e.handler(ctx, msg.Payload)
+}
+
+// withReason fills in the error of a failure a handler recorded without one, so
+// that no strategy ever sees a nil error. The messages are still routed: the
+// handler said they failed, which is the part that matters.
+func (e *Engine) withReason(f types.Failure, msgs []*types.Message) types.Failure {
+	if f.Err != nil {
+		return f
+	}
+	f.Err = types.ErrUnspecified
+
+	event := e.logger.Warn()
+	if len(msgs) == 1 {
+		event = event.
+			Str("topic", msgs[0].Topic).
+			Int32("partition", msgs[0].Partition).
+			Int64("offset", msgs[0].Offset)
+	} else {
+		event = event.Int("batch_size", len(msgs))
+	}
+	event.Msg("handler reported a failure without an error, routing it anyway")
+
+	return f
 }
