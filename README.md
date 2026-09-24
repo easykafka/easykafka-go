@@ -71,7 +71,7 @@ func main() {
 		easykafka.WithTopic("orders"),
 		easykafka.WithBrokers("localhost:9092"),
 		easykafka.WithConsumerGroup("order-processors"),
-		easykafka.WithHandler(func(ctx context.Context, payload []byte) error {
+		easykafka.WithHandler(func(ctx context.Context, payload []byte) *easykafka.Failure {
 			fmt.Printf("received: %s\n", payload)
 			return nil
 		}),
@@ -89,6 +89,11 @@ func main() {
 That's it — the consumer connects, polls messages, calls your handler, and
 commits offsets on success.
 
+A handler reports failure by returning a `*Failure` — `return
+&easykafka.Failure{Err: err}` — and success by returning nil. It is a concrete
+type rather than an `error` on purpose: a nil `*Failure` is always nil, whereas
+a nil pointer inside an `error` is not, and would read as a failure.
+
 ## 🏷 Message Metadata
 
 A handler receives the payload. When it needs more — which topic, which
@@ -96,7 +101,7 @@ partition, which offset, the timestamp, the headers — it reads the message off
 the context:
 
 ```go
-easykafka.WithHandler(func(ctx context.Context, payload []byte) error {
+easykafka.WithHandler(func(ctx context.Context, payload []byte) *easykafka.Failure {
 	msg, ok := easykafka.MessageFromContext(ctx)
 	if !ok {
 		return nil
@@ -108,10 +113,13 @@ easykafka.WithHandler(func(ctx context.Context, payload []byte) error {
 })
 ```
 
-**`ok` is false in batch mode.** A batch handler is given many messages at once
-and its context carries none of them — there is no single message it could
-describe. Per-message metadata for batches would mean changing `BatchHandler`'s
-signature away from `[][]byte`; until then, batch handlers see payloads only.
+`msg.Key` carries the record key.
+
+**`ok` is false in batch mode**, and a batch handler has no need of it. One
+context is shared by the whole batch, so there is no single message it could
+describe; instead each item carries its own — `item.Message()` gives the key,
+headers, topic, partition and offset of that one message (see
+[Batch Processing](#-batch-processing)).
 
 There is no exported way to *put* a message on a context. Handlers read what the
 library wrote; they cannot plant a value the library then dispatches through.
@@ -128,7 +136,13 @@ msg, _ := easykafka.MessageFromContext(ctx)
 attempt := easykafka.GetRetryAttempt(msg)    // 0 on first delivery
 origin  := easykafka.GetOriginalTopic(msg)   // "" if never retried
 due     := easykafka.GetRetryTime(msg)       // zero Time if absent
+step    := easykafka.GetRetryStep(msg)       // resume point a previous attempt reported; 0 if none
+code    := easykafka.GetErrorCode(msg)       // why the previous attempt failed; "" if never retried
 ```
+
+`easykafka.original.topic`, `.partition` and `.offset` always name the record
+as first consumed from the source topic, however many times it has been
+republished.
 
 This is what makes the retry topic consumable. **The library writes to the retry
 topic but never reads from it** — it stamps each record with a due time and
@@ -141,13 +155,16 @@ easykafka.New(
 	easykafka.WithTopic("orders.retry"),
 	easykafka.WithBrokers("localhost:9092"),
 	easykafka.WithConsumerGroup("order-retries"),
-	easykafka.WithHandler(func(ctx context.Context, payload []byte) error {
+	easykafka.WithHandler(func(ctx context.Context, payload []byte) *easykafka.Failure {
 		msg, _ := easykafka.MessageFromContext(ctx)
 
 		if due := easykafka.GetRetryTime(msg); time.Now().Before(due) {
-			return fmt.Errorf("not due until %s", due) // let the strategy requeue it
+			return &easykafka.Failure{Err: fmt.Errorf("not due until %s", due)} // let the strategy requeue it
 		}
-		return processOrder(ctx, payload)
+		if err := processOrder(ctx, payload); err != nil {
+			return &easykafka.Failure{Err: err}
+		}
+		return nil
 	}),
 )
 ```
@@ -252,8 +269,13 @@ consumer, err := easykafka.New(
 	easykafka.WithTopic("events"),
 	easykafka.WithBrokers("localhost:9092"),
 	easykafka.WithConsumerGroup("event-processors"),
-	easykafka.WithBatchHandler(func(ctx context.Context, payloads [][]byte) error {
-		return bulkInsert(ctx, payloads)
+	easykafka.WithBatchHandler(func(ctx context.Context, batch *easykafka.Batch) *easykafka.Failure {
+		for _, item := range batch.Items() {
+			if err := process(ctx, item.Message().Payload); err != nil {
+				item.Fail(easykafka.Failure{Err: err})
+			}
+		}
+		return nil
 	}),
 	easykafka.WithBatchSize(100),
 	easykafka.WithBatchTimeout(5*time.Second),
@@ -261,17 +283,109 @@ consumer, err := easykafka.New(
 ```
 
 Batches are delivered when the size limit is hit **or** the timeout fires,
-whichever comes first. Offsets are committed atomically per batch.
+whichever comes first.
+
+**Each message carries its own verdict.** Fail the messages that failed with
+`item.Fail`, return nil, and the error strategy handles each of them on its own
+— its own error, its own attempt count, its own retry-or-DLQ decision. The rest
+of the batch is committed. One bad record no longer drags the whole batch
+through the retry topic with it.
+
+| Outcome | Handler does | Library does |
+|---|---|---|
+| Everything succeeded | returns nil | commits the batch |
+| Some messages failed | `item.Fail(...)` on each, returns nil | routes each failure separately |
+| The batch as a whole failed | returns a `*Failure` | routes **every** message under it |
+
+Return a `*Failure` when the verdict is about the batch rather than any one
+message — the database is unreachable, the transaction would not open. It
+discards any `item.Fail` calls already made; a handler that wants those kept
+should fail the remaining items itself and return nil. A handler with nothing
+per-message to say simply wraps the one error it has:
+
+```go
+easykafka.WithBatchHandler(func(ctx context.Context, batch *easykafka.Batch) *easykafka.Failure {
+	if err := bulkInsert(ctx, batch); err != nil {
+		return &easykafka.Failure{Err: err}
+	}
+	return nil
+})
+```
+
+A panic in a batch handler fails the whole batch, as a returned `*Failure` does.
+
+**What a handler may rely on.** `Items()` is in poll order: partitions are
+interleaved as the broker delivered them, and offsets ascend within each
+partition. `item.Message()` is a copy, so nothing a handler does to it moves the
+offsets the library commits — but the payload bytes and the headers map are
+still shared and must be treated as read-only. Distinct items may be failed from
+different goroutines, as long as they have all joined before the handler
+returns.
+
+**Offsets.** Once every message is resolved — succeeded, or handed to the error
+strategy — each partition commits its highest offset in the batch. If the
+strategy returns an error part-way through (fail-fast, or a retry write that
+could not be queued), the consumer stops and nothing in the batch is committed,
+so the whole batch is redelivered on restart. Messages already routed may then
+be routed twice; that is within at-least-once.
+
+**Testing a batch handler** needs no broker:
+
+```go
+batch := easykafka.NewBatch([]easykafka.Message{
+	{Offset: 0, Payload: []byte(`{"ok":true}`)},
+	{Offset: 1, Payload: []byte(`not json`)},
+})
+handler(context.Background(), batch)
+
+assert.Nil(t, batch.Items()[0].Failed())
+assert.NotNil(t, batch.Items()[1].Failed())
+```
+
+### Reporting a failure
+
+A `Failure` carries the error and, optionally, two values the handler owns:
+
+```go
+return &easykafka.Failure{Err: err}                                   // single-message handler
+item.Fail(easykafka.Failure{Err: err, Step: 2, Code: "publish_failed"}) // batch handler, with a step and a code
+```
+
+- **`Step`** is a resume point: which step of a multi-step process failed,
+  numbered from 1. It rides the retry record as `easykafka.retry.step`, and the
+  next attempt reads it with `GetRetryStep` to skip the steps that already
+  succeeded. Left at 0, the step the record arrived with carries forward — a
+  resume point is never silently lost. Step numbers are wire format: a retry
+  topic outlives the deployment that wrote it, so renumber with care.
+- **`Code`** is a short name for the failure in your terms, written to
+  `easykafka.error.code` and read with `GetErrorCode`. Left empty, the library
+  writes `HANDLER_ERROR` — never the code the record arrived with, which
+  described a different failure.
+
+A `Failure` with no `Err` is still a failure: the library routes it under
+`ErrUnspecified` and logs a warning naming the offset.
+
+**Permanent failures.** Some failures no retry can fix — a record that does not
+unmarshal, a schema version this build does not know. Wrap `ErrPermanent` into
+the error and the retry strategy sends the message straight to the DLQ on its
+first failure:
+
+```go
+item.Fail(easykafka.Failure{Err: fmt.Errorf("%w: unmarshal: %v", easykafka.ErrPermanent, err)})
+```
+
+It has to be `%w`. `%v` compiles, reads almost the same, and drops the marker,
+so the message walks the whole retry ladder after all.
 
 ## ⚡ Error Strategies
 
-Pluggable strategies control what happens when a handler returns an error:
+Pluggable strategies control what happens when a handler reports a failure:
 
 | Strategy | Behaviour | Use Case |
 |---|---|---|
 | **Skip** | Log error, commit offset, continue | Best-effort / analytics pipelines (the default) |
 | **FailFast** | Stop consumer immediately | Critical processing, manual intervention |
-| **Retry + DLQ** | Retry via Kafka topic with exponential backoff; route to DLQ after max attempts | Production systems with automatic recovery |
+| **Retry + DLQ** | Retry via Kafka topic with exponential backoff; route to DLQ after max attempts, or at once for `ErrPermanent` | Production systems with automatic recovery |
 
 ### Retry + DLQ
 
@@ -295,6 +409,28 @@ consumer, err := easykafka.New(
 	easykafka.WithErrorStrategy(retryStrategy),
 )
 ```
+
+Retry and DLQ records have the same shape: the consumed bytes as the body, the
+consumed key as the key, and the failure described in `easykafka.*` headers —
+attempt, error message and code, step, original topic/partition/offset and
+failure time. Headers the record arrived with that are not the library's pass
+through unchanged.
+
+**Replaying a dead-lettered message** is a re-publish of its body and key to the
+source topic. Drop the `easykafka.*` headers when you do: the record carries the
+attempt count it died on, and would otherwise arrive at its last attempt and go
+straight back to the DLQ on its first failure.
+
+| Retry option | Default | Description |
+|---|---|---|
+| `WithRetryTopic(t)` | — (required) | Topic failed messages are republished to |
+| `WithDLQTopic(t)` | — (required) | Topic messages go to once attempts run out, or at once for `ErrPermanent` |
+| `WithMaxAttempts(n)` | 3 | Attempts before the DLQ |
+| `WithInitialDelay(d)` | 1s | Backoff before the first retry |
+| `WithMaxDelay(d)` | 30s | Backoff cap |
+| `WithBackoffMultiplier(m)` | 2.0 | Exponential backoff factor |
+| `WithCustomBackoff(fn)` | — | Replaces the three options above |
+| `WithDeliveryErrorFunc(fn)` | — | Called for retry/DLQ writes that never reach the broker |
 
 #### Observing failed retry and DLQ writes
 
@@ -361,7 +497,7 @@ interval, so a rebalance or a clean stop does not replay.
 | `WithTopic(topic)` | Kafka topic to consume from |
 | `WithBrokers(addrs...)` | Broker addresses |
 | `WithConsumerGroup(id)` | Consumer group ID |
-| `WithHandler(fn)` or `WithBatchHandler(fn)` | Message processing function |
+| `WithHandler(fn)` or `WithBatchHandler(fn)` | Message processing function: `func(ctx, payload []byte) *Failure`, or `func(ctx, batch *Batch) *Failure` for batch mode |
 
 ### Optional Options
 

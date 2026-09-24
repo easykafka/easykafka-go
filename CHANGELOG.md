@@ -9,6 +9,64 @@ public API may still change in a minor release.
 
 ### Added
 
+- **Per-message verdicts in batch mode.** A batch handler is now given a `*Batch` — the polled
+  messages, each paired with a verdict — and records each failed message with `item.Fail`. The
+  engine routes every failure to the error strategy on its own, with its own error, its own attempt
+  count and its own retry-vs-DLQ decision. One poison message in a batch of 500 used to send all 500
+  to the retry topic under its error, each burning an attempt it never earned; now it sends one.
+
+  ```go
+  easykafka.WithBatchHandler(func(ctx context.Context, batch *easykafka.Batch) *easykafka.Failure {
+      for _, item := range batch.Items() {
+          if err := process(item.Message().Payload); err != nil {
+              item.Fail(easykafka.Failure{Err: err})
+          }
+      }
+      return nil
+  })
+  ```
+
+  Returning a `*Failure` still fails the batch as a whole — every message is routed under it and any
+  per-item verdicts are discarded — for a handler whose failure is not about any one message (the
+  database is down). A panic does the same, as before.
+
+  Offsets are unchanged: each partition still stores its highest offset in the batch, which stays
+  honest because every message is resolved — succeeded, or written off by the strategy — before the
+  offsets are stored. If the strategy returns an error part-way through, dispatch stops there and
+  nothing in the batch is stored, so the whole batch is redelivered on restart; messages already
+  routed may then be routed twice, which is within at-least-once.
+
+  Items are in poll order: partitions interleaved as delivered, offsets ascending within each.
+  `item.Message()` returns a copy, so a handler cannot move the offsets the engine accounts against;
+  the payload and headers are still shared and must be treated as read-only. Distinct items may be
+  failed from different goroutines, provided they are joined before the handler returns.
+
+  `NewBatch(msgs)` builds a batch without a broker, so a batch handler can be unit-tested: run it,
+  then check `item.Failed()` on each item.
+
+- **`Failure`**, what both handlers now return and what `item.Fail` takes. Beside the required `Err`
+  it carries two optional values the handler owns:
+
+  - `Step` — a resume point, written to `easykafka.retry.step` and read back with `GetRetryStep`.
+    Left at 0, the step the record arrived with carries forward, so a resume point is never
+    silently lost.
+  - `Code` — a domain error code, written to `easykafka.error.code` and read back with the new
+    `GetErrorCode`. Left empty, the library writes `HANDLER_ERROR`; the code the record arrived with
+    is *not* carried forward, because it described a different failure.
+
+  A `Failure` with no `Err` is still routed, under `ErrUnspecified`, with a warning naming the
+  offset — no strategy ever sees a nil error. `Failure` deliberately does not implement `error`, so a
+  typed nil cannot end up inside an interface and read as a failure.
+
+- **`ErrPermanent`.** Wrap it into a failure's error — `fmt.Errorf("%w: unmarshal: %v",
+  easykafka.ErrPermanent, err)` — and the retry strategy sends the message straight to the DLQ on
+  its first failure instead of walking the retry ladder. For a failure no reprocessing can fix: a
+  malformed record, an unknown schema version. It must be `%w`; `%v` compiles and silently drops the
+  marker. `Skip` and `FailFast` ignore it.
+
+- **`Message.Key`**, populated from the consumed record. Until now the key was dropped in `Poll`, so
+  nothing downstream — handler included — could see it.
+
 - **`MessageFromContext(ctx)`, the nine retry header keys and the four `Get*` accessors** are now
   part of the public API. The 0.1.0 notes advertised message metadata as shipped — "handlers that
   need more than the payload read topic, partition, offset, timestamp and headers from the `Message`
@@ -19,8 +77,8 @@ public API may still change in a minor release.
   **`ok` is false in batch mode.** A batch handler is given many messages at once and its context
   carries none of them, so there is no single message to describe. Attaching one element of the
   batch would be worse than attaching none: the accessor would report true with metadata describing
-  an arbitrary record. Real per-message metadata means changing `BatchHandler`'s signature away from
-  `[][]byte`, which is separate work.
+  an arbitrary record. Nor is anything missing: a batch handler reads each message's metadata from
+  `item.Message()` (see *Per-message verdicts in batch mode*, below).
 
   `HeaderRetryAttempt` and its eight siblings, plus `GetRetryAttempt`, `GetRetryTime`,
   `GetRetryStep` and `GetOriginalTopic`, go out with it. These are what make the retry topic
@@ -79,6 +137,11 @@ public API may still change in a minor release.
 
 ### Removed
 
+- **`WithFailedMessagePayloadEncoding`, `PayloadEncoding`, `PayloadEncodingJSON` and
+  `PayloadEncodingBase64`.** **Breaking.** They existed only to fit binary payloads into the DLQ's
+  JSON envelope, which is gone (see *Changed*); a DLQ record now carries the consumed bytes as they
+  came, so there is nothing to encode.
+
 - **`Consumer.Shutdown` and `WithShutdownTimeout`.** **Breaking.** Cancelling the context passed to
   `Start` is now the only way to stop a consumer. Replace `consumer.Shutdown(ctx)` with cancelling
   that context, and wait for `Start` to return — it returns once the poll loop has exited, the final
@@ -116,6 +179,54 @@ public API may still change in a minor release.
 
 ### Changed
 
+- **Both handlers return `*Failure` instead of `error`.** **Breaking.** nil still means success.
+
+  ```go
+  // before
+  func(ctx context.Context, payload []byte) error    { return err }
+  func(ctx context.Context, payloads [][]byte) error { return err }
+
+  // after
+  func(ctx context.Context, payload []byte) *easykafka.Failure { return &easykafka.Failure{Err: err} }
+  func(ctx context.Context, batch *easykafka.Batch) *easykafka.Failure {
+      for _, item := range batch.Items() { /* item.Fail(...) on the ones that failed */ }
+      return nil
+  }
+  ```
+
+  A batch handler that only ever had one error for the whole batch migrates by wrapping it —
+  `return &easykafka.Failure{Err: err}` — and keeps its all-or-nothing behaviour.
+
+- **`ErrorStrategy.HandleError` takes a `Failure` instead of an error.** **Breaking** for anyone
+  implementing a strategy outside the library. It is how the step and the code reach the strategy.
+  In batch mode `msgs` now holds a single message for a per-item failure, and every message of the
+  batch only for a whole-batch failure or a panic.
+
+- **A DLQ record is the original message.** **Breaking** for anything reading a DLQ topic. The body
+  is the consumed bytes and the key is the consumed key — exactly like a retry record — and every
+  fact about the failure is in headers. The JSON envelope is gone; each of its fields was already a
+  header:
+
+  | Envelope field | Header |
+  |---|---|
+  | `originalTopic`, `originalPartition`, `originalOffset` | `easykafka.original.topic`, `.partition`, `.offset` |
+  | `error` | `easykafka.error.message` |
+  | `attemptCount` | `easykafka.retry.attempt` |
+  | `timestamp` | `easykafka.failed.at` |
+  | `payload` | the body itself |
+
+  The envelope's default path, `string(payload)`, silently replaced invalid UTF-8 — irreversible for
+  a protobuf or Avro record. Replaying a dead-lettered message is now a re-publish of its body and
+  key; drop the `easykafka.*` headers when doing so, or it arrives already at its last attempt.
+
+- **Retry and DLQ records carry the consumed key.** Retry records used to be written without one,
+  for round-robin partitioning. A keyed record can be found by key in a Kafka UI or with `kcat`; the
+  cost is that a hot key on the source topic makes a hot retry partition too.
+
+- **`easykafka.retry.step` is written from `Failure.Step`,** carrying the inbound value forward when
+  the handler reports none, and is omitted when there is no step at all. Previously nothing could set
+  it and it was always `"0"`. DLQ records now carry it too.
+
 - **A batch buffer that was never dispatched is dropped on shutdown, not flushed.** Its messages were
   polled but never stored, so they are re-read by whoever holds the partition next. Flushing them ran
   a bulk handler while the consumer was stopping, handed it a dead context, and let the error
@@ -130,6 +241,11 @@ public API may still change in a minor release.
   deadline goroutine and a timeout the library cannot enforce anyway.
 
 ### Fixed
+
+- **`easykafka.original.partition` and `.offset` survive every hop.** Only the topic used to: the
+  partition and offset were overwritten with the current record's on each republish, so after a
+  second hop they named a position on the retry topic paired with the source topic's name. They now
+  keep the inbound values, as the topic always did.
 
 - **A context leak on every consumer that was not shut down via `Shutdown`** — which was all of them
   in practice. `Start` derived a cancellable context purely so `Shutdown` could cancel it, and never

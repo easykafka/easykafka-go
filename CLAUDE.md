@@ -63,13 +63,13 @@ churn-heavy linters (`mnd`, `lll`, `dupl`, `gocognit`, `gosec`, `errcheck`,
 ### Internal packages
 - `internal/engine/` — core polling loop (`engine.go`) and batch accumulation (`batch.go`). Supports both single-message and batch modes.
 - `internal/kafka/` — wraps confluent-kafka-go consumer (`adapter.go`) and produces to retry/DLQ topics (`producer.go`)
-- `internal/types/` — core interfaces: `Handler`, `BatchHandler`, `ErrorStrategy`, `Message`, `Initializable`, `LoggerAware`, `DeliveryError`/`DeliveryErrorFunc`
+- `internal/types/` — core interfaces: `Handler`, `BatchHandler`, `Batch`/`BatchItem`, `Failure`, `ErrorStrategy`, `Message`, `Initializable`, `LoggerAware`, `DeliveryError`/`DeliveryErrorFunc`
 - `internal/metadata/` — message metadata via context decorators and header parsing
 
 ### What of `internal/metadata` is public, and what is deliberately not
 
 `handler.go` re-exports the **read** side: `MessageFromContext`, the nine `Header*` key constants,
-and `GetRetryAttempt` / `GetRetryTime` / `GetRetryStep` / `GetOriginalTopic`.
+and `GetRetryAttempt` / `GetRetryTime` / `GetRetryStep` / `GetErrorCode` / `GetOriginalTopic`.
 
 The **write** side stays internal on purpose. `WithMessage` is how the engine populates a handler
 context, and `BuildRetryHeaders` / `BuildDLQHeaders` are the retry strategy's. Exporting either
@@ -84,18 +84,46 @@ Two things to preserve here:
   guarded by `TestHeaderKeysMatchInternal`, which fails if either side is renamed.
 - **`MessageFromContext` returns `(nil, false)` in batch mode**, because `dispatchBatch` passes the
   raw loop context. That is documented in three places and pinned by
-  `TestMessageFromContextIsEmptyInBatchMode`. Do not "fix" it by attaching one message of the batch;
-  the honest fix is per-message batch results, which is a `BatchHandler` signature change.
+  `TestMessageFromContextIsEmptyInBatchMode`. Do not "fix" it by attaching one message of the batch.
+  Nothing is missing: the per-message batch results in `srm-specs` `003-partial-batches` gave the
+  batch handler a `*Batch`, and each item's `Message()` carries that message's metadata.
 
 Tests reach the public symbols through `easykafka.` rather than `internal/metadata` wherever they
 are exercising the export, so a regression in the re-export fails a test. Nothing in-module can
 *prove* external reachability — `go doc .` is the real check.
 
+### Handlers report a `*Failure`, and batch mode reports one per message
+
+Both handler types return `*types.Failure` — never `error`, and `Failure` must not implement
+`error`: a typed nil inside an `error` interface is non-nil and would read as a failure. A batch
+handler records per-message verdicts with `item.Fail` on the `*Batch` it is given; the engine then
+calls the strategy once per failed item, in batch order. A returned `*Failure` (or a panic) instead
+routes every message in one call and discards the item verdicts.
+
+Three things to preserve in `dispatchBatch`:
+
+- **The store block stays below both strategy calls, and both return early on a strategy error.**
+  The per-partition maximum is honest only because every message is resolved before it is stored.
+  Stopping half-way through the walk leaves one message in neither the retry topic nor the DLQ;
+  storing a higher offset from its partition would lose it. Nothing may defer a message's outcome
+  past the store block.
+- **Offsets come from the buffered `[]*Message`, not from the items.** `BatchItem.Message()` returns
+  a copy for the same reason: a handler must not be able to move what the engine accounts against.
+- **The engine fills in a nil `Failure.Err` with `ErrUnspecified`** (and warns), so no strategy has
+  to defend against one.
+
+In `internal/metadata`, of the library's headers only `easykafka.retry.step` and
+`easykafka.error.code` are the handler's, through `Failure.Step` / `Failure.Code`, and they behave
+oppositely when unset: the inbound step carries forward, the inbound code does not.
+`easykafka.original.*` keep their inbound values on every hop. Retry and DLQ records are the same
+shape — consumed key, consumed bytes, failure in headers — and there is no DLQ envelope.
+
 ### Error strategies (`strategy/` package — public)
 Pluggable via `WithErrorStrategy()`. Three implementations:
 - `skip.go` — logs error and continues (default)
 - `fail_fast.go` — stops consumer immediately on first error
-- `retry.go` — Kafka-based retry with exponential backoff, optional DLQ routing
+- `retry.go` — Kafka-based retry with exponential backoff, DLQ routing after max attempts or at
+  once for a failure wrapping `ErrPermanent`
 
 A strategy returning a non-nil error is fatal — the engine stops the poll loop and `Start` returns
 it. That is the whole of the "stop consuming" capability; there is no pause/resume, and a
