@@ -12,8 +12,10 @@
 //	    easykafka.WithTopic("orders"),
 //	    easykafka.WithBrokers("localhost:9092"),
 //	    easykafka.WithConsumerGroup("order-processors"),
-//	    easykafka.WithHandler(func(ctx context.Context, payload []byte) error {
-//	        fmt.Printf("received: %s\n", payload)
+//	    easykafka.WithHandler(func(ctx context.Context, payload []byte) *easykafka.Failure {
+//	        if err := process(payload); err != nil {
+//	            return &easykafka.Failure{Err: err}
+//	        }
 //	        return nil
 //	    }),
 //	)
@@ -27,23 +29,32 @@
 // # Batch Processing
 //
 // For high-throughput scenarios, use WithBatchHandler to process multiple
-// messages at once:
+// messages at once. Each message carries its own verdict: fail the ones that
+// failed, and the error strategy routes each of them on its own.
 //
 //	consumer, _ := easykafka.New(
 //	    easykafka.WithTopic("events"),
 //	    easykafka.WithBrokers("localhost:9092"),
 //	    easykafka.WithConsumerGroup("event-processors"),
-//	    easykafka.WithBatchHandler(func(ctx context.Context, payloads [][]byte) error {
-//	        return bulkInsert(ctx, payloads)
+//	    easykafka.WithBatchHandler(func(ctx context.Context, batch *easykafka.Batch) *easykafka.Failure {
+//	        for _, item := range batch.Items() {
+//	            if err := process(item.Message().Payload); err != nil {
+//	                item.Fail(easykafka.Failure{Err: err})
+//	            }
+//	        }
+//	        return nil
 //	    }),
 //	    easykafka.WithBatchSize(100),
 //	    easykafka.WithBatchTimeout(5*time.Second),
 //	)
 //
+// Return a *Failure only when the batch as a whole could not be processed —
+// the database is down, say. Every message is then routed under it.
+//
 // # Error Strategies
 //
-// Pluggable error strategies control what happens when a handler returns an
-// error:
+// Pluggable error strategies control what happens when a handler reports a
+// failure:
 //
 //   - [NewSkipStrategy]: logs the error and continues (default).
 //   - [NewFailFastStrategy]: stops the consumer immediately.
