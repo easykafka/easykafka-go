@@ -295,6 +295,7 @@ func (a *Adapter) Poll(ctx context.Context, timeoutMs int) (*types.Message, erro
 			Partition: e.TopicPartition.Partition,
 			Offset:    int64(e.TopicPartition.Offset),
 			Timestamp: e.Timestamp,
+			Key:       e.Key,
 			Headers:   headers,
 			Payload:   e.Value,
 		}, nil
