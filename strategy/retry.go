@@ -2,8 +2,6 @@ package strategy
 
 import (
 	"context"
-	"encoding/base64"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"math"
@@ -27,7 +25,6 @@ type RetryConfig struct {
 	MaxDelay        time.Duration
 	Multiplier      float64
 	CustomBackoff   BackoffFunc
-	PayloadEncoding types.PayloadEncoding
 	OnDeliveryError types.DeliveryErrorFunc
 }
 
@@ -112,20 +109,6 @@ func WithCustomBackoff(fn BackoffFunc) RetryOption {
 	}
 }
 
-// WithFailedMessagePayloadEncoding configures how message payloads are encoded
-// when written to retry or dead-letter queues. Default: JSON.
-func WithFailedMessagePayloadEncoding(encoding types.PayloadEncoding) RetryOption {
-	return func(c *RetryConfig) error {
-		switch encoding {
-		case types.PayloadEncodingJSON, types.PayloadEncodingBase64:
-			c.PayloadEncoding = encoding
-		default:
-			return fmt.Errorf("unsupported payload encoding: %s", encoding)
-		}
-		return nil
-	}
-}
-
 // WithDeliveryErrorFunc registers fn to be called for every retry or DLQ write
 // that fails to reach the broker, so the application can log it in its own
 // format, count it and alert on it. Default: none, and failures are logged on
@@ -161,11 +144,10 @@ type RetryStrategy struct {
 // The strategy must be initialized via Initialize() before use (called automatically by Consumer.Start).
 func NewRetryStrategy(opts ...RetryOption) (*RetryStrategy, error) {
 	cfg := RetryConfig{
-		MaxAttempts:     3, //nolint:mnd
-		InitialDelay:    1 * time.Second,
-		MaxDelay:        30 * time.Second, //nolint:mnd
-		Multiplier:      2.0,              //nolint:mnd
-		PayloadEncoding: types.PayloadEncodingJSON,
+		MaxAttempts:  3, //nolint:mnd
+		InitialDelay: 1 * time.Second,
+		MaxDelay:     30 * time.Second, //nolint:mnd
+		Multiplier:   2.0,              //nolint:mnd
 	}
 
 	for _, opt := range opts {
@@ -249,11 +231,14 @@ func (r *RetryStrategy) Close() error {
 }
 
 // HandleError processes a handler failure by writing messages to the retry queue
-// or DLQ depending on the attempt count.
-func (r *RetryStrategy) HandleError(ctx context.Context, msgs []*types.Message, handlerErr error) error {
+// or DLQ depending on the attempt count. A failure wrapping types.ErrPermanent
+// goes straight to the DLQ, whatever the attempt count.
+func (r *RetryStrategy) HandleError(ctx context.Context, msgs []*types.Message, f types.Failure) error {
 	if !r.initialized {
 		return errors.New("retry strategy not initialized; call Initialize() first")
 	}
+
+	permanent := errors.Is(f.Err, types.ErrPermanent)
 
 	for _, msg := range msgs {
 		attempt := metadata.GetRetryAttempt(msg)
@@ -265,25 +250,29 @@ func (r *RetryStrategy) HandleError(ctx context.Context, msgs []*types.Message, 
 			Int64("offset", msg.Offset).
 			Int("attempt", attempt).
 			Int("max_attempts", r.config.MaxAttempts).
-			Err(handlerErr).
+			Str("error_code", f.Code).
+			Err(f.Err).
 			Msg("handler failed for message")
 
-		if attempt >= r.config.MaxAttempts {
-			// Max attempts exhausted → send to DLQ
+		if permanent || attempt >= r.config.MaxAttempts {
+			reason := "max retry attempts reached, sending to DLQ"
+			if permanent {
+				reason = "permanent failure, sending to DLQ without retrying"
+			}
 			r.logger.Error().
 				Str("topic", msg.Topic).
 				Int64("offset", msg.Offset).
 				Int("attempts", attempt).
-				Msg("max retry attempts reached, sending to DLQ")
+				Msg(reason)
 
-			if err := r.sendToDLQ(ctx, msg, handlerErr, attempt); err != nil {
+			if err := r.sendToDLQ(ctx, msg, f, attempt); err != nil {
 				r.logger.Error().Err(err).Msg("failed to send message to DLQ")
 				return fmt.Errorf("DLQ write failed: %w", err)
 			}
 			r.logger.Info().Msg("message sent to DLQ, continuing consumption")
 		} else {
 			// Write to retry queue
-			if err := r.sendToRetryQueue(ctx, msg, handlerErr, attempt); err != nil {
+			if err := r.sendToRetryQueue(ctx, msg, f, attempt); err != nil {
 				r.logger.Error().Err(err).Msg("failed to send message to retry queue")
 				return fmt.Errorf("retry queue write failed: %w", err)
 			}
@@ -309,62 +298,29 @@ func (r *RetryStrategy) Config() RetryConfig {
 }
 
 // sendToRetryQueue writes a message to the retry topic with retry headers.
-func (r *RetryStrategy) sendToRetryQueue(ctx context.Context, msg *types.Message, handlerErr error, attempt int) error {
+// The record keeps the consumed key, so it can be found by the same key as its
+// source.
+func (r *RetryStrategy) sendToRetryQueue(ctx context.Context, msg *types.Message, f types.Failure, attempt int) error {
 	delay := r.computeBackoff(attempt)
 	retryTime := time.Now().Add(delay)
 
-	headers := metadata.BuildRetryHeaders(msg, attempt, retryTime, handlerErr)
-
 	return r.retryProducer.Produce(ctx, &types.ProduceMessage{
 		Topic:   r.config.RetryTopic,
-		Key:     nil, // Retry messages use round-robin partitioning
+		Key:     msg.Key,
 		Value:   msg.Payload,
-		Headers: headers,
+		Headers: metadata.BuildRetryHeaders(msg, attempt, retryTime, f),
 	})
 }
 
-// sendToDLQ writes a message to the DLQ topic with a JSON envelope.
-func (r *RetryStrategy) sendToDLQ(ctx context.Context, msg *types.Message, handlerErr error, attempt int) error {
-	// Encode payload
-	var payloadStr string
-	var encoding string
-
-	switch r.config.PayloadEncoding {
-	case types.PayloadEncodingBase64:
-		payloadStr = base64.StdEncoding.EncodeToString(msg.Payload)
-		encoding = "base64"
-	default:
-		payloadStr = string(msg.Payload)
-		encoding = "json"
-	}
-
-	origTopic := metadata.GetOriginalTopic(msg)
-	if origTopic == "" {
-		origTopic = msg.Topic
-	}
-
-	dlqMessage := map[string]any{
-		"originalTopic":     origTopic,
-		"originalPartition": msg.Partition,
-		"originalOffset":    msg.Offset,
-		"payload":           payloadStr,
-		"payloadEncoding":   encoding,
-		"error":             handlerErr.Error(),
-		"timestamp":         time.Now().Format(time.RFC3339),
-		"attemptCount":      attempt,
-	}
-
-	dlqPayload, err := json.Marshal(dlqMessage)
-	if err != nil {
-		return fmt.Errorf("failed to marshal DLQ message: %w", err)
-	}
-
-	headers := metadata.BuildDLQHeaders(msg, attempt, handlerErr)
-
+// sendToDLQ writes a message to the DLQ topic exactly as it was consumed — the
+// same key and the same bytes — with every fact about the failure in headers.
+// Replaying it is a re-publish of the key and body to the source topic.
+func (r *RetryStrategy) sendToDLQ(ctx context.Context, msg *types.Message, f types.Failure, attempt int) error {
 	return r.dlqProducer.Produce(ctx, &types.ProduceMessage{
 		Topic:   r.config.DLQTopic,
-		Value:   dlqPayload,
-		Headers: headers,
+		Key:     msg.Key,
+		Value:   msg.Payload,
+		Headers: metadata.BuildDLQHeaders(msg, attempt, f),
 	})
 }
 

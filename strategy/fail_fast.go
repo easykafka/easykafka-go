@@ -24,7 +24,8 @@ func (f *FailFastStrategy) SetLogger(logger zerolog.Logger) {
 }
 
 // HandleError returns the handler error, causing the consumer to stop.
-func (f *FailFastStrategy) HandleError(_ context.Context, msgs []*types.Message, handlerErr error) error {
+func (f *FailFastStrategy) HandleError(_ context.Context, msgs []*types.Message, failure types.Failure) error {
+	handlerErr := failure.Err
 	if len(msgs) > 0 {
 		f.logger.Error().
 			Str("topic", msgs[0].Topic).

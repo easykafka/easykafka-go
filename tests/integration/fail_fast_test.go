@@ -49,13 +49,13 @@ func TestFailFastStopsConsumerOnFirstError(t *testing.T) {
 	var mu sync.Mutex
 	var handlerCalls int
 
-	handler := func(_ context.Context, payload []byte) error {
+	handler := func(_ context.Context, payload []byte) *easykafka.Failure {
 		mu.Lock()
 		handlerCalls++
 		call := handlerCalls
 		mu.Unlock()
 		t.Logf("Handler called (%d): %s", call, string(payload))
-		return handlerErr
+		return &easykafka.Failure{Err: handlerErr}
 	}
 
 	consumer, err := easykafka.New(
