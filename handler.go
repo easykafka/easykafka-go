@@ -22,6 +22,38 @@ type ErrorStrategy = types.ErrorStrategy
 // Message is a re-export from internal/types
 type Message = types.Message
 
+// Failure is how a handler reports that a message failed: the error, and
+// optionally a resume point and a domain error code. Re-export from
+// internal/types.
+type Failure = types.Failure
+
+// Batch is what a BatchHandler is given: the polled messages, each paired with
+// the verdict the handler records for it. Re-export from internal/types.
+type Batch = types.Batch
+
+// BatchItem is one message of a Batch and its verdict. Re-export from
+// internal/types.
+type BatchItem = types.BatchItem
+
+// NewBatch builds a Batch over msgs, so a batch handler can be tested without a
+// broker: run the handler over it, then check which items came back failed.
+func NewBatch(msgs []Message) *Batch {
+	return types.NewBatch(msgs)
+}
+
+var (
+	// ErrPermanent marks a failure that reprocessing cannot fix. The retry
+	// strategy sends it straight to the DLQ instead of walking the retry
+	// ladder. Wrap it with %w, not %v, or the marker is lost:
+	//
+	//	item.Fail(easykafka.Failure{Err: fmt.Errorf("%w: unmarshal: %v", easykafka.ErrPermanent, err)})
+	ErrPermanent = types.ErrPermanent
+
+	// ErrUnspecified stands in for a failure a handler recorded without an
+	// error. The message is still routed, under this error.
+	ErrUnspecified = types.ErrUnspecified
+)
+
 // DeliveryError describes a retry or DLQ write that never reached the broker.
 // Re-export from internal/types.
 type DeliveryError = types.DeliveryError
@@ -29,14 +61,6 @@ type DeliveryError = types.DeliveryError
 // DeliveryErrorFunc is called for writes that fail to reach the broker.
 // Re-export from internal/types.
 type DeliveryErrorFunc = types.DeliveryErrorFunc
-
-// PayloadEncoding is a re-export from internal/types
-type PayloadEncoding = types.PayloadEncoding
-
-const (
-	PayloadEncodingJSON   = types.PayloadEncodingJSON
-	PayloadEncodingBase64 = types.PayloadEncodingBase64
-)
 
 // Re-export retry option types for public API
 type RetryOption = strategy.RetryOption
@@ -63,15 +87,14 @@ func NewFailFastStrategy() ErrorStrategy {
 
 // Re-export retry option constructors
 var (
-	WithRetryTopic                   = strategy.WithRetryTopic
-	WithDLQTopic                     = strategy.WithDLQTopic
-	WithMaxAttempts                  = strategy.WithMaxAttempts
-	WithInitialDelay                 = strategy.WithInitialDelay
-	WithMaxDelay                     = strategy.WithMaxDelay
-	WithBackoffMultiplier            = strategy.WithBackoffMultiplier
-	WithCustomBackoff                = strategy.WithCustomBackoff
-	WithFailedMessagePayloadEncoding = strategy.WithFailedMessagePayloadEncoding
-	WithDeliveryErrorFunc            = strategy.WithDeliveryErrorFunc
+	WithRetryTopic        = strategy.WithRetryTopic
+	WithDLQTopic          = strategy.WithDLQTopic
+	WithMaxAttempts       = strategy.WithMaxAttempts
+	WithInitialDelay      = strategy.WithInitialDelay
+	WithMaxDelay          = strategy.WithMaxDelay
+	WithBackoffMultiplier = strategy.WithBackoffMultiplier
+	WithCustomBackoff     = strategy.WithCustomBackoff
+	WithDeliveryErrorFunc = strategy.WithDeliveryErrorFunc
 )
 
 // ============================================================================
@@ -83,17 +106,17 @@ var (
 // the context before dispatching, so a handler that needs more than the payload
 // reads it from there:
 //
-//	func handle(ctx context.Context, payload []byte) error {
+//	func handle(ctx context.Context, payload []byte) *easykafka.Failure {
 //	    if msg, ok := easykafka.MessageFromContext(ctx); ok {
 //	        log.Printf("offset %d on partition %d", msg.Offset, msg.Partition)
 //	    }
 //	    return nil
 //	}
 //
-// It reports false in batch mode. A batch handler is given many messages at
-// once and its context carries none of them — there is no single message it
-// could describe. Per-message metadata for batches would mean changing
-// [BatchHandler]'s signature away from [][]byte, which is separate work.
+// It reports false in batch mode, and has nothing to add there: one context is
+// shared by the whole batch, so there is no single message it could describe,
+// and a batch handler already reads each message — key, headers, topic,
+// partition, offset — from [BatchItem.Message].
 //
 // There is no exported way to put a message onto a context: handlers read what
 // the engine wrote, and cannot forge a value the engine will then dispatch.
@@ -136,10 +159,19 @@ func GetRetryTime(msg *Message) time.Time {
 	return metadata.GetRetryTime(msg)
 }
 
-// GetRetryStep returns the backoff step used to schedule this retry. Returns 0
-// if absent.
+// GetRetryStep returns the resume point a previous attempt reported through
+// [Failure.Step]: which step of a multi-step process failed, numbered from 1.
+// The library carries it but never interprets it — skipping the steps that
+// already succeeded is the handler's job. Returns 0 if absent.
 func GetRetryStep(msg *Message) int32 {
 	return metadata.GetRetryStep(msg)
+}
+
+// GetErrorCode returns the error code of the failure that republished this
+// message: [Failure.Code] if the handler set one, HANDLER_ERROR otherwise.
+// Returns the empty string if absent, which is the case on first delivery.
+func GetErrorCode(msg *Message) string {
+	return metadata.GetErrorCode(msg)
 }
 
 // GetOriginalTopic returns the topic the message was first consumed from,
