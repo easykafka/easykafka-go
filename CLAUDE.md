@@ -168,6 +168,12 @@ reachable from `tests/`; `internal/` keeps them out of the public API.
 - `tests/unit/` — pure Go logic, no Kafka dependency (strategy behavior, batch buffer, shutdown logic, options validation, delivery-error mapping)
 - `tests/integration/` — full Kafka via testcontainers-go (consumer basics, batch, retry/DLQ, fail-fast, graceful shutdown, rebalancing, reconnection, at-least-once semantics, delivery errors)
 
+- `examples/playground/` — not a test: a producer and consumer for trying the library by hand,
+  driven by payload scripts such as `ko/ko/ok`, against Kafka and AKHQ run by docker compose.
+  `make playground` builds them into `bin/`. See its README. It is part of the module and linted with the full rule set, unlike `tests/`. Its
+  `internal/script` package is unreachable from `tests/`, so it has no unit tests; the playground
+  itself is how it is exercised.
+
 **All tests live under `tests/`** — there are no in-package `_test.go` files. Unexported logic is
 therefore unreachable from tests, which is why some internals are exported within `internal/`.
 

@@ -5,49 +5,37 @@ producer and consumer you drive from the command line. Every message's payload s
 consumer should treat it — `ko/ko/ok` fails twice and then succeeds — so you can watch the retry
 topic, the DLQ, batch routing and committed offsets as they happen.
 
-> **Status: planned.** This README describes the playground as designed; the code is not written
-> yet, so the commands below do not run.
-
 ## Quick start
 
-From this directory:
+Docker runs only the infrastructure — Kafka, topic setup and AKHQ. The producer and consumer are
+built into the repository's `bin/` folder and run on your machine. From the repository root:
 
 ```bash
-docker compose up -d                          # Kafka, AKHQ, topics, and a consumer with default flags
-docker compose logs -f consumer               # watch the consumer
-docker compose run --rm producer ok ko/ok     # in another terminal: send two messages
+make playground                                                 # build bin/consumer and bin/producer
+docker compose -f examples/playground/docker-compose.yml up -d  # Kafka, topics and AKHQ
+bin/consumer                                                    # terminal 1: start the consumer
+bin/producer ok ko/ok                                           # terminal 2: send two messages
 ```
 
 Then open AKHQ at <http://localhost:8080> to see the records, their keys and headers, and the
 consumer groups' offsets.
 
-To run the consumer with other flags, stop the default one first — two consumers in the same group
-would share the partitions between them:
+Run one consumer at a time: two consumers in the same group would share the partitions between
+them. To try other flags, stop it with Ctrl+C and start it again, e.g. `bin/consumer --mode batch`.
+After changing the library or the playground, run `make playground` again.
 
-```bash
-docker compose stop consumer
-docker compose run --rm consumer --mode batch --batch-size 10
-```
-
-The producer and consumer can also run on the host with `go run`, against the same broker on
-`localhost:9092`. From the repository root:
-
-```bash
-go run ./examples/playground/cmd/consumer --mode batch
-go run ./examples/playground/cmd/producer 9xok ko
-```
-
-When you are done, `docker compose down -v` removes everything, topics included.
+When you are done, `docker compose -f examples/playground/docker-compose.yml down -v` removes
+everything, topics included.
 
 ## What is running
 
 | Service | Purpose |
 |---|---|
-| `kafka` | Single-node broker (KRaft). Reachable as `kafka:29092` inside compose and `localhost:9092` from the host. |
+| `kafka` | Single-node broker (KRaft), on `localhost:9092`. |
 | `kafka-init` | Creates the topics below, then exits. |
 | `akhq` | Web UI at <http://localhost:8080>. |
-| `consumer` | Runs the source and retry consumers; started by `up`. |
-| `producer` | Sends messages; not started by `up`, run it with `docker compose run --rm producer …`. |
+
+The producer and consumer connect to `localhost:9092` by default.
 
 | Topic | Partitions | Why |
 |---|---|---|
@@ -138,12 +126,15 @@ The prefix is `x` rather than `*` because the shell treats an unquoted `*` as a 
 | `--partition P` | any | Send every message to partition P. |
 
 ```bash
-producer ok ko/ok ko/ko/ok ko/ko/ko perm      # five independent cases
-producer 49xok ko                             # 49 good messages and one poison
-producer ok bin ko/ok                         # a malformed record between two normal ones
+bin/producer ok ko/ok ko/ko/ok ko/ko/ko perm      # five independent cases
+bin/producer 49xok ko                             # 49 good messages and one poison
+bin/producer ok bin ko/ok                         # a malformed record between two normal ones
 ```
 
 It prints one line per record sent: key, partition, offset, payload.
+
+Keys restart at `-0001` on every run, so to follow one run's messages in AKHQ, give each run its own
+prefix: `bin/producer --key-prefix a 9xok ko`, then `--key-prefix b …`.
 
 ## Consumer
 
@@ -175,17 +166,25 @@ that is not due yet is never failed back — that would use up an attempt withou
 just before the outcome is carried out. It is a plain blocking sleep, not interrupted by Ctrl+C,
 like a real blocking call. It changes timing only, never an outcome.
 
-**One log line per delivery:**
+**One log line per delivery,** on stdout:
 
 ```
-[retry] key=msg-0003 topic=demo.orders.retry partition=0 offset=4 attempt=2 step=2 code=publish_failed token=ok -> ok
+13:41:05.000 [retry] key=msg-0003 topic=demo.orders.retry partition=0 offset=4 attempt=2 step=2 code=publish_failed token=ok -> ok
 ```
 
-— which consumer, the key, the record's position, the attempt and step it arrived with, the code of
-the previous failure, the token chosen, and what the handler did. In batch mode each batch also gets
-a line with its size and partitions.
+— the time, which consumer, the key, the record's position, the attempt and step it arrived with,
+the code of the previous failure, the token chosen, and what the handler did. In batch mode each
+batch also gets a line with its size and partitions, and a batch failed by `batchko` or `panic`
+logs every message as `-> batch failed (batchko on <key>)`:
 
-Ctrl+C (or `docker compose stop consumer`) stops it by cancelling the context, as described in the
+```
+13:39:48.415 [retry] batch size=10 partitions=[0]
+```
+
+The library's own log lines — each failure, retry and DLQ write, recovered panics — go to stderr at
+warning level, so they show up alongside. Timestamps are local time.
+
+Ctrl+C stops it by cancelling the context, as described in the
 library's [Stopping](../../README.md#-stopping) section.
 
 ## Walkthrough
@@ -195,7 +194,7 @@ library's [Stopping](../../README.md#-stopping) section.
 Several messages in one command still make sense here: the space only means "send several
 messages", and the consumer mode decides how they are handled. In single mode each message is
 handled on its own, so one command can carry several independent cases —
-`producer ok ko/ok ko/ko/ok perm` runs four at once, each following its own path. A failing message
+`bin/producer ok ko/ok ko/ko/ok perm` runs four at once, each following its own path. A failing message
 does not hold the others up, and several messages on one partition show the committed offset moving
 forward message by message. Batch-only tokens have nothing to act on: `batchko` acts as `ko`, and
 `panic` fails only its own message.

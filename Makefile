@@ -1,6 +1,6 @@
 .PHONY: build lint build-lint test test-unit test-integration coverage coverage-html \
         deps install-tools install-lint-tools install-test-tools clean clean-tools \
-        doc-refresh help
+        playground doc-refresh help
 
 ## ——— Tooling ——————————————————————————————————————————
 # Dev tools are installed into ./bin (gitignored) at pinned versions so that
@@ -25,6 +25,10 @@ lint: $(GOLANGCI_LINT) ## Run golangci-lint (config: .golangci.yml)
 	@$(GOLANGCI_LINT) run
 
 build-lint: build lint ## Build + lint (mirrors CI)
+
+playground: ## Build the playground's consumer and producer into ./bin
+	go build -o $(GOBIN)/consumer ./examples/playground/cmd/consumer
+	go build -o $(GOBIN)/producer ./examples/playground/cmd/producer
 
 ## ——— Tests ————————————————————————————————————————————
 
@@ -85,7 +89,7 @@ $(GOTESTSUM):
 clean: ## Remove generated files
 	rm -f coverage.out
 
-clean-tools: ## Remove installed dev tools from ./bin (keeps bin/.gitignore)
+clean-tools: ## Remove installed dev tools and playground binaries from ./bin (keeps bin/.gitignore)
 	@find $(GOBIN) -mindepth 1 ! -name .gitignore -delete 2>/dev/null || true
 
 ## Auto-detect latest git tag

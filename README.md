@@ -576,6 +576,9 @@ go install gotest.tools/gotestsum@latest
 gotestsum --format testdox -- -count=1 -timeout 1000s ./tests/integration/...
 ```
 
+To try the library by hand — watch messages move through the retry topic and the DLQ, with a web UI
+on the broker — see the [playground](examples/playground/README.md).
+
 ## 📜 Releases
 
 Version history is in [CHANGELOG.md](CHANGELOG.md); tagged releases appear on

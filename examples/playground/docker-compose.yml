@@ -1,0 +1,67 @@
+# easykafka playground: Kafka, the demo topics and AKHQ. The producer and
+# consumer run on the host — build them with `make playground`. See README.md.
+name: easykafka-playground
+
+services:
+  kafka:
+    image: confluentinc/cp-kafka:7.5.0
+    ports:
+      - "9092:9092"
+    environment:
+      # Single node in KRaft mode, acting as both broker and controller.
+      CLUSTER_ID: "ZWFzeWthZmthLXBsYXlncm"
+      KAFKA_NODE_ID: 1
+      KAFKA_PROCESS_ROLES: broker,controller
+      KAFKA_CONTROLLER_QUORUM_VOTERS: 1@kafka:29093
+      KAFKA_CONTROLLER_LISTENER_NAMES: CONTROLLER
+      # Two client listeners: kafka:29092 for AKHQ and topic setup inside the
+      # compose network, and localhost:9092 for the producer and consumer on the
+      # host.
+      KAFKA_LISTENERS: PLAINTEXT://0.0.0.0:29092,CONTROLLER://0.0.0.0:29093,PLAINTEXT_HOST://0.0.0.0:9092
+      KAFKA_ADVERTISED_LISTENERS: PLAINTEXT://kafka:29092,PLAINTEXT_HOST://localhost:9092
+      KAFKA_LISTENER_SECURITY_PROTOCOL_MAP: CONTROLLER:PLAINTEXT,PLAINTEXT:PLAINTEXT,PLAINTEXT_HOST:PLAINTEXT
+      KAFKA_INTER_BROKER_LISTENER_NAME: PLAINTEXT
+      # One broker, so internal topics cannot be replicated.
+      KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR: 1
+      KAFKA_TRANSACTION_STATE_LOG_REPLICATION_FACTOR: 1
+      KAFKA_TRANSACTION_STATE_LOG_MIN_ISR: 1
+      # Start consumer groups at once instead of waiting 3s for more members.
+      KAFKA_GROUP_INITIAL_REBALANCE_DELAY_MS: 0
+      # Topics come from kafka-init only, so a typo cannot create a new one.
+      KAFKA_AUTO_CREATE_TOPICS_ENABLE: "false"
+    healthcheck:
+      test: ["CMD", "kafka-topics", "--bootstrap-server", "kafka:29092", "--list"]
+      interval: 5s
+      timeout: 10s
+      retries: 20
+
+  kafka-init:
+    image: confluentinc/cp-kafka:7.5.0
+    depends_on:
+      kafka:
+        condition: service_healthy
+    entrypoint: ["bash", "-c"]
+    command:
+      - |
+        set -e
+        create() { kafka-topics --bootstrap-server kafka:29092 --create --if-not-exists --replication-factor 1 --topic "$$1" --partitions "$$2"; }
+        create demo.orders 3
+        create demo.orders.retry 1
+        create demo.orders.dlq 1
+        kafka-topics --bootstrap-server kafka:29092 --list
+    restart: "no"
+
+  akhq:
+    image: tchiotludo/akhq:0.25.1
+    depends_on:
+      kafka:
+        condition: service_healthy
+    ports:
+      - "8080:8080"
+    environment:
+      AKHQ_CONFIGURATION: |
+        akhq:
+          connections:
+            playground:
+              properties:
+                bootstrap.servers: "kafka:29092"

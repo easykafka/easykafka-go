@@ -67,6 +67,12 @@ public API may still change in a minor release.
 - **`Message.Key`**, populated from the consumed record. Until now the key was dropped in `Poll`, so
   nothing downstream — handler included — could see it.
 
+- **A playground** in `examples/playground`: a producer and a consumer for trying the library by
+  hand, built into `bin/` by `make playground`, with Kafka and the AKHQ web UI run by docker
+  compose. Each message's payload is a script — `ko/ko/ok` fails twice, then succeeds — so the
+  retry topic, the DLQ, batch routing and committed offsets can be watched as they happen. Its
+  README walks through the scenarios.
+
 - **`WaitUntilRetryTime(ctx, msg)`**, for consuming a retry topic. It blocks until the record's
   retry time, returns at once for a record with none — a first delivery — or one already due, and
   returns `ctx.Err()` if the context is cancelled first. One handler can therefore call it

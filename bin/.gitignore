@@ -1,4 +1,5 @@
-# Pinned dev tools installed by `make install-tools` (golangci-lint, gotestsum).
+# Pinned dev tools installed by `make install-tools` (golangci-lint, gotestsum),
+# and the playground's consumer and producer built by `make playground`.
 # Never commit the binaries — ignore everything here except this file, which is
 # tracked so the directory exists after a fresh clone.
 *
