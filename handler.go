@@ -159,6 +159,53 @@ func GetRetryTime(msg *Message) time.Time {
 	return metadata.GetRetryTime(msg)
 }
 
+// WaitUntilRetryTime blocks until the message is due for reprocessing — the
+// time [GetRetryTime] returns. It returns nil at once if the message carries no
+// retry time, which is the case on first delivery, or if that time has already
+// passed; so one handler can call it unconditionally and serve both the source
+// topic and the retry topic. A nil message returns nil.
+//
+// It returns ctx.Err() if ctx is cancelled first, which is how a handler
+// waiting on a record is released at shutdown:
+//
+//	func handle(ctx context.Context, payload []byte) *easykafka.Failure {
+//	    msg, _ := easykafka.MessageFromContext(ctx)
+//	    if err := easykafka.WaitUntilRetryTime(ctx, msg); err != nil {
+//	        return &easykafka.Failure{Err: err}
+//	    }
+//	    // ... process payload ...
+//	    return nil
+//	}
+//
+// A batch handler calls it per item, as it reaches each one:
+//
+//	for _, item := range batch.Items() {
+//	    msg := item.Message()
+//	    if err := easykafka.WaitUntilRetryTime(ctx, &msg); err != nil {
+//	        return &easykafka.Failure{Err: err}
+//	    }
+//	    // ... process item ...
+//	}
+//
+// Records reach a retry topic roughly in retry-time order, so after the first
+// wait the rest of a batch is usually due already.
+//
+// Three things to know:
+//
+//   - The retry time is stored to the second, so the wait can end up to a
+//     second before the time the library computed.
+//   - A message released by cancellation has not been processed. Returning the
+//     error as a failure sends it to the error strategy like any other failure:
+//     under retry it is republished and the attempt counts; under skip it is
+//     written off.
+//   - The handler runs on the goroutine that polls, so nothing is fetched while
+//     it waits. A wait longer than librdkafka's max.poll.interval.ms (300s by
+//     default) gets the consumer removed from its group. The retry strategy's
+//     default maximum delay is 30s.
+func WaitUntilRetryTime(ctx context.Context, msg *Message) error {
+	return metadata.WaitUntilRetryTime(ctx, msg)
+}
+
 // GetRetryStep returns the resume point a previous attempt reported through
 // [Failure.Step]: which step of a multi-step process failed, numbered from 1.
 // The library carries it but never interprets it — skipping the steps that

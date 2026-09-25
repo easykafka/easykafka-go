@@ -69,7 +69,8 @@ churn-heavy linters (`mnd`, `lll`, `dupl`, `gocognit`, `gosec`, `errcheck`,
 ### What of `internal/metadata` is public, and what is deliberately not
 
 `handler.go` re-exports the **read** side: `MessageFromContext`, the nine `Header*` key constants,
-and `GetRetryAttempt` / `GetRetryTime` / `GetRetryStep` / `GetErrorCode` / `GetOriginalTopic`.
+`GetRetryAttempt` / `GetRetryTime` / `GetRetryStep` / `GetErrorCode` / `GetOriginalTopic`, and
+`WaitUntilRetryTime`, which waits on the retry time rather than returning it.
 
 The **write** side stays internal on purpose. `WithMessage` is how the engine populates a handler
 context, and `BuildRetryHeaders` / `BuildDLQHeaders` are the retry strategy's. Exporting either

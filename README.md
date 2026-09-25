@@ -147,8 +147,8 @@ republished.
 This is what makes the retry topic consumable. **The library writes to the retry
 topic but never reads from it** — it stamps each record with a due time and
 republishes, and honouring that time is the application's job. A retry consumer
-is an ordinary consumer subscribed to the retry topic, deciding from
-`GetRetryTime` whether a record is ready:
+is an ordinary consumer subscribed to the retry topic, and
+`WaitUntilRetryTime` holds each record until it is due:
 
 ```go
 easykafka.New(
@@ -158,8 +158,8 @@ easykafka.New(
 	easykafka.WithHandler(func(ctx context.Context, payload []byte) *easykafka.Failure {
 		msg, _ := easykafka.MessageFromContext(ctx)
 
-		if due := easykafka.GetRetryTime(msg); time.Now().Before(due) {
-			return &easykafka.Failure{Err: fmt.Errorf("not due until %s", due)} // let the strategy requeue it
+		if err := easykafka.WaitUntilRetryTime(ctx, msg); err != nil {
+			return &easykafka.Failure{Err: err} // cancelled at shutdown before it was due
 		}
 		if err := processOrder(ctx, payload); err != nil {
 			return &easykafka.Failure{Err: err}
@@ -168,6 +168,14 @@ easykafka.New(
 	}),
 )
 ```
+
+It returns at once for a record with no retry time or one already past, so the
+same handler can serve the source topic too. Wait rather than failing a record
+back because it is not due yet: every failure counts as an attempt, so a record
+could reach the DLQ without ever being processed. Two limits apply, both
+because the handler runs on the goroutine that polls: nothing is fetched while
+it waits, and a wait longer than librdkafka's `max.poll.interval.ms` (300s by
+default) gets the consumer removed from its group.
 
 The full set of header keys, for reading raw records or writing your own
 tooling: `HeaderRetryAttempt`, `HeaderRetryTime`, `HeaderRetryStep`,

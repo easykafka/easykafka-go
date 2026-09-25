@@ -67,6 +67,17 @@ public API may still change in a minor release.
 - **`Message.Key`**, populated from the consumed record. Until now the key was dropped in `Poll`, so
   nothing downstream — handler included — could see it.
 
+- **`WaitUntilRetryTime(ctx, msg)`**, for consuming a retry topic. It blocks until the record's
+  retry time, returns at once for a record with none — a first delivery — or one already due, and
+  returns `ctx.Err()` if the context is cancelled first. One handler can therefore call it
+  unconditionally and serve both the source topic and the retry topic. It replaces the README's
+  earlier advice to fail a record back while it is not yet due, which counted every early look as
+  an attempt and could send a record to the DLQ unprocessed.
+
+  The wait runs on the polling goroutine, so nothing is fetched meanwhile, and a wait longer than
+  `max.poll.interval.ms` (300 s by default) gets the consumer removed from its group. The retry
+  time is stored to the second, so the wait may end up to a second early.
+
 - **`MessageFromContext(ctx)`, the nine retry header keys and the four `Get*` accessors** are now
   part of the public API. The 0.1.0 notes advertised message metadata as shipped — "handlers that
   need more than the payload read topic, partition, offset, timestamp and headers from the `Message`
