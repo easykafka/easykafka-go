@@ -576,8 +576,13 @@ go install gotest.tools/gotestsum@latest
 gotestsum --format testdox -- -count=1 -timeout 1000s ./tests/integration/...
 ```
 
-To try the library by hand — watch messages move through the retry topic and the DLQ, with a web UI
-on the broker — see the [playground](examples/playground/README.md).
+## 🛝 Playground
+
+[`examples/playground`](examples/playground/README.md) is a local setup for trying the library by
+hand: Kafka and the AKHQ web UI in Docker, plus a producer and consumer you run from the command
+line. Each message's payload says how the consumer should treat it — `ko/ko/ok` fails twice, then
+succeeds — so you can watch the retry topic, the DLQ, batch routing and committed offsets as they
+happen. Its README has the quick start and a walkthrough of the scenarios.
 
 ## 📜 Releases
 

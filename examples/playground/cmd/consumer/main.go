@@ -138,6 +138,10 @@ func run(ctx context.Context, cfg config) error {
 	out.printf("consumer: mode=%s strategy=%s max-attempts=%d initial-delay=%s processing-delay=%s retry-consumer=%t\n",
 		cfg.mode, cfg.strategy, cfg.maxAttempts, cfg.initialDelay, cfg.processingDelay, !cfg.noRetryConsumer)
 
+	// A child of the signal context, so it is cancelled either by Ctrl+C or
+	// SIGTERM through the parent, or by calling cancel — which a consumer that
+	// stops with an error does, to take the other one down with it. Cancelling
+	// the child never cancels the parent.
 	ctx, cancel := context.WithCancel(ctx)
 	defer cancel()
 

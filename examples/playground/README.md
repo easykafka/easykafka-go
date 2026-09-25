@@ -24,6 +24,14 @@ Run one consumer at a time: two consumers in the same group would share the part
 them. To try other flags, stop it with Ctrl+C and start it again, e.g. `bin/consumer --mode batch`.
 After changing the library or the playground, run `make playground` again.
 
+Flags always come first. The consumer takes flags only; the producer takes flags, then the messages
+— anything after the first message is sent as a message too, even if it looks like a flag:
+
+```bash
+bin/consumer --mode batch --batch-size 10 --max-attempts 4
+bin/producer --key-prefix b --partition 0 9xok ko
+```
+
 When you are done, `docker compose -f examples/playground/docker-compose.yml down -v` removes
 everything, topics included.
 
@@ -99,7 +107,7 @@ They become `Failure.Step` and `Failure.Code`, so you can check the retry record
 `easykafka.retry.step` and `easykafka.error.code` headers in AKHQ. The consumer logs the step each
 delivery arrives with: here the third delivery arrives with step 2, and so does the fourth, because
 a bare `ko` carries the step forward while its code falls back to `HANDLER_ERROR`. This script fails
-three times, so it needs `--max-attempts 4` or more to reach its `ok`.
+three times, so it reaches its `ok` only with a consumer started with `--max-attempts 4` or more.
 
 **Malformed records and `bin`.** A payload that does not parse as a script is treated as malformed:
 the handler fails it with `ErrPermanent`, so it goes straight to the DLQ. To send one on purpose,
@@ -189,6 +197,11 @@ library's [Stopping](../../README.md#-stopping) section.
 
 ## Walkthrough
 
+Each table below says how to start the consumer and what to send. Batching, strategies and
+attempts are all consumer flags — the producer only sends messages — so restart the consumer
+(Ctrl+C, then `bin/consumer` with the new flags) when a table asks for different ones. The *Send*
+column is what you pass to `bin/producer`, flags included.
+
 ### Single-message mode
 
 Several messages in one command still make sense here: the space only means "send several
@@ -199,7 +212,11 @@ does not hold the others up, and several messages on one partition show the comm
 forward message by message. Batch-only tokens have nothing to act on: `batchko` acts as `ko`, and
 `panic` fails only its own message.
 
-With the defaults — retry strategy, 3 attempts:
+Start the consumer with its defaults — single mode, retry strategy, 3 attempts:
+
+```bash
+bin/consumer
+```
 
 | Send | You should see |
 |---|---|
@@ -209,12 +226,16 @@ With the defaults — retry strategy, 3 attempts:
 | `ko/ko/ko` or `ko` | two retry records, then the DLQ with `attempt=3` |
 | `perm` | DLQ at once, `attempt=1`; nothing in retry |
 | `bin` | DLQ at once; the body in AKHQ is the original bytes |
-| `ko:step=1,code=write_failed/ko:step=2,code=publish_failed/ko/ok`, with `--max-attempts 4` | step and code change on each hop; the last delivery arrives with step 2 and `HANDLER_ERROR`, and succeeds |
+| `ko:step=1,code=write_failed/ko:step=2,code=publish_failed/ko/ok` — start the consumer with `--max-attempts 4` for this one | step and code change on each hop; the last delivery arrives with step 2 and `HANDLER_ERROR`, and succeeds |
 | `nil` | treated as a failure with `ErrUnspecified`; a warning in the log |
 
 ### Batch mode
 
-With `--mode batch --batch-size 10`:
+Start the consumer in batch mode:
+
+```bash
+bin/consumer --mode batch --batch-size 10
+```
 
 | Send | You should see |
 |---|---|
@@ -231,8 +252,8 @@ seeing once, as the cost of a batch-level failure.
 
 ### Other strategies
 
-| Consumer flags | Send | You should see |
+| Start the consumer with | Send | You should see |
 |---|---|---|
-| `--strategy skip` | `ko` | logged and committed; nothing in retry or DLQ |
-| `--strategy fail-fast --mode batch` | a batch with one `ko` | the consumer exits with the error; the committed offset in AKHQ does not move; restarting redelivers the whole batch |
-| `--no-retry-consumer` | `ko/ok` | the record sits in `demo.orders.retry` and is never processed |
+| `bin/consumer --strategy skip` | `ko` | logged and committed; nothing in retry or DLQ |
+| `bin/consumer --strategy fail-fast --mode batch` | `9xok ko` | the consumer exits with the error; the committed offset in AKHQ does not move; restarting redelivers the whole batch |
+| `bin/consumer --no-retry-consumer` | `ko/ok` | the record sits in `demo.orders.retry` and is never processed |
