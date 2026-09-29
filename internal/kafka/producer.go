@@ -127,19 +127,21 @@ func NewProducer(
 		onDeliveryError: onDeliveryError,
 	}
 
-	// Start delivery report handler in background
-	go prod.handleDeliveryReports()
+	// Read the events channel here and hand it to the goroutine. Close sets
+	// prod.producer to nil, so the goroutine must never read that field.
+	go prod.handleDeliveryReports(p.Events())
 
 	return prod, nil
 }
 
-// handleDeliveryReports processes delivery reports from the producer.
+// handleDeliveryReports processes delivery reports from the producer's events
+// channel until the client closes it.
 //
 // This is the only place a failed write is visible: Produce returns as soon as
 // the record is queued locally, so nothing downstream learns that the broker
 // never took it.
-func (p *Producer) handleDeliveryReports() {
-	for e := range p.producer.Events() {
+func (p *Producer) handleDeliveryReports(events chan kfk.Event) {
+	for e := range events {
 		de := DeliveryErrorFor(e)
 		if de == nil {
 			// Not a failed delivery report. Other event types are drained

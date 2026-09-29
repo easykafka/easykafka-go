@@ -241,3 +241,14 @@ func TestInvokeDeliveryErrorIsSafeForConcurrentUse(t *testing.T) {
 	assert.Equal(t, reports, seen["orders-retry"])
 	assert.Equal(t, reports, seen["orders-dlt"])
 }
+
+// TestProducerCloseRightAfterNew verifies that closing a producer immediately
+// after creating it neither races with nor crashes its delivery-report
+// goroutine. Run under -race, as CI does.
+func TestProducerCloseRightAfterNew(t *testing.T) {
+	for range 20 {
+		p, err := kafka.NewProducer([]string{"localhost:1"}, nil, zerolog.Nop(), nil)
+		require.NoError(t, err)
+		p.Close()
+	}
+}
