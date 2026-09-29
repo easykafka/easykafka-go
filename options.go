@@ -248,13 +248,20 @@ var managedKafkaKeys = map[string]string{
 		"offsets are stored only after a message is processed",
 	"partition.assignment.strategy": "managed by the library; " +
 		"rebalance handling requires an eager strategy, and a cooperative one would silently drop buffered messages",
+	"group.protocol": "managed by the library; " +
+		"rebalance handling requires the classic protocol, whose revokes are eager",
 }
 
 // WithKafkaConfig passes advanced configuration to confluent-kafka-go.
 // Use this to set low-level Kafka consumer properties.
 // Keys managed by the library (bootstrap.servers, group.id, enable.auto.commit,
-// enable.auto.offset.store, partition.assignment.strategy) cannot be set via this
-// option and will return an error explaining why.
+// enable.auto.offset.store, partition.assignment.strategy, group.protocol) cannot
+// be set via this option and will return an error explaining why.
+//
+// auto.offset.reset defaults to "earliest" and may be overridden. Setting it to
+// "latest" skips every message already on the topic whenever the group has no
+// committed offset: on first start, and again after the broker expires the
+// group's offsets (offsets.retention.minutes, 7 days by default).
 //
 // The retry strategy's producers inherit the map too, so a cluster that needs
 // security, SASL or TLS settings is configured once for both. Consumer-only keys

@@ -273,10 +273,11 @@ func TestWithKafkaConfigRejectsNil(t *testing.T) {
 // TestWithKafkaConfigRejectsManagedKeys verifies that WithKafkaConfig rejects the
 // keys the library sets itself.
 //
-// The last two are not housekeeping: they are what makes at-least-once hold.
+// The last three are not housekeeping: they are what makes at-least-once hold.
 // Letting a caller re-enable the offset store would put back the bug where a
 // rebalance commits messages no handler has seen, and a cooperative assignment
-// strategy would break the rebalance handling that drops the batch buffer.
+// strategy or the consumer group protocol (KIP-848), whose revokes are
+// incremental, would break the rebalance handling that drops the batch buffer.
 func TestWithKafkaConfigRejectsManagedKeys(t *testing.T) {
 	managedKeys := []struct {
 		key  string
@@ -288,6 +289,7 @@ func TestWithKafkaConfigRejectsManagedKeys(t *testing.T) {
 		{"auto.commit.interval.ms", "auto.commit.interval.ms is managed by WithAutoCommitEvery"},
 		{"enable.auto.offset.store", "enable.auto.offset.store is managed by the library"},
 		{"partition.assignment.strategy", "partition.assignment.strategy is managed by the library"},
+		{"group.protocol", "group.protocol is managed by the library"},
 	}
 
 	for _, tc := range managedKeys {
