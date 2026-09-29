@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"strings"
 	"testing"
 	"time"
 
@@ -753,4 +754,91 @@ func TestOriginalPositionSurvivesTwoHops(t *testing.T) {
 			assert.Equal(t, "100", headers[metadata.HeaderOriginalOffset])
 		})
 	}
+}
+
+// =============================================================================
+// One consumer per retry strategy
+// =============================================================================
+
+// TestRetryStrategyRejectsSecondConsumer verifies that a retry strategy held by
+// one consumer cannot be initialized by another until the first releases it.
+func TestRetryStrategyRejectsSecondConsumer(t *testing.T) {
+	s, err := strategy.NewRetryStrategy(
+		strategy.WithRetryTopic("orders.retry"),
+		strategy.WithDLQTopic("orders.dlq"),
+	)
+	require.NoError(t, err)
+	cfg := types.InitConfig{Brokers: []string{"localhost:1"}, Logger: zerolog.Nop()}
+
+	require.NoError(t, s.Initialize(cfg))
+	require.ErrorIs(t, s.Initialize(cfg), strategy.ErrStrategyInUse)
+
+	// Released on Close: sequential reuse still works.
+	require.NoError(t, s.Close())
+	require.NoError(t, s.Initialize(cfg))
+	require.NoError(t, s.Close())
+}
+
+// TestConsumerRejectsSharedRetryStrategy is the consumer side. Two consumers are
+// given the same retry strategy. While consumer A is running, consumer B's Start
+// must fail with ErrStrategyInUse and leave A's strategy as it was: still
+// claimed, producers still open, still logging through A's logger rather than
+// B's. Once A stops, the strategy is released.
+func TestConsumerRejectsSharedRetryStrategy(t *testing.T) {
+	shared, err := strategy.NewRetryStrategy(
+		strategy.WithRetryTopic("orders.retry"),
+		strategy.WithDLQTopic("orders.dlq"),
+	)
+	require.NoError(t, err)
+
+	var logA, logB helpers.SyncBuffer
+
+	consumerA, err := easykafka.New(
+		easykafka.WithTopic("orders"),
+		easykafka.WithBrokers("localhost:1"),
+		easykafka.WithConsumerGroup("orders-group"),
+		easykafka.WithHandler(helpers.NoopHandler),
+		easykafka.WithErrorStrategy(shared),
+		easykafka.WithLogger(zerolog.New(&logA)),
+	)
+	require.NoError(t, err)
+
+	consumerB, err := easykafka.New(
+		easykafka.WithTopic("payments"),
+		easykafka.WithBrokers("localhost:1"),
+		easykafka.WithConsumerGroup("payments-group"),
+		easykafka.WithHandler(helpers.NoopHandler),
+		easykafka.WithErrorStrategy(shared),
+		easykafka.WithLogger(zerolog.New(&logB)),
+	)
+	require.NoError(t, err)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+
+	// Start A, and wait until it holds the strategy. Initialize logs this line
+	// through A's logger once the claim has succeeded.
+	ctxA, stopA := context.WithCancel(ctx)
+	doneA := make(chan error, 1)
+	go func() { doneA <- consumerA.Start(ctxA) }()
+	require.Eventually(t, func() bool { return strings.Contains(logA.String(), "retry strategy initialized") },
+		10*time.Second, 10*time.Millisecond, "consumer A did not initialize the strategy")
+
+	// B is rejected.
+	require.ErrorIs(t, consumerB.Start(ctx), easykafka.ErrStrategyInUse)
+
+	// B left A's strategy as it was: its producers still take a write, and it
+	// still logs through A's logger.
+	msg := helpers.NewTestMessage("orders", 0, 0, "msg")
+	require.NoError(t, shared.HandleError(ctx, []*types.Message{msg}, types.Failure{Err: errors.New("boom")}),
+		"the rejected consumer must not close A's producers")
+	assert.Contains(t, logA.String(), "handler failed for message", "A's strategy must still log through A's logger")
+	assert.NotContains(t, logB.String(), "handler failed for message", "the rejected consumer must not take over the logger")
+
+	// A stops, and releases the strategy for the next consumer.
+	stopA()
+	require.NoError(t, <-doneA)
+	require.NoError(t, shared.Initialize(types.InitConfig{Brokers: []string{"localhost:1"}, Logger: zerolog.Nop()}),
+		"the strategy must be free once A has stopped")
+	require.NoError(t, shared.Close())
 }

@@ -168,12 +168,9 @@ func (c *consumerImpl) Start(ctx context.Context) error {
 		Str("error_strategy", c.config.ErrorStrategy.Name()).
 		Msg("consumer starting")
 
-	// Wire logger into error strategy if it supports it
-	if la, ok := c.config.ErrorStrategy.(types.LoggerAware); ok {
-		la.SetLogger(c.config.Logger)
-	}
-
-	// Initialize error strategy if it implements Initializable (e.g., retry)
+	// Initialize the error strategy first. A retry strategy that another running
+	// consumer holds rejects the claim here, before SetLogger below could replace
+	// that consumer's logger.
 	if init, ok := c.config.ErrorStrategy.(types.Initializable); ok {
 		initCfg := types.InitConfig{
 			Brokers:       c.config.Brokers,
@@ -185,6 +182,11 @@ func (c *consumerImpl) Start(ctx context.Context) error {
 		if err := init.Initialize(initCfg); err != nil {
 			return fmt.Errorf("failed to initialize error strategy: %w", err)
 		}
+	}
+
+	// Wire logger into error strategy if it supports it
+	if la, ok := c.config.ErrorStrategy.(types.LoggerAware); ok {
+		la.SetLogger(c.config.Logger)
 	}
 
 	// Create Kafka adapter

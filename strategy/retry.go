@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"math"
+	"sync/atomic"
 	"time"
 
 	"github.com/easykafka/easykafka-go/internal/kafka"
@@ -139,7 +140,17 @@ type RetryStrategy struct {
 	dlqProducer   types.KafkaProducer
 	logger        zerolog.Logger
 	initialized   bool
+
+	// inUse is set while a consumer holds the strategy, from Initialize to
+	// Close. The producers and logger belong to that consumer: a second one
+	// would replace them under it, and its Close would shut them down.
+	inUse atomic.Bool
 }
+
+// ErrStrategyInUse is returned by Initialize when another consumer is still
+// running with the strategy.
+var ErrStrategyInUse = errors.New(
+	"retry strategy is already in use by another consumer; give each consumer its own NewRetryStrategy")
 
 // NewRetryStrategy creates a retry strategy with the given options.
 // The strategy must be initialized via Initialize() before use (called automatically by Consumer.Start).
@@ -195,11 +206,19 @@ func (r *RetryStrategy) SetLogger(logger zerolog.Logger) {
 // Initialize creates the retry and DLQ producers, connected the way the
 // consumer is: its brokers, and its WithKafkaConfig map minus consumer-only
 // keys (see kafka.ProducerConfig).
+//
+// It returns ErrStrategyInUse while another consumer holds the strategy, and
+// then touches nothing. Close releases it for the next consumer.
 func (r *RetryStrategy) Initialize(config types.InitConfig) error {
+	if !r.inUse.CompareAndSwap(false, true) {
+		return ErrStrategyInUse
+	}
+
 	r.logger = config.Logger
 
 	retryProducer, err := kafka.NewProducer(config.Brokers, config.KafkaConfig, config.Logger, r.config.OnDeliveryError)
 	if err != nil {
+		r.inUse.Store(false)
 		return fmt.Errorf("failed to create retry producer: %w", err)
 	}
 	r.retryProducer = retryProducer
@@ -207,6 +226,7 @@ func (r *RetryStrategy) Initialize(config types.InitConfig) error {
 	dlqProducer, err := kafka.NewProducer(config.Brokers, config.KafkaConfig, config.Logger, r.config.OnDeliveryError)
 	if err != nil {
 		retryProducer.Close()
+		r.inUse.Store(false)
 		return fmt.Errorf("failed to create DLQ producer: %w", err)
 	}
 	r.dlqProducer = dlqProducer
@@ -222,7 +242,7 @@ func (r *RetryStrategy) Initialize(config types.InitConfig) error {
 	return nil
 }
 
-// Close shuts down producers.
+// Close shuts down producers and releases the strategy for another consumer.
 func (r *RetryStrategy) Close() error {
 	if r.retryProducer != nil {
 		r.retryProducer.Close()
@@ -230,6 +250,7 @@ func (r *RetryStrategy) Close() error {
 	if r.dlqProducer != nil {
 		r.dlqProducer.Close()
 	}
+	r.inUse.Store(false)
 	return nil
 }
 

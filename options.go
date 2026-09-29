@@ -157,6 +157,10 @@ func WithBatchHandler(handler BatchHandler) Option {
 }
 
 // WithErrorStrategy specifies how to handle message processing failures.
+//
+// Give each consumer its own strategy. A strategy holds per-consumer state, such
+// as the retry strategy's producers, and a retry strategy that another running
+// consumer holds makes Start fail with ErrStrategyInUse.
 func WithErrorStrategy(strategy types.ErrorStrategy) Option {
 	return func(c *Config) error {
 		if strategy == nil {

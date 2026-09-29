@@ -52,6 +52,10 @@ var (
 	// ErrUnspecified stands in for a failure a handler recorded without an
 	// error. The message is still routed, under this error.
 	ErrUnspecified = types.ErrUnspecified
+
+	// ErrStrategyInUse is returned by Start when its retry strategy is held by
+	// another running consumer. Give each consumer its own NewRetryStrategy.
+	ErrStrategyInUse = strategy.ErrStrategyInUse
 )
 
 // DeliveryError describes a retry or DLQ write that never reached the broker.

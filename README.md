@@ -259,6 +259,10 @@ channel and no correlation problem. Scaling from one consumer to several costs
 four lines — the map, the `WaitGroup`, and the goroutine that makes `Wait`
 selectable — and the shutdown block is unchanged.
 
+Each consumer needs its own error strategy: build one `NewRetryStrategy` per
+consumer. A retry strategy another running consumer holds makes `Start` fail
+with `ErrStrategyInUse`.
+
 **Two things worth knowing.** A message being handled when the context is
 cancelled has its context cancelled with it, and whatever the handler returns
 then goes to the error strategy like any other result: under `Skip` it is
