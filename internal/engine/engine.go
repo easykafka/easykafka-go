@@ -190,8 +190,11 @@ func (e *Engine) runSingleLoop(ctx context.Context) error {
 			continue
 		}
 
-		// Attach message metadata to context for handler access
-		handlerCtx := metadata.WithMessage(ctx, msg)
+		// Attach a copy of the message to the handler's context, so nothing the
+		// handler does to it can move the offset stored below from msg. The
+		// payload and headers are still shared, as in batch mode.
+		view := *msg
+		handlerCtx := metadata.WithMessage(ctx, &view)
 
 		// Call handler with panic recovery
 		failure := e.dispatchMessage(handlerCtx, msg)

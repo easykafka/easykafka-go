@@ -113,6 +113,11 @@ var (
 //	    return nil
 //	}
 //
+// The message is the handler's own copy, so the topic, partition and offset the
+// engine accounts against cannot be changed through it. The payload and headers
+// are still shared with the engine, and a handler must treat both as read-only:
+// writing into them changes what a retry or DLQ record carries.
+//
 // It reports false in batch mode, and has nothing to add there: one context is
 // shared by the whole batch, so there is no single message it could describe,
 // and a batch handler already reads each message — key, headers, topic,

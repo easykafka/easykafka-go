@@ -325,6 +325,35 @@ func TestEngineMessageContext(t *testing.T) {
 	assert.Equal(t, "value", capturedMsg.Headers["key"])
 }
 
+// TestEngineHandlerCannotMoveStoredOffset verifies that changing the message a
+// handler reads from its context does not change the offset the engine stores,
+// nor the message the error strategy receives.
+func TestEngineHandlerCannotMoveStoredOffset(t *testing.T) {
+	handler := func(ctx context.Context, payload []byte) *types.Failure {
+		msg, ok := easykafka.MessageFromContext(ctx)
+		require.True(t, ok)
+		msg.Topic, msg.Partition, msg.Offset = "elsewhere", 9, 1000
+		return &types.Failure{Err: errors.New("fail")}
+	}
+
+	client := &helpers.MockKafkaClient{
+		Messages: []*types.Message{helpers.NewTestMessage("topic", 0, 5, "msg")},
+	}
+	strat := &helpers.MockStrategy{}
+	eng := engine.NewEngine(client, handler, strat, helpers.TestLogger(), 100)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 500*time.Millisecond)
+	defer cancel()
+	require.NoError(t, eng.Start(ctx))
+
+	assert.Equal(t, []helpers.StoreRecord{{Topic: "topic", Partition: 0, Offset: 5}},
+		client.StoredOffsets(), "the stored offset must come from the polled message")
+
+	calls := strat.HandleCalls()
+	require.Len(t, calls, 1)
+	assert.Equal(t, int64(5), calls[0].Msgs[0].Offset, "the strategy must see the polled message")
+}
+
 // TestEngineDoubleStartError verifies engine prevents double-start.
 func TestEngineDoubleStartError(t *testing.T) {
 	client := &helpers.MockKafkaClient{}
