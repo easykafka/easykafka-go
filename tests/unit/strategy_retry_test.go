@@ -554,9 +554,36 @@ func TestMaxDelayCappedBackoff(t *testing.T) {
 	parsedTime, err := time.Parse(time.RFC3339, rt)
 	require.NoError(t, err)
 
-	// Should be now + maxDelay (5s), not some huge value
+	// Should be now + maxDelay (5s): not some huge value, and not in the past.
+	// RFC3339 drops sub-second precision, so the lower bound leaves a margin.
+	minExpected := time.Now().Add(3 * time.Second)
 	maxExpected := time.Now().Add(6 * time.Second)
+	assert.True(t, parsedTime.After(minExpected), "retry time should be at MaxDelay, not earlier")
 	assert.True(t, parsedTime.Before(maxExpected), "retry time should be capped at MaxDelay")
+}
+
+// TestBackoffOverflowIsCapped verifies that a backoff too large for a
+// time.Duration is capped at MaxDelay. Converting it unchecked gives a negative
+// duration on amd64, which would schedule the retry in the past.
+func TestBackoffOverflowIsCapped(t *testing.T) {
+	s, retryProd, _ := helpers.NewRetryStrategyWithMocks(200) // 1s, x2, 30s cap
+
+	msg := &types.Message{
+		Topic:   "t.retry",
+		Headers: map[string]string{metadata.HeaderRetryAttempt: "99"}, // this failure is attempt 100
+		Payload: []byte("m"),
+	}
+	before := time.Now()
+	require.NoError(t, s.HandleError(context.Background(), []*types.Message{msg}, types.Failure{Err: errors.New("err")}))
+
+	retryMsgs := retryProd.Messages()
+	require.Len(t, retryMsgs, 1)
+	retryTime, err := time.Parse(time.RFC3339, retryMsgs[0].Headers[metadata.HeaderRetryTime])
+	require.NoError(t, err)
+
+	// RFC3339 drops sub-second precision, so allow one second below the cap.
+	assert.False(t, retryTime.Before(before.Add(30*time.Second-time.Second)),
+		"an overflowing backoff must be capped at MaxDelay, not scheduled in the past")
 }
 
 // =============================================================================

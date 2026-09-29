@@ -357,10 +357,12 @@ func (r *RetryStrategy) computeBackoff(attempt int) time.Duration {
 
 	// Exponential backoff: initialDelay * multiplier^(attempt-1)
 	delay := float64(r.config.InitialDelay) * math.Pow(r.config.Multiplier, float64(attempt-1))
-	d := time.Duration(delay)
 
-	if d > r.config.MaxDelay {
+	// Cap before converting. A float beyond time.Duration's range converts to
+	// an implementation-defined value, which on amd64 is negative and would
+	// slip under the cap as an immediate retry.
+	if delay >= float64(r.config.MaxDelay) {
 		return r.config.MaxDelay
 	}
-	return d
+	return time.Duration(delay)
 }
