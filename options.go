@@ -255,6 +255,11 @@ var managedKafkaKeys = map[string]string{
 // Keys managed by the library (bootstrap.servers, group.id, enable.auto.commit,
 // enable.auto.offset.store, partition.assignment.strategy) cannot be set via this
 // option and will return an error explaining why.
+//
+// The retry strategy's producers inherit the map too, so a cluster that needs
+// security, SASL or TLS settings is configured once for both. Consumer-only keys
+// and confluent-kafka-go's own "go." keys are left out, and the producers keep
+// acks=all whatever the map says.
 func WithKafkaConfig(config map[string]any) Option {
 	return func(c *Config) error {
 		if config == nil {

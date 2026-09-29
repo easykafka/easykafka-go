@@ -164,6 +164,25 @@ Three things to preserve when touching this path:
 `DeliveryErrorFor` and `InvokeDeliveryError` are exported from `internal/kafka` purely so they are
 reachable from `tests/`; `internal/` keeps them out of the public API.
 
+### Retry/DLQ producers inherit the consumer's Kafka config
+
+The consumer's `WithKafkaConfig` map reaches the strategy through `InitConfig.KafkaConfig`, and
+`kafka.ProducerConfig` builds each producer's config from it. Without that, the producers would
+connect without the consumer's security, SASL and TLS settings: `Produce` still succeeds locally,
+the offset is stored, and every retry and DLQ write fails later.
+
+Two things to preserve:
+
+- **The filter is a deny-list of consumer-only keys, not an allowlist of shared ones.** A missed
+  consumer-only key costs one librdkafka `CONFWARN` line at producer start. A missed shared key —
+  `enable.ssl.certificate.verification`, say, which no `ssl.` prefix catches — would silently
+  break every write. Keep adding to the deny-list; never replace it with an allowlist.
+- **`go.*` keys are always dropped.** Some that a consumer accepts
+  (`go.application.rebalance.enable`, `go.events.channel.enable`) make `kfk.NewProducer` fail with
+  "No such configuration property".
+
+`bootstrap.servers` and `acks=all` are set after the inherited keys, so the map cannot change them.
+
 ### Testing approach
 - `tests/unit/` — pure Go logic, no Kafka dependency (strategy behavior, batch buffer, shutdown logic, options validation, delivery-error mapping)
 - `tests/integration/` — full Kafka via testcontainers-go (consumer basics, batch, retry/DLQ, fail-fast, graceful shutdown, rebalancing, reconnection, at-least-once semantics, delivery errors)

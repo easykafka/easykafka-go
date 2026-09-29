@@ -191,17 +191,19 @@ func (r *RetryStrategy) SetLogger(logger zerolog.Logger) {
 	r.logger = logger
 }
 
-// Initialize creates Kafka producers using broker addresses from the consumer.
+// Initialize creates the retry and DLQ producers, connected the way the
+// consumer is: its brokers, and its WithKafkaConfig map minus consumer-only
+// keys (see kafka.ProducerConfig).
 func (r *RetryStrategy) Initialize(config types.InitConfig) error {
 	r.logger = config.Logger
 
-	retryProducer, err := kafka.NewProducer(config.Brokers, config.Logger, r.config.OnDeliveryError)
+	retryProducer, err := kafka.NewProducer(config.Brokers, config.KafkaConfig, config.Logger, r.config.OnDeliveryError)
 	if err != nil {
 		return fmt.Errorf("failed to create retry producer: %w", err)
 	}
 	r.retryProducer = retryProducer
 
-	dlqProducer, err := kafka.NewProducer(config.Brokers, config.Logger, r.config.OnDeliveryError)
+	dlqProducer, err := kafka.NewProducer(config.Brokers, config.KafkaConfig, config.Logger, r.config.OnDeliveryError)
 	if err != nil {
 		retryProducer.Close()
 		return fmt.Errorf("failed to create DLQ producer: %w", err)

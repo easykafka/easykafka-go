@@ -180,6 +180,7 @@ func (c *consumerImpl) Start(ctx context.Context) error {
 			ConsumerGroup: c.config.ConsumerGroup,
 			Handler:       c.config.Handler,
 			Logger:        c.config.Logger,
+			KafkaConfig:   c.config.KafkaConfig,
 		}
 		if err := init.Initialize(initCfg); err != nil {
 			return fmt.Errorf("failed to initialize error strategy: %w", err)

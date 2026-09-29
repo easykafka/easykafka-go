@@ -530,6 +530,12 @@ easykafka.WithKafkaConfig(map[string]any{
 })
 ```
 
+The retry strategy's producers inherit these settings as well, so on a secured
+cluster the `security.protocol`, SASL and TLS keys set here reach the retry and
+DLQ writes too — configure them once. Consumer-only keys (`session.timeout.ms`,
+`fetch.*`, `group.*`, …) and confluent-kafka-go's own `go.*` keys are left out,
+and the producers always keep `acks=all`.
+
 Some keys are managed by the library and are rejected with an explanation rather
 than silently ignored:
 

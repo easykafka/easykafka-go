@@ -180,6 +180,11 @@ type InitConfig struct {
 	ConsumerGroup string
 	Handler       Handler
 	Logger        zerolog.Logger
+
+	// KafkaConfig is the consumer's WithKafkaConfig map, for strategies that
+	// create Kafka clients of their own. Without it those clients would miss
+	// the consumer's security, SASL and TLS settings. Read it; never modify it.
+	KafkaConfig map[string]any
 }
 
 // LoggerAware can be implemented by error strategies that accept a logger

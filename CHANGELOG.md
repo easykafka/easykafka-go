@@ -259,6 +259,14 @@ public API may still change in a minor release.
 
 ### Fixed
 
+- **Retry and DLQ writes on a secured cluster.** The retry strategy's producers were built from the
+  broker list alone, so nothing set with `WithKafkaConfig` reached them — including
+  `security.protocol` and the SASL and TLS settings a managed cluster requires. On such a cluster
+  the consumer connected and the producers could not: every write was queued locally, its source
+  offset committed, and then failed to authenticate, losing every retry and DLQ record. The
+  producers now inherit the consumer's `WithKafkaConfig`, minus consumer-only keys and
+  confluent-kafka-go's own `go.*` keys, and always keep `acks=all`.
+
 - **`easykafka.original.partition` and `.offset` survive every hop.** Only the topic used to: the
   partition and offset were overwritten with the current record's on each republish, so after a
   second hop they named a position on the retry topic paired with the source topic's name. They now

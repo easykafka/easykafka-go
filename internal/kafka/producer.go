@@ -20,12 +20,88 @@ type Producer struct {
 	onDeliveryError types.DeliveryErrorFunc
 }
 
-// NewProducer creates a new Kafka producer for the given brokers.
+// consumerOnlyPrefixes and consumerOnlyKeys name the librdkafka properties that
+// apply to consumers only — scope "C" in librdkafka's CONFIGURATION.md. They are
+// dropped when a producer inherits the consumer's configuration.
+//
+// This is a deny-list rather than an allowlist of shared keys on purpose. A
+// consumer-only key missing from it reaches the producer, and librdkafka logs
+// one CONFWARN line ("is a consumer property and will be ignored") and carries
+// on. A shared key missing from an allowlist — a security, SASL or TLS setting —
+// would be silently withheld, and every retry and DLQ write would fail.
+var (
+	consumerOnlyPrefixes = []string{"group.", "fetch.", "queued.", "auto.", "enable.auto.", "offset.store."}
+	consumerOnlyKeys     = map[string]bool{
+		"session.timeout.ms":            true,
+		"heartbeat.interval.ms":         true,
+		"max.poll.interval.ms":          true,
+		"coordinator.query.interval.ms": true,
+		"partition.assignment.strategy": true,
+		"max.partition.fetch.bytes":     true,
+		"isolation.level":               true,
+		"consume.callback.max.messages": true,
+		"enable.partition.eof":          true,
+		"check.crcs":                    true,
+	}
+)
+
+// ProducerConfig builds the configuration for a retry or DLQ producer from the
+// consumer's brokers and its WithKafkaConfig map, so the producer connects the
+// way the consumer does — with its security, SASL and TLS settings above all.
+//
+// Every key is carried over except:
+//
+//   - consumer-only keys, which a producer ignores anyway (see consumerOnlyKeys);
+//   - "go." keys, confluent-kafka-go's own client options. Some that a consumer
+//     accepts, such as go.application.rebalance.enable, make a producer fail to
+//     start, and the library sets its producers' own.
+//
+// bootstrap.servers and acks=all are set last, so kafkaConfig cannot change
+// them. kafkaConfig is only read; it also configures the consumer.
+//
+// Exported within internal/ so that tests can reach it.
+func ProducerConfig(brokers []string, kafkaConfig map[string]any) (*kfk.ConfigMap, error) {
+	config := &kfk.ConfigMap{}
+
+	for key, value := range kafkaConfig {
+		if strings.HasPrefix(key, "go.") || isConsumerOnly(key) {
+			continue
+		}
+		if err := config.SetKey(key, value); err != nil {
+			return nil, fmt.Errorf("setting kafka config %s: %w", key, err)
+		}
+	}
+
+	if err := config.SetKey("bootstrap.servers", strings.Join(brokers, ",")); err != nil {
+		return nil, fmt.Errorf("setting bootstrap.servers: %w", err)
+	}
+	if err := config.SetKey("acks", "all"); err != nil {
+		return nil, fmt.Errorf("setting acks: %w", err)
+	}
+	return config, nil
+}
+
+// isConsumerOnly reports whether key is a consumer-only librdkafka property.
+func isConsumerOnly(key string) bool {
+	if consumerOnlyKeys[key] {
+		return true
+	}
+	for _, prefix := range consumerOnlyPrefixes {
+		if strings.HasPrefix(key, prefix) {
+			return true
+		}
+	}
+	return false
+}
+
+// NewProducer creates a new Kafka producer for the given brokers, configured
+// from the consumer's kafkaConfig as ProducerConfig describes.
 //
 // onDeliveryError, if non-nil, is called for every write that fails to reach
 // the broker. See types.DeliveryErrorFunc for the contract it must honour.
 func NewProducer(
 	brokers []string,
+	kafkaConfig map[string]any,
 	logger zerolog.Logger,
 	onDeliveryError types.DeliveryErrorFunc,
 ) (*Producer, error) {
@@ -34,9 +110,9 @@ func NewProducer(
 		return nil, fmt.Errorf("at least one broker is required")
 	}
 
-	config := &kfk.ConfigMap{
-		"bootstrap.servers": strings.Join(brokers, ","),
-		"acks":              "all",
+	config, err := ProducerConfig(brokers, kafkaConfig)
+	if err != nil {
+		return nil, err
 	}
 
 	p, err := kfk.NewProducer(config)
