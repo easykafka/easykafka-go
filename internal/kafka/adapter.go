@@ -11,6 +11,7 @@ import (
 	kfk "github.com/confluentinc/confluent-kafka-go/v2/kafka"
 	"github.com/rs/zerolog"
 
+	"github.com/easykafka/easykafka-go/internal/logcode"
 	"github.com/easykafka/easykafka-go/internal/types"
 )
 
@@ -218,7 +219,7 @@ func (a *Adapter) rebalanceCallback(c *kfk.Consumer, event kfk.Event) error {
 			Msg("partitions assigned")
 
 		if err := c.Assign(ev.Partitions); err != nil {
-			a.logger.Error().Err(err).Msg("failed to assign partitions")
+			a.logger.Error().Str(logcode.Field, logcode.RebalanceFailed).Err(err).Msg("failed to assign partitions")
 			return err
 		}
 
@@ -248,11 +249,12 @@ func (a *Adapter) rebalanceCallback(c *kfk.Consumer, event kfk.Event) error {
 		// engine put there after a message was accounted for, so this can no
 		// longer publish messages that were polled but never processed.
 		if err := a.CommitStored(); err != nil {
-			a.logger.Warn().Err(err).Msg("failed to commit offsets during revocation")
+			a.logger.Warn().Str(logcode.Field, logcode.CommitFailed).Str("commit", "revoke").Err(err).
+				Msg("failed to commit offsets during revocation")
 		}
 
 		if err := c.Unassign(); err != nil {
-			a.logger.Error().Err(err).Msg("failed to unassign partitions")
+			a.logger.Error().Str(logcode.Field, logcode.RebalanceFailed).Err(err).Msg("failed to unassign partitions")
 			return err
 		}
 	}
@@ -281,7 +283,8 @@ func (a *Adapter) Poll(ctx context.Context, timeoutMs int) (*types.Message, erro
 		a.brokerConnected = true
 		a.mu.Unlock()
 		if wasDisconnected {
-			a.logger.Info().Msg("broker connection restored, resuming message consumption")
+			a.logger.Info().Str(logcode.Field, logcode.BrokerReconnected).
+				Msg("broker connection restored, resuming message consumption")
 		}
 
 		// Convert confluent message to our Message type
@@ -320,14 +323,15 @@ func (a *Adapter) Poll(ctx context.Context, timeoutMs int) (*types.Message, erro
 			a.mu.Unlock()
 
 			if wasConnected {
-				a.logger.Warn().Err(e).Int("code", int(e.Code())).
+				a.logger.Warn().Str(logcode.Field, logcode.BrokerDisconnected).Err(e).Int("code", int(e.Code())).
 					Msg("broker connection lost, librdkafka will reconnect automatically")
 			} else {
 				a.logger.Debug().Err(e).Int("code", int(e.Code())).
 					Msg("broker still unavailable, reconnection in progress")
 			}
 		default:
-			a.logger.Warn().Err(e).Int("code", int(e.Code())).Msg("non-fatal kafka error")
+			a.logger.Warn().Str(logcode.Field, logcode.KafkaError).Err(e).Int("code", int(e.Code())).
+				Msg("non-fatal kafka error")
 		}
 		return nil, nil //nolint:nilnil // a nil message with a nil error means "nothing polled"
 
@@ -343,7 +347,7 @@ func (a *Adapter) Poll(ctx context.Context, timeoutMs int) (*types.Message, erro
 		// is operationally significant: a consumer that has not committed for an
 		// hour replays an hour on restart.
 		if e.Error != nil {
-			a.logger.Warn().Err(e.Error).
+			a.logger.Warn().Str(logcode.Field, logcode.CommitFailed).Str("commit", "auto").Err(e.Error).
 				Int("partitions", len(e.Offsets)).
 				Msg("auto-commit failed, offsets remain stored")
 		} else {

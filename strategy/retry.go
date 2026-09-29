@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/easykafka/easykafka-go/internal/kafka"
+	"github.com/easykafka/easykafka-go/internal/logcode"
 	"github.com/easykafka/easykafka-go/internal/metadata"
 	"github.com/easykafka/easykafka-go/internal/types"
 	"github.com/rs/zerolog"
@@ -257,25 +258,26 @@ func (r *RetryStrategy) HandleError(ctx context.Context, msgs []*types.Message, 
 			Msg("handler failed for message")
 
 		if permanent || attempt >= r.config.MaxAttempts {
-			reason := "max retry attempts reached, sending to DLQ"
+			reason, code := "max retry attempts reached, sending to DLQ", logcode.DLQMaxAttempts
 			if permanent {
-				reason = "permanent failure, sending to DLQ without retrying"
+				reason, code = "permanent failure, sending to DLQ without retrying", logcode.DLQPermanent
 			}
 			r.logger.Error().
+				Str(logcode.Field, code).
 				Str("topic", msg.Topic).
 				Int64("offset", msg.Offset).
 				Int("attempts", attempt).
 				Msg(reason)
 
 			if err := r.sendToDLQ(ctx, msg, f, attempt); err != nil {
-				r.logger.Error().Err(err).Msg("failed to send message to DLQ")
+				r.logger.Error().Str(logcode.Field, logcode.DLQWriteFailed).Err(err).Msg("failed to send message to DLQ")
 				return fmt.Errorf("DLQ write failed: %w", err)
 			}
 			r.logger.Info().Msg("message sent to DLQ, continuing consumption")
 		} else {
 			// Write to retry queue
 			if err := r.sendToRetryQueue(ctx, msg, f, attempt); err != nil {
-				r.logger.Error().Err(err).Msg("failed to send message to retry queue")
+				r.logger.Error().Str(logcode.Field, logcode.RetryWriteFailed).Err(err).Msg("failed to send message to retry queue")
 				return fmt.Errorf("retry queue write failed: %w", err)
 			}
 			r.logger.Info().

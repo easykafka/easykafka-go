@@ -553,6 +553,43 @@ or at all in batch mode — so a rebalance would commit work that never happened
 And the rebalance handling assumes every partition is revoked at once, which a
 cooperative strategy breaks.
 
+## 🔎 Log codes
+
+Notable log lines carry a stable code in the `ek_code` field, next to a readable
+message. Search or alert on the code: the message may be reworded, the code does
+not change.
+
+```json
+{"level":"error","ek_code":"EK_PRODUCER_RECORDS_DROPPED","unflushed":2,"message":"retry/DLQ records not delivered before the producer closed; they are dropped"}
+```
+
+| Code | Level | Meaning | What to do |
+|---|---|---|---|
+| **Messages lost or written off** | | | |
+| `EK_PRODUCER_RECORDS_DROPPED` | error | A retry or DLQ producer closed with records still unsent after its 7 s flush. They are dropped, and their source offsets were already committed, so those messages are lost. `unflushed` says how many. | Check the broker's health and the producers' connection settings around shutdown. Frequent occurrences mean the retry or DLQ topic cannot keep up. |
+| `EK_PRODUCER_DELIVERY_FAILED` | error | The broker never took a retry or DLQ write. Its source offset was already committed, so the message is lost. One line per record. | Alert on it. The error says why — authentication, record too large, broker unavailable. `WithDeliveryErrorFunc` receives the record itself. |
+| `EK_RETRY_WRITE_FAILED` | error | A message could not even be queued for the retry topic — a full local queue, say. The consumer stops. | Restart; the message is redelivered. If it recurs, the retry topic cannot keep up with the failure rate. |
+| `EK_DLQ_WRITE_FAILED` | error | As `EK_RETRY_WRITE_FAILED`, for the DLQ. | As above. |
+| `EK_DLQ_MAX_ATTEMPTS` | error | A message failed its last allowed attempt and went to the DLQ. | Inspect the DLQ record; its headers say why it failed. |
+| `EK_DLQ_PERMANENT` | error | A message failed with `ErrPermanent` and went to the DLQ without retrying. | Usually a malformed record: inspect it in the DLQ. |
+| `EK_MESSAGE_SKIPPED` | warn | The skip strategy wrote off a failed message. It is not processed again. | Expected under `Skip`; alert on the rate if written-off messages matter. |
+| **The consumer stops** | | | |
+| `EK_POLL_FATAL` | error | Polling Kafka returned a fatal error. | The error says why; restart once it is fixed. |
+| `EK_STOPPED_BY_STRATEGY` | error | The error strategy stopped the consumer: fail-fast on a failed message, or the retry strategy when a retry or DLQ write failed. | Fail-fast logs the message's position just before this line. |
+| `EK_OFFSET_STORE_FAILED` | error | An offset could not be stored, and the consumer stopped rather than move past the message. | Restart; messages since the last commit are redelivered. |
+| **Bugs in application code** | | | |
+| `EK_HANDLER_PANIC` | error | A handler panicked. The message — in batch mode, the whole batch — went to the error strategy. | Fix the handler; the line carries the stack. |
+| `EK_FAILURE_WITHOUT_ERROR` | warn | A handler reported a `Failure` with no `Err`; it was routed under `ErrUnspecified`. | Set `Err` where the handler builds the `Failure`. |
+| `EK_DELIVERY_CALLBACK_PANIC` | error | The `WithDeliveryErrorFunc` callback panicked; the panic was recovered. | Fix the callback; the line carries the stack. |
+| **Commits that failed — replay, not loss** | | | |
+| `EK_COMMIT_FAILED` | warn | Committing stored offsets failed; a later commit covers them. The `commit` field says which: `per_message`, `batch`, `final`, `revoke` or `auto`. | Occasional ones are harmless. Persistent ones mean a growing replay on restart — check the group coordinator. |
+| **Broker and rebalance trouble** | | | |
+| `EK_BROKER_DISCONNECTED` | warn | The connection to the brokers was lost; librdkafka reconnects on its own. | Watch for a matching `EK_BROKER_RECONNECTED`. |
+| `EK_BROKER_RECONNECTED` | info | Messages are arriving again after a disconnect. | — |
+| `EK_KAFKA_ERROR` | warn | The client reported a non-fatal error other than a lost connection. | The error says what. |
+| `EK_REBALANCE_FAILED` | error | Assigning or unassigning partitions during a rebalance failed. | The error says why; the group usually rebalances again. |
+| `EK_CONSUMER_CLOSE_FAILED` | error | Closing the Kafka consumer at shutdown failed. | Usually harmless at shutdown; the error says why. |
+
 ## 🧪 Testing
 
 Unit and integration tests live under `tests/`:

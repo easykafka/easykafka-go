@@ -10,6 +10,7 @@ import (
 	kfk "github.com/confluentinc/confluent-kafka-go/v2/kafka"
 	"github.com/rs/zerolog"
 
+	"github.com/easykafka/easykafka-go/internal/logcode"
 	"github.com/easykafka/easykafka-go/internal/types"
 )
 
@@ -147,6 +148,7 @@ func (p *Producer) handleDeliveryReports() {
 		}
 
 		p.logger.Error().
+			Str(logcode.Field, logcode.ProducerDeliveryFailed).
 			Err(de.Err).
 			Str("topic", de.Topic).
 			Msg("delivery failed")
@@ -211,6 +213,7 @@ func InvokeDeliveryError(fn types.DeliveryErrorFunc, logger zerolog.Logger, de t
 	defer func() {
 		if r := recover(); r != nil {
 			logger.Error().
+				Str(logcode.Field, logcode.DeliveryCallbackPanic).
 				Str("stack", string(debug.Stack())).
 				Str("topic", de.Topic).
 				Msgf("delivery error callback panic recovered: %v", r)
@@ -297,12 +300,37 @@ func (p *Producer) Flush(timeoutMs int) int {
 	return p.producer.Flush(timeoutMs)
 }
 
-// Close gracefully shuts down the producer, flushing pending messages.
+// closeFlushTimeoutMs is how long Close waits for queued records to be
+// delivered before closing the producer.
+const closeFlushTimeoutMs = 7000
+
+// Close shuts down the producer, first waiting up to closeFlushTimeoutMs for
+// queued records to be delivered.
+//
+// Records still unsent after that are dropped when the client closes, and no
+// delivery report is emitted for them, so the delivery-error callback does not
+// hear about them either. Their source offsets were committed when they were
+// queued, so those messages are lost. The count is logged at error level so the
+// loss is at least visible; confirming each write before its offset is stored
+// is the job of the producer API, not of this wrapper.
 func (p *Producer) Close() {
 	if p.producer == nil {
 		return
 	}
-	p.producer.Flush(5000) //nolint:mnd // Wait up to 5s for pending messages
+
+	unflushed := p.producer.Flush(closeFlushTimeoutMs)
+	if unflushed > 0 {
+		p.logger.Error().
+			Str(logcode.Field, logcode.ProducerRecordsDropped).
+			Int("unflushed", unflushed).
+			Int("flush_timeout_ms", closeFlushTimeoutMs).
+			Msg("retry/DLQ records not delivered before the producer closed; they are dropped")
+	} else {
+		p.logger.Info().
+			Int("unflushed", unflushed).
+			Msg("retry/DLQ producer flushed")
+	}
+
 	p.producer.Close()
 	p.producer = nil
 }

@@ -3,6 +3,7 @@ package strategy
 import (
 	"context"
 
+	"github.com/easykafka/easykafka-go/internal/logcode"
 	"github.com/easykafka/easykafka-go/internal/types"
 	"github.com/rs/zerolog"
 )
@@ -21,6 +22,7 @@ func NewSkipStrategy(logger zerolog.Logger) *SkipStrategy {
 func (s *SkipStrategy) HandleError(ctx context.Context, msgs []*types.Message, f types.Failure) error {
 	for _, msg := range msgs {
 		s.logger.Warn().
+			Str(logcode.Field, logcode.MessageSkipped).
 			Str("topic", msg.Topic).
 			Int32("partition", msg.Partition).
 			Int64("offset", msg.Offset).

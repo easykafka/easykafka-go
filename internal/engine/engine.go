@@ -8,6 +8,7 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/easykafka/easykafka-go/internal/logcode"
 	"github.com/easykafka/easykafka-go/internal/metadata"
 	"github.com/easykafka/easykafka-go/internal/types"
 	"github.com/rs/zerolog"
@@ -142,12 +143,13 @@ func (e *Engine) Start(ctx context.Context) error {
 	// interval. librdkafka's own Close() commits the store too, so this is the
 	// first of two backstops rather than the only one.
 	if err := e.adapter.CommitStored(); err != nil {
-		e.logger.Warn().Err(err).Msg("final commit failed, offsets remain stored")
+		e.logger.Warn().Str(logcode.Field, logcode.CommitFailed).Str("commit", "final").Err(err).
+			Msg("final commit failed, offsets remain stored")
 	}
 
 	// Cleanup
 	if err := e.adapter.Close(ctx); err != nil {
-		e.logger.Error().Err(err).Msg("error closing adapter")
+		e.logger.Error().Str(logcode.Field, logcode.ConsumerCloseFailed).Err(err).Msg("error closing adapter")
 	}
 
 	e.state.Store(engineStateStopped)
@@ -177,7 +179,7 @@ func (e *Engine) runSingleLoop(ctx context.Context) error {
 		// Poll for messages
 		msg, err := e.adapter.Poll(ctx, e.pollTimeout)
 		if err != nil {
-			e.logger.Error().Err(err).Msg("fatal polling error")
+			e.logger.Error().Str(logcode.Field, logcode.PollFatal).Err(err).Msg("fatal polling error")
 			loopErr = fmt.Errorf("polling error: %w", err)
 			e.state.Store(engineStateStopping)
 			break
@@ -200,7 +202,8 @@ func (e *Engine) runSingleLoop(ctx context.Context) error {
 			strategyErr := e.strategy.HandleError(ctx, failed, e.withReason(*failure, failed))
 			if strategyErr != nil {
 				// Strategy says stop consumer (e.g., fail-fast)
-				e.logger.Error().Err(strategyErr).Msg("error strategy returned fatal error, stopping")
+				e.logger.Error().Str(logcode.Field, logcode.StoppedByStrategy).Err(strategyErr).
+					Msg("error strategy returned fatal error, stopping")
 				loopErr = fmt.Errorf("error strategy: %w", strategyErr)
 				e.state.Store(engineStateStopping)
 				break
@@ -214,7 +217,7 @@ func (e *Engine) runSingleLoop(ctx context.Context) error {
 				// Continuing here would lose this message: the next message on
 				// this partition stores a higher offset, and committing that
 				// silently declares this one done. Stop instead.
-				e.logger.Error().Err(err).
+				e.logger.Error().Str(logcode.Field, logcode.OffsetStoreFailed).Err(err).
 					Int64("offset", msg.Offset).
 					Int32("partition", msg.Partition).
 					Msg("failed to store offset, stopping consumer")
@@ -245,7 +248,7 @@ func (e *Engine) runSingleLoop(ctx context.Context) error {
 		// librdkafka's background committer publishes the store on its own
 		// schedule. Read this line as "commit unless someone else is".
 		if err := e.adapter.MaybeCommitStored(); err != nil {
-			e.logger.Warn().Err(err).
+			e.logger.Warn().Str(logcode.Field, logcode.CommitFailed).Str("commit", "per_message").Err(err).
 				Int64("offset", msg.Offset).
 				Int32("partition", msg.Partition).
 				Msg("commit failed, offset remains stored")
@@ -283,7 +286,7 @@ func (e *Engine) runBatchLoop(ctx context.Context) error {
 		// Poll for messages
 		msg, err := e.adapter.Poll(ctx, e.pollTimeout)
 		if err != nil {
-			e.logger.Error().Err(err).Msg("fatal polling error")
+			e.logger.Error().Str(logcode.Field, logcode.PollFatal).Err(err).Msg("fatal polling error")
 			loopErr = fmt.Errorf("polling error: %w", err)
 			e.state.Store(engineStateStopping)
 			break
@@ -321,7 +324,8 @@ func (e *Engine) dispatchBatch(ctx context.Context, msgs []*types.Message) error
 	// could not resolve exists nowhere else, and storing a higher offset from
 	// the same partition would lose it.
 	if err := e.routeBatchFailures(ctx, msgs, batch, whole); err != nil {
-		e.logger.Error().Err(err).Msg("error strategy returned fatal error, stopping")
+		e.logger.Error().Str(logcode.Field, logcode.StoppedByStrategy).Err(err).
+			Msg("error strategy returned fatal error, stopping")
 		return fmt.Errorf("error strategy: %w", err)
 	}
 
@@ -334,11 +338,13 @@ func (e *Engine) dispatchBatch(ctx context.Context, msgs []*types.Message) error
 	// Maybe, not must: under WithAutoCommitEvery this does nothing and
 	// librdkafka's background committer publishes the store on its own schedule.
 	if err := e.adapter.MaybeCommitStored(); err != nil {
-		e.logger.Warn().Err(err).Msg("commit failed, batch offsets remain stored")
+		e.logger.Warn().Str(logcode.Field, logcode.CommitFailed).Str("commit", "batch").Err(err).
+			Msg("commit failed, batch offsets remain stored")
 	}
 
 	if fatal != nil {
-		e.logger.Error().Err(fatal).Msg("failed to store batch offset, stopping consumer")
+		e.logger.Error().Str(logcode.Field, logcode.OffsetStoreFailed).Err(fatal).
+			Msg("failed to store batch offset, stopping consumer")
 		return fmt.Errorf("store offset: %w", fatal)
 	}
 
@@ -438,6 +444,7 @@ func (e *Engine) invokeBatchHandler(ctx context.Context, batch *types.Batch) (fa
 			stack := string(debug.Stack())
 			err := fmt.Errorf("handler panic: %v", r)
 			e.logger.Error().
+				Str(logcode.Field, logcode.HandlerPanic).
 				Err(err).
 				Str("stack", stack).
 				Int("batch_size", batch.Len()).
@@ -464,6 +471,7 @@ func (e *Engine) dispatchMessage(ctx context.Context, msg *types.Message) (failu
 			stack := string(debug.Stack())
 			err := fmt.Errorf("handler panic: %v", r)
 			e.logger.Error().
+				Str(logcode.Field, logcode.HandlerPanic).
 				Err(err).
 				Str("stack", stack).
 				Int64("offset", msg.Offset).
@@ -485,7 +493,7 @@ func (e *Engine) withReason(f types.Failure, msgs []*types.Message) types.Failur
 	}
 	f.Err = types.ErrUnspecified
 
-	event := e.logger.Warn()
+	event := e.logger.Warn().Str(logcode.Field, logcode.FailureWithoutError)
 	if len(msgs) == 1 {
 		event = event.
 			Str("topic", msgs[0].Topic).

@@ -9,6 +9,13 @@ public API may still change in a minor release.
 
 ### Added
 
+- **Log codes.** Every error and warning the library logs — plus the reconnect it pairs with — now
+  carries a stable code in an `ek_code` field, such as `EK_PRODUCER_DELIVERY_FAILED` or
+  `EK_HANDLER_PANIC`, so it can be searched and alerted on regardless of how the message is worded.
+  Nineteen codes, grouped as messages lost or written off, the consumer stopping, bugs in
+  application code, failed commits, and broker trouble. The README's *Log codes* section lists each
+  with what it means and what to do about it.
+
 - **Per-message verdicts in batch mode.** A batch handler is now given a `*Batch` — the polled
   messages, each paired with a verdict — and records each failed message with `item.Fail`. The
   engine routes every failure to the error strategy on its own, with its own error, its own attempt
@@ -195,6 +202,14 @@ public API may still change in a minor release.
   is now the single "already started" guard `Start` needs.
 
 ### Changed
+
+- **Shutdown waits up to 7 s for retry and DLQ records, and says how many it dropped.** When the
+  retry strategy closes, each producer now flushes for up to 7 s (was 5 s) and logs the count of
+  records still unsent — at error level with the log code `EK_PRODUCER_RECORDS_DROPPED` when it is
+  not zero, since those records are dropped and their source offsets were already committed, and at
+  info level otherwise. Until now the count was
+  discarded and the drop was silent. It is still a loss; confirming each write before its offset
+  moves belongs to the producer API.
 
 - **Both handlers return `*Failure` instead of `error`.** **Breaking.** nil still means success.
 

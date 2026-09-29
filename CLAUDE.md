@@ -164,6 +164,18 @@ Three things to preserve when touching this path:
 `DeliveryErrorFor` and `InvokeDeliveryError` are exported from `internal/kafka` purely so they are
 reachable from `tests/`; `internal/` keeps them out of the public API.
 
+### Log codes
+
+Notable log lines carry a stable code in the `ek_code` field (`logcode.Field`), with the message kept
+as readable prose beside it. Codes are constants in `internal/logcode`: descriptive, `EK_`-prefixed,
+one comment each saying what the event means and at what level it is logged. Never change a code
+once released; reword the message instead. The codes are deliberately not exported: they are
+documented strings, not API.
+
+**A code added to `internal/logcode/logcode.go` must also get a row in the README's *Log codes*
+table** — code, level, meaning, what to do — in the same change. Nothing checks this
+automatically; the README table is the only place an operator finds what a code means.
+
 ### Retry/DLQ producers inherit the consumer's Kafka config
 
 The consumer's `WithKafkaConfig` map reaches the strategy through `InitConfig.KafkaConfig`, and
