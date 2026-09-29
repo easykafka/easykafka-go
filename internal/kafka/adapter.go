@@ -277,6 +277,18 @@ func (a *Adapter) Poll(ctx context.Context, timeoutMs int) (*types.Message, erro
 
 	switch e := ev.(type) {
 	case *kfk.Message:
+		// The client's own ReadMessage checks for a message carrying an error
+		// instead of data. No such message has been seen from Poll, which reports
+		// consume errors as error events, but dispatching one would run the handler
+		// on nothing, store an offset for a position that was never read, and panic
+		// on a nil topic. Log it and poll on.
+		if e.TopicPartition.Error != nil {
+			a.logger.Warn().Str(logcode.Field, logcode.KafkaError).Err(e.TopicPartition.Error).
+				Int32("partition", e.TopicPartition.Partition).
+				Msg("kafka error reported on a message, not dispatched")
+			return nil, nil //nolint:nilnil,nilerr // logged, not fatal: "nothing polled"
+		}
+
 		// Detect reconnection — receiving a message means the broker is available
 		a.mu.Lock()
 		wasDisconnected := !a.brokerConnected
