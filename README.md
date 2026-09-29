@@ -405,7 +405,7 @@ Pluggable strategies control what happens when a handler reports a failure:
 retryStrategy, err := easykafka.NewRetryStrategy(
 	easykafka.WithRetryTopic("orders.retry"),
 	easykafka.WithDLQTopic("orders.dlq"),
-	easykafka.WithMaxAttempts(3),
+	easykafka.WithMaxAttempts(3), // 3 attempts in total = 1st try + 2 retries, then the DLQ
 	easykafka.WithInitialDelay(1*time.Second),
 	easykafka.WithMaxDelay(30*time.Second),
 )
@@ -422,6 +422,17 @@ consumer, err := easykafka.New(
 )
 ```
 
+> **`WithMaxAttempts` counts attempts, not retries — the first attempt included.**
+> With `WithMaxAttempts(3)` a failing message is handled 3 times: once from
+> `orders`, then twice from `orders.retry`. Its third failure sends it to
+> `orders.dlq`. For _n_ retries, set `WithMaxAttempts(n + 1)`.
+>
+> | `WithMaxAttempts` | Handler runs | Retries | Then |
+> |---|---|---|---|
+> | `1` | 1 | 0 | DLQ on the first failure |
+> | `3` (default) | 3 | 2 | DLQ on the third failure |
+> | `n` | n | n − 1 | DLQ on the n-th failure |
+
 Retry and DLQ records have the same shape: the consumed bytes as the body, the
 consumed key as the key, and the failure described in `easykafka.*` headers —
 attempt, error message and code, step, original topic/partition/offset and
@@ -437,7 +448,7 @@ straight back to the DLQ on its first failure.
 |---|---|---|
 | `WithRetryTopic(t)` | — (required) | Topic failed messages are republished to |
 | `WithDLQTopic(t)` | — (required) | Topic messages go to once attempts run out, or at once for `ErrPermanent` |
-| `WithMaxAttempts(n)` | 3 | Attempts before the DLQ |
+| `WithMaxAttempts(n)` | 3 | Attempts in total before the DLQ, the first included: 3 = 1st try + 2 retries |
 | `WithInitialDelay(d)` | 1s | Backoff before the first retry |
 | `WithMaxDelay(d)` | 30s | Backoff cap |
 | `WithBackoffMultiplier(m)` | 2.0 | Exponential backoff factor |

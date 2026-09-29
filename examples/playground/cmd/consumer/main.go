@@ -83,7 +83,8 @@ func parseFlags() (config, error) {
 	flag.IntVar(&cfg.batchSize, "batch-size", defaultBatchSize, "batch mode only")
 	flag.DurationVar(&cfg.batchTimeout, "batch-timeout", defaultBatchTimeout, "batch mode only")
 	flag.StringVar(&cfg.strategy, "strategy", strategyRetry, "retry, skip or fail-fast")
-	flag.IntVar(&cfg.maxAttempts, "max-attempts", defaultMaxAttempts, "retry strategy: attempts before the DLQ")
+	flag.IntVar(&cfg.maxAttempts, "max-attempts", defaultMaxAttempts,
+		"retry strategy: attempts in total before the DLQ, the first included (3 = 1st try + 2 retries)")
 	flag.DurationVar(&cfg.initialDelay, "initial-delay", defaultInitialDelay,
 		"retry strategy: backoff before the first retry")
 	flag.DurationVar(&cfg.maxDelay, "max-delay", defaultMaxDelay, "retry strategy: backoff cap")

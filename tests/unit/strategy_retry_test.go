@@ -321,6 +321,34 @@ func TestRetryStrategySendsToRetryQueueOnFirstFailure(t *testing.T) {
 	assert.Empty(t, dlqProd.Messages())
 }
 
+// TestMaxAttemptsCountsTheFirstAttempt pins what WithMaxAttempts means, as the
+// README states it: attempts in total, the first included, not retries. A
+// message that keeps failing is handled MaxAttempts times, retried
+// MaxAttempts-1 times, and goes to the DLQ on its last failure.
+func TestMaxAttemptsCountsTheFirstAttempt(t *testing.T) {
+	for _, maxAttempts := range []int{1, 3} {
+		t.Run(fmt.Sprintf("max_attempts=%d", maxAttempts), func(t *testing.T) {
+			s, retryProd, dlqProd := helpers.NewRetryStrategyWithMocks(maxAttempts)
+
+			// The first attempt, from the source topic, then each retry fed back
+			// in with the headers the previous failure wrote.
+			msg := &types.Message{Topic: "orders", Headers: map[string]string{}, Payload: []byte("m")}
+			handled := 0
+			for len(dlqProd.Messages()) == 0 {
+				handled++
+				require.LessOrEqual(t, handled, maxAttempts, "the message must reach the DLQ by its last attempt")
+				require.NoError(t, s.HandleError(context.Background(), []*types.Message{msg}, types.Failure{Err: errors.New("err")}))
+				if records := retryProd.Messages(); len(records) > 0 {
+					msg = &types.Message{Topic: "test.retry", Headers: records[len(records)-1].Headers, Payload: []byte("m")}
+				}
+			}
+
+			assert.Equal(t, maxAttempts, handled, "handled once per attempt, the first included")
+			assert.Len(t, retryProd.Messages(), maxAttempts-1, "retried one time fewer than the attempts")
+		})
+	}
+}
+
 func TestRetryStrategySendsToDLQAfterMaxAttempts(t *testing.T) {
 	s, retryProd, dlqProd := helpers.NewRetryStrategyWithMocks(3)
 	ctx := context.Background()

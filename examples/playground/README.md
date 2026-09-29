@@ -159,7 +159,7 @@ it, so the playground does; running both in one process gives you one log to wat
 | `--batch-size` | 10 | Batch mode only. |
 | `--batch-timeout` | 2s | Batch mode only. |
 | `--strategy` | `retry` | `retry`, `skip` or `fail-fast`. |
-| `--max-attempts` | 3 | Retry strategy. |
+| `--max-attempts` | 3 | Retry strategy. Attempts in total, the first included: 3 = 1st try + 2 retries. |
 | `--initial-delay` | 2s | Retry backoff; long enough to see a record sit in the retry topic. |
 | `--max-delay` | 30s | Retry backoff cap. |
 | `--no-retry-consumer` | off | Do not consume the retry topic, so you can watch records accumulate. |

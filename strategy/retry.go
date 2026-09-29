@@ -22,7 +22,7 @@ type BackoffFunc func(attempt int) time.Duration
 type RetryConfig struct {
 	RetryTopic      string
 	DLQTopic        string
-	MaxAttempts     int
+	MaxAttempts     int // attempts in total, the first included; see WithMaxAttempts
 	InitialDelay    time.Duration
 	MaxDelay        time.Duration
 	Multiplier      float64
@@ -55,7 +55,10 @@ func WithDLQTopic(topic string) RetryOption {
 	}
 }
 
-// WithMaxAttempts sets the maximum number of retry attempts. Default: 3.
+// WithMaxAttempts sets how many times in total a failing message is handled
+// before it goes to the DLQ, the first attempt included. It counts attempts, not
+// retries: 3 (the default) means the first attempt and 2 retries, and 1 sends a
+// failed message straight to the DLQ with no retry at all.
 func WithMaxAttempts(attempts int) RetryOption {
 	return func(c *RetryConfig) error {
 		if attempts <= 0 {
@@ -279,7 +282,7 @@ func (r *RetryStrategy) HandleError(ctx context.Context, msgs []*types.Message, 
 			Msg("handler failed for message")
 
 		if permanent || attempt >= r.config.MaxAttempts {
-			reason, code := "max retry attempts reached, sending to DLQ", logcode.DLQMaxAttempts
+			reason, code := "max attempts reached, sending to DLQ", logcode.DLQMaxAttempts
 			if permanent {
 				reason, code = "permanent failure, sending to DLQ without retrying", logcode.DLQPermanent
 			}

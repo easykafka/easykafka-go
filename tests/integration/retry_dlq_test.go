@@ -173,7 +173,7 @@ func TestRetryStrategyWritesToRetryTopic(t *testing.T) {
 	assert.False(t, gotDue.IsZero(), "the library stamps a due time when it republishes")
 }
 
-// TestRetryStrategyWritesToDLQAfterMaxAttempts verifies that when max retry attempts
+// TestRetryStrategyWritesToDLQAfterMaxAttempts verifies that when max attempts
 // are exhausted, the message is written to the DLQ topic as it was consumed, with
 // the failure described in headers.
 func TestRetryStrategyWritesToDLQAfterMaxAttempts(t *testing.T) {
