@@ -81,6 +81,12 @@ func WithInitialDelay(delay time.Duration) RetryOption {
 }
 
 // WithMaxDelay sets the maximum delay between retries. Default: 30s.
+//
+// The retry consumer's handler waits up to this long in WaitUntilRetryTime, on
+// the goroutine that polls. Keep it below that consumer's max.poll.interval.ms
+// (300s by default), or raise that setting on the retry consumer with
+// WithKafkaConfig. Otherwise a long wait gets the retry consumer removed from
+// its group (see WaitUntilRetryTime).
 func WithMaxDelay(delay time.Duration) RetryOption {
 	return func(c *RetryConfig) error {
 		if delay <= 0 {

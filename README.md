@@ -177,6 +177,14 @@ because the handler runs on the goroutine that polls: nothing is fetched while
 it waits, and a wait longer than librdkafka's `max.poll.interval.ms` (300s by
 default) gets the consumer removed from its group.
 
+That second limit only matters for long delays. The default `WithMaxDelay` of
+30s is far below it. If you raise `WithMaxDelay` past a few minutes, also raise
+`max.poll.interval.ms` on the **retry consumer** with `WithKafkaConfig`, because
+that's the consumer that waits. Otherwise the group rebalances during the wait,
+and the message may be processed twice. It is still processed, not lost, and it
+doesn't loop: the retry time is fixed, so each wait only covers what is left of
+it.
+
 The full set of header keys, for reading raw records or writing your own
 tooling: `HeaderRetryAttempt`, `HeaderRetryTime`, `HeaderRetryStep`,
 `HeaderErrorCode`, `HeaderErrorMessage`, `HeaderOriginalTopic`,
@@ -458,7 +466,7 @@ straight back to the DLQ on its first failure.
 | `WithDLQTopic(t)` | — (required) | Topic messages go to once attempts run out, or at once for `ErrPermanent` |
 | `WithMaxAttempts(n)` | 3 | Attempts in total before the DLQ, the first included: 3 = 1st try + 2 retries |
 | `WithInitialDelay(d)` | 1s | Backoff before the first retry |
-| `WithMaxDelay(d)` | 30s | Backoff cap |
+| `WithMaxDelay(d)` | 30s | Backoff cap. Keep it below the retry consumer's `max.poll.interval.ms` (300s by default) |
 | `WithBackoffMultiplier(m)` | 2.0 | Exponential backoff factor |
 | `WithCustomBackoff(fn)` | — | Replaces the three options above |
 | `WithDeliveryErrorFunc(fn)` | — | Called for retry/DLQ writes that never reach the broker |

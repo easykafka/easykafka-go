@@ -209,8 +209,13 @@ func GetRetryTime(msg *Message) time.Time {
 //     written off.
 //   - The handler runs on the goroutine that polls, so nothing is fetched while
 //     it waits. A wait longer than librdkafka's max.poll.interval.ms (300s by
-//     default) gets the consumer removed from its group. The retry strategy's
-//     default maximum delay is 30s.
+//     default) gets the consumer removed from its group. The group then
+//     rebalances, and the message may be processed twice: once by this handler
+//     when its wait ends, and once by the consumer that takes over the
+//     partition. It is not a loop, because the retry time is fixed and each
+//     wait only covers what is left of it. The retry strategy's default
+//     maximum delay is 30s. For longer delays, raise max.poll.interval.ms on
+//     this consumer with WithKafkaConfig.
 func WaitUntilRetryTime(ctx context.Context, msg *Message) error {
 	return metadata.WaitUntilRetryTime(ctx, msg)
 }
