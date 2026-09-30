@@ -105,9 +105,11 @@ func BuildDLQHeaders(msg *types.Message, attempt int, f types.Failure) map[strin
 
 // buildFailureHeaders creates the headers a retry and a DLQ record share.
 //
-// Headers the record arrived with that are not the library's pass through
-// unchanged. Of the library's own, only the step and the code are the
-// handler's to set, through the Failure; everything else is written here.
+// Headers the record arrived with that are not the library's are copied over
+// from msg.Headers, a map: a repeated key keeps only its last value, a null
+// value arrives as an empty one, and order is not kept. Of the library's own,
+// only the step and the code are the handler's to set, through the Failure;
+// everything else is written here.
 func buildFailureHeaders(msg *types.Message, attempt int, f types.Failure) map[string]string {
 	headers := make(map[string]string)
 

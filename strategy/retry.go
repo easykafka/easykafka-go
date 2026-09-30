@@ -340,9 +340,13 @@ func (r *RetryStrategy) sendToRetryQueue(ctx context.Context, msg *types.Message
 	})
 }
 
-// sendToDLQ writes a message to the DLQ topic exactly as it was consumed — the
-// same key and the same bytes — with every fact about the failure in headers.
-// Replaying it is a re-publish of the key and body to the source topic.
+// sendToDLQ writes a message to the DLQ topic with the key and bytes it was
+// consumed with, and every fact about the failure in headers. Replaying it is a
+// re-publish of the key and body to the source topic.
+//
+// The record is not a byte-for-byte copy of the consumed one: its application
+// headers are a key → value copy (see buildFailureHeaders), and its Kafka
+// timestamp is the time it is written here.
 func (r *RetryStrategy) sendToDLQ(ctx context.Context, msg *types.Message, f types.Failure, attempt int) error {
 	return r.dlqProducer.Produce(ctx, &types.ProduceMessage{
 		Topic:   r.config.DLQTopic,

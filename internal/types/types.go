@@ -142,10 +142,18 @@ type Message struct {
 	Topic     string
 	Partition int32
 	Offset    int64
+
+	// Timestamp is the record's Kafka timestamp. On a retry or DLQ record it is
+	// the time easykafka wrote that record, not the source record's.
 	Timestamp time.Time
-	Key       []byte
-	Headers   map[string]string
-	Payload   []byte
+
+	Key []byte
+
+	// Headers maps each header key to its value. A key sent more than once
+	// keeps its last value, and a null value reads as "".
+	Headers map[string]string
+
+	Payload []byte
 }
 
 // ErrorStrategy defines how message processing failures are handled.

@@ -436,8 +436,16 @@ consumer, err := easykafka.New(
 Retry and DLQ records have the same shape: the consumed bytes as the body, the
 consumed key as the key, and the failure described in `easykafka.*` headers —
 attempt, error message and code, step, original topic/partition/offset and
-failure time. Headers the record arrived with that are not the library's pass
-through unchanged.
+failure time. Headers the record arrived with that are not the library's are
+carried over as key → value pairs, which covers the usual case of unique keys
+with values. Three things don't survive the trip: a key that appears more than
+once keeps only its last value, a null value becomes an empty one, and header
+order is not kept.
+
+A retry or DLQ record's own Kafka timestamp (`Message.Timestamp` on the retry
+consumer) is the time easykafka wrote it, not the source record's. Scheduling
+doesn't depend on it: `WaitUntilRetryTime` reads the `easykafka.retry.time`
+header.
 
 **Replaying a dead-lettered message** is a re-publish of its body and key to the
 source topic. Drop the `easykafka.*` headers when you do: the record carries the
