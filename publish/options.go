@@ -11,6 +11,8 @@ import (
 	"time"
 
 	"github.com/rs/zerolog"
+
+	"github.com/easykafka/easykafka-go/internal/publishdriver"
 )
 
 // defaultDeliveryTimeout bounds how long a record may take to be acknowledged:
@@ -35,6 +37,9 @@ type config struct {
 	logger          zerolog.Logger
 	onDeliveryError DeliveryErrorFunc
 	onFatal         func(error)
+	// newProducer builds the producer. Defaults to the real driver; see
+	// WithProducerFactory.
+	newProducer func(publishdriver.Config) (publishdriver.Producer, error)
 }
 
 func defaultConfig() config {
@@ -44,6 +49,19 @@ func defaultConfig() config {
 		partitioner:     PartitionerDefault,
 		deliveryTimeout: defaultDeliveryTimeout,
 		logger:          zerolog.Nop(),
+		newProducer:     publishdriver.New,
+	}
+}
+
+// driverConfig is what the driver needs to build the producer.
+func (c *config) driverConfig() publishdriver.Config {
+	return publishdriver.Config{
+		Brokers:         c.brokers,
+		KafkaConfig:     c.kafkaConfig,
+		AcksLeader:      c.acksLeader,
+		Idempotence:     c.idempotence,
+		Partitioner:     string(c.partitioner),
+		DeliveryTimeout: c.deliveryTimeout,
 	}
 }
 
@@ -96,7 +114,7 @@ func WithBrokers(brokers ...string) Option {
 }
 
 // managedKafkaKeys are librdkafka keys that WithKafkaConfig rejects, each with
-// the reason. Keys starting with "go." are rejected too (goKeyReason).
+// the reason. Keys with a prefix in managedKafkaKeyPrefixes are rejected too.
 var managedKafkaKeys = map[string]string{
 	"bootstrap.servers": "managed by WithBrokers",
 	"acks":              "managed by WithAcksLeader; the default is acks=all",
@@ -114,8 +132,29 @@ var managedKafkaKeys = map[string]string{
 		"WithDeliveryTimeout",
 }
 
-const goKeyReason = "managed by the library: confluent-kafka-go's own settings decide how delivery " +
-	"reports reach the publisher"
+// managedKafkaKeyPrefixes are key prefixes that WithKafkaConfig rejects, each
+// with the reason.
+var managedKafkaKeyPrefixes = []struct{ prefix, reason string }{
+	{"go.", "managed by the library: confluent-kafka-go's own settings decide how delivery " +
+		"reports reach the publisher"},
+	// confluent-kafka-go moves a "{topic}." key into default.topic.config, so
+	// "{topic}.acks" is default.topic.config's acks under another spelling.
+	{"{topic}.", "not supported: confluent-kafka-go moves it into default.topic.config, which would " +
+		"bypass WithAcksLeader, WithPartitioner and WithDeliveryTimeout; set the property without the prefix"},
+}
+
+// managedKeyReason returns why WithKafkaConfig rejects key, if it does.
+func managedKeyReason(key string) (string, bool) {
+	if reason, managed := managedKafkaKeys[key]; managed {
+		return reason, true
+	}
+	for _, managed := range managedKafkaKeyPrefixes {
+		if strings.HasPrefix(key, managed.prefix) {
+			return managed.reason, true
+		}
+	}
+	return "", false
+}
 
 // WithKafkaConfig passes librdkafka configuration through to the producer:
 // security, SASL and TLS settings, client.id, linger.ms, compression.type, and
@@ -125,7 +164,7 @@ const goKeyReason = "managed by the library: confluent-kafka-go's own settings d
 // Keys the publisher manages are rejected, each with the reason: bootstrap.servers,
 // acks, request.required.acks, enable.idempotence, enable.gapless.guarantee,
 // partitioner, message.timeout.ms, delivery.timeout.ms, transactional.id,
-// default.topic.config, and every key starting with "go.". While idempotence
+// default.topic.config, and every key starting with "go." or "{topic}.". While idempotence
 // is on, max.in.flight.requests.per.connection must be at most 5; New checks
 // that, since it depends on other options.
 func WithKafkaConfig(kafkaConfig map[string]any) Option {
@@ -135,11 +174,7 @@ func WithKafkaConfig(kafkaConfig map[string]any) Option {
 		}
 		var rejected []error
 		for _, key := range slices.Sorted(maps.Keys(kafkaConfig)) {
-			reason, managed := managedKafkaKeys[key]
-			if !managed && strings.HasPrefix(key, "go.") {
-				reason, managed = goKeyReason, true
-			}
-			if managed {
+			if reason, managed := managedKeyReason(key); managed {
 				rejected = append(rejected, fmt.Errorf("kafka config key %q cannot be set: %s", key, reason))
 			}
 		}
@@ -242,6 +277,27 @@ func WithFatalHandler(onFatal func(error)) Option {
 			return errors.New("fatal handler cannot be nil")
 		}
 		c.onFatal = onFatal
+		return nil
+	}
+}
+
+// WithProducerFactory replaces the function that builds the publisher's
+// librdkafka producer.
+//
+// This is a testing seam. It lets the publisher's logic — resolving
+// deliveries, the error mapping, the callbacks — be driven by a scripted fake,
+// with no broker and no Docker.
+//
+// It is exported only because the tests live in a separate package. It cannot
+// be used from outside this module: its argument names types under internal/,
+// which Go forbids other modules from importing, so no caller can construct
+// one.
+func WithProducerFactory(factory func(publishdriver.Config) (publishdriver.Producer, error)) Option {
+	return func(c *config) error {
+		if factory == nil {
+			return errors.New("producer factory cannot be nil")
+		}
+		c.newProducer = factory
 		return nil
 	}
 }

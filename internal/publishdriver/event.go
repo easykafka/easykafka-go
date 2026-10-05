@@ -89,8 +89,8 @@ func (e *KafkaError) Error() string {
 // Exported so it can be tested without a broker; internal/ keeps it out of the
 // library's public API.
 func TranslateError(err error) *KafkaError {
-	var kafkaError kfk.Error
-	if !errors.As(err, &kafkaError) {
+	kafkaError, isKafkaError := errors.AsType[kfk.Error](err)
+	if !isKafkaError {
 		return &KafkaError{Message: err.Error()}
 	}
 	code := kafkaError.Code()

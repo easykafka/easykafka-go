@@ -113,3 +113,39 @@ const (
 	// ConsumerCloseFailed: closing the Kafka consumer at shutdown failed. Error.
 	ConsumerCloseFailed = "EK_CONSUMER_CLOSE_FAILED"
 )
+
+// The publish package.
+const (
+	// PublishDeliveryFailed: a record a publisher accepted was not
+	// acknowledged. Its delivery resolves with the error, and the
+	// WithDeliveryErrorFunc callback has been called. One line per record.
+	// Error.
+	PublishDeliveryFailed = "EK_PUBLISH_DELIVERY_FAILED"
+
+	// PublishCallbackPanic: a publisher's WithDeliveryErrorFunc callback
+	// panicked. The panic is recovered, the record's delivery still resolves,
+	// and later reports are read as before. Error.
+	PublishCallbackPanic = "EK_PUBLISH_CALLBACK_PANIC"
+
+	// PublishUnmatchedReport: a delivery report matched no record waiting for
+	// one: a second report for a record already resolved, or a report without
+	// the publisher's token. It is dropped, and the record's first outcome
+	// stands. It means librdkafka or the library broke the rule that every
+	// record is reported exactly once. Error.
+	PublishUnmatchedReport = "EK_PUBLISH_UNMATCHED_REPORT"
+
+	// PublishBrokerDown: a publisher lost its connection to the brokers.
+	// librdkafka reconnects on its own; records wait in the queue until their
+	// delivery timeout. Logged once per outage. Warning.
+	PublishBrokerDown = "EK_PUBLISH_BROKER_DOWN"
+
+	// PublishBrokerRestored: a record was acknowledged again after
+	// PublishBrokerDown. The "suppressed" field counts the connection errors
+	// not logged in between. Info.
+	PublishBrokerRestored = "EK_PUBLISH_BROKER_RESTORED"
+
+	// PublishKafkaError: a publisher's client reported an error that is
+	// neither about one record nor a lost connection. Publishing continues.
+	// Warning.
+	PublishKafkaError = "EK_PUBLISH_KAFKA_ERROR"
+)

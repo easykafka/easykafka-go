@@ -628,6 +628,13 @@ not change.
 | `EK_KAFKA_ERROR` | warn | The client reported a non-fatal error other than a lost connection. | The error says what. |
 | `EK_REBALANCE_FAILED` | error | Assigning or unassigning partitions during a rebalance failed. | The error says why; the group usually rebalances again. |
 | `EK_CONSUMER_CLOSE_FAILED` | error | Closing the Kafka consumer at shutdown failed. | Usually harmless at shutdown; the error says why. |
+| **Publishing (`publish`)** | | | |
+| `EK_PUBLISH_DELIVERY_FAILED` | error | A record a publisher accepted was not acknowledged. Its delivery resolved with the error, and the `WithDeliveryErrorFunc` callback had already run. One line per record; `code` is librdkafka's error name. | The code says why — timed out, rejected by the broker, not authorized. A burst of `Local: Message timed out` means the cluster was unreachable for longer than the delivery timeout. |
+| `EK_PUBLISH_CALLBACK_PANIC` | error | A publisher's `WithDeliveryErrorFunc` callback panicked; the panic was recovered and the delivery still resolved. | Fix the callback; the line carries the stack. |
+| `EK_PUBLISH_UNMATCHED_REPORT` | error | A delivery report matched no record waiting for one: a second report for a record already resolved, or one without the publisher's token. It was dropped; the record's first outcome stands and the callback did not run again. | Should never happen: it is a bug in the library or in librdkafka. Report it with the log line. |
+| `EK_PUBLISH_BROKER_DOWN` | warn | A publisher lost its connection to the brokers. librdkafka reconnects on its own; records wait in the queue until their delivery timeout. Logged once per outage. | Watch for a matching `EK_PUBLISH_BROKER_RESTORED`. |
+| `EK_PUBLISH_BROKER_RESTORED` | info | A record was acknowledged again after `EK_PUBLISH_BROKER_DOWN`. `suppressed` counts the connection errors not logged in between. | — |
+| `EK_PUBLISH_KAFKA_ERROR` | warn, error if `fatal` | A publisher's client reported an error that is neither about one record nor a lost connection. | The error says what. With `"fatal":true` the producer cannot write any more: restart the service. |
 
 ## 🧪 Testing
 
