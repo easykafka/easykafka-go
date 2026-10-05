@@ -4,13 +4,12 @@ import (
 	"testing"
 
 	"github.com/easykafka/easykafka-go/publish"
-	"github.com/stretchr/testify/require"
 )
 
-// NewTestPublisher returns a publisher with only the required option set.
+// NewTestPublisher returns a publisher with only the required option set,
+// writing to a fake producer.
 func NewTestPublisher(t *testing.T) *publish.Publisher {
 	t.Helper()
-	publisher, err := publish.New(publish.WithBrokers(PublishBroker))
-	require.NoError(t, err)
+	publisher, _ := NewFakePublisher(t)
 	return publisher
 }

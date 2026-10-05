@@ -1,9 +1,11 @@
 package unit
 
 import (
+	"errors"
 	"testing"
 	"time"
 
+	"github.com/easykafka/easykafka-go/internal/publishdriver"
 	"github.com/easykafka/easykafka-go/publish"
 	"github.com/easykafka/easykafka-go/tests/unit/helpers"
 	"github.com/rs/zerolog"
@@ -14,7 +16,7 @@ import (
 // TestPublishNewWithBrokersOnly verifies that brokers are the only required
 // option.
 func TestPublishNewWithBrokersOnly(t *testing.T) {
-	publisher, err := publish.New(publish.WithBrokers(helpers.PublishBroker))
+	publisher, err := helpers.NewPublishWithFake(t, publish.WithBrokers(helpers.PublishBroker))
 	require.NoError(t, err)
 	assert.NotNil(t, publisher)
 }
@@ -22,7 +24,7 @@ func TestPublishNewWithBrokersOnly(t *testing.T) {
 // TestPublishNewRequiresBrokers verifies that New fails without WithBrokers,
 // naming the option.
 func TestPublishNewRequiresBrokers(t *testing.T) {
-	_, err := publish.New()
+	_, err := helpers.NewPublishWithFake(t)
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "WithBrokers")
 }
@@ -30,7 +32,7 @@ func TestPublishNewRequiresBrokers(t *testing.T) {
 // TestPublishNewRejectsNilOption verifies that a nil option is an error, not a
 // panic.
 func TestPublishNewRejectsNilOption(t *testing.T) {
-	_, err := publish.New(publish.WithBrokers(helpers.PublishBroker), nil)
+	_, err := helpers.NewPublishWithFake(t, publish.WithBrokers(helpers.PublishBroker), nil)
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "option cannot be nil")
 }
@@ -38,18 +40,18 @@ func TestPublishNewRejectsNilOption(t *testing.T) {
 // TestPublishWithBrokersValidation verifies that an empty broker list and an
 // empty address are both rejected.
 func TestPublishWithBrokersValidation(t *testing.T) {
-	_, err := publish.New(publish.WithBrokers())
+	_, err := helpers.NewPublishWithFake(t, publish.WithBrokers())
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "at least one broker")
 
-	_, err = publish.New(publish.WithBrokers(helpers.PublishBroker, ""))
+	_, err = helpers.NewPublishWithFake(t, publish.WithBrokers(helpers.PublishBroker, ""))
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "broker address cannot be empty")
 }
 
 // TestPublishWithKafkaConfigRejectsNil verifies that a nil map is rejected.
 func TestPublishWithKafkaConfigRejectsNil(t *testing.T) {
-	_, err := publish.New(publish.WithBrokers(helpers.PublishBroker), publish.WithKafkaConfig(nil))
+	_, err := helpers.NewPublishWithFake(t, publish.WithBrokers(helpers.PublishBroker), publish.WithKafkaConfig(nil))
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "kafka config cannot be nil")
 }
@@ -58,22 +60,26 @@ func TestPublishWithKafkaConfigRejectsNil(t *testing.T) {
 // publisher manages is rejected, and that the error names what owns it.
 func TestPublishWithKafkaConfigRejectsManagedKeys(t *testing.T) {
 	managed := map[string]string{
-		"bootstrap.servers":        "WithBrokers",
-		"acks":                     "WithAcksLeader",
-		"request.required.acks":    "WithAcksLeader",
-		"enable.idempotence":       "WithoutIdempotence",
-		"enable.gapless.guarantee": "fatal error",
-		"partitioner":              "WithPartitioner",
-		"message.timeout.ms":       "WithDeliveryTimeout",
-		"delivery.timeout.ms":      "WithDeliveryTimeout",
-		"transactional.id":         "transactions",
-		"default.topic.config":     "bypass",
-		"go.delivery.reports":      "confluent-kafka-go",
-		"go.events.channel.size":   "confluent-kafka-go",
+		"bootstrap.servers":          "WithBrokers",
+		"acks":                       "WithAcksLeader",
+		"request.required.acks":      "WithAcksLeader",
+		"enable.idempotence":         "WithoutIdempotence",
+		"enable.gapless.guarantee":   "fatal error",
+		"partitioner":                "WithPartitioner",
+		"message.timeout.ms":         "WithDeliveryTimeout",
+		"delivery.timeout.ms":        "WithDeliveryTimeout",
+		"transactional.id":           "transactions",
+		"default.topic.config":       "bypass",
+		"go.delivery.reports":        "confluent-kafka-go",
+		"go.events.channel.size":     "confluent-kafka-go",
+		"{topic}.acks":               "default.topic.config",
+		"{topic}.partitioner":        "default.topic.config",
+		"{topic}.message.timeout.ms": "default.topic.config",
+		"{topic}.compression.type":   "without the prefix",
 	}
 	for key, owner := range managed {
 		t.Run(key, func(t *testing.T) {
-			_, err := publish.New(
+			_, err := helpers.NewPublishWithFake(t,
 				publish.WithBrokers(helpers.PublishBroker),
 				publish.WithKafkaConfig(map[string]any{key: "value"}),
 			)
@@ -87,7 +93,7 @@ func TestPublishWithKafkaConfigRejectsManagedKeys(t *testing.T) {
 // TestPublishWithKafkaConfigReportsEveryManagedKey verifies that one error
 // names every rejected key, not just the first.
 func TestPublishWithKafkaConfigReportsEveryManagedKey(t *testing.T) {
-	_, err := publish.New(
+	_, err := helpers.NewPublishWithFake(t,
 		publish.WithBrokers(helpers.PublishBroker),
 		publish.WithKafkaConfig(map[string]any{"acks": "1", "partitioner": "random", "linger.ms": 5}),
 	)
@@ -100,7 +106,7 @@ func TestPublishWithKafkaConfigReportsEveryManagedKey(t *testing.T) {
 // TestPublishWithKafkaConfigPassesOtherKeys verifies that keys the publisher
 // does not manage are accepted.
 func TestPublishWithKafkaConfigPassesOtherKeys(t *testing.T) {
-	_, err := publish.New(
+	_, err := helpers.NewPublishWithFake(t,
 		publish.WithBrokers(helpers.PublishBroker),
 		publish.WithKafkaConfig(map[string]any{
 			"security.protocol": "SASL_SSL",
@@ -117,7 +123,7 @@ func TestPublishWithKafkaConfigPassesOtherKeys(t *testing.T) {
 // is left as it was.
 func TestPublishWithKafkaConfigDoesNotModifyTheMap(t *testing.T) {
 	kafkaConfig := map[string]any{"linger.ms": 5}
-	_, err := publish.New(publish.WithBrokers(helpers.PublishBroker), publish.WithKafkaConfig(kafkaConfig))
+	_, err := helpers.NewPublishWithFake(t, publish.WithBrokers(helpers.PublishBroker), publish.WithKafkaConfig(kafkaConfig))
 	require.NoError(t, err)
 	assert.Equal(t, map[string]any{"linger.ms": 5}, kafkaConfig)
 }
@@ -151,7 +157,7 @@ func TestPublishMaxInFlightLimitedWhileIdempotent(t *testing.T) {
 				publish.WithBrokers(helpers.PublishBroker),
 				publish.WithKafkaConfig(map[string]any{key: testCase.value}),
 			}, testCase.options...)
-			_, err := publish.New(options...)
+			_, err := helpers.NewPublishWithFake(t, options...)
 			if testCase.wantErr == "" {
 				require.NoError(t, err)
 				return
@@ -166,7 +172,7 @@ func TestPublishMaxInFlightLimitedWhileIdempotent(t *testing.T) {
 // idempotence off after setting the in-flight limit is honoured, since New
 // checks the combination after every option has run.
 func TestPublishMaxInFlightCheckIgnoresOptionOrder(t *testing.T) {
-	_, err := publish.New(
+	_, err := helpers.NewPublishWithFake(t,
 		publish.WithKafkaConfig(map[string]any{"max.in.flight.requests.per.connection": 10}),
 		publish.WithBrokers(helpers.PublishBroker),
 		publish.WithoutIdempotence(),
@@ -186,11 +192,11 @@ func TestPublishWithPartitioner(t *testing.T) {
 		publish.PartitionerFNV1A,
 		publish.PartitionerFNV1ARandom,
 	} {
-		_, err := publish.New(publish.WithBrokers(helpers.PublishBroker), publish.WithPartitioner(partitioner))
+		_, err := helpers.NewPublishWithFake(t, publish.WithBrokers(helpers.PublishBroker), publish.WithPartitioner(partitioner))
 		require.NoError(t, err, "partitioner %q", partitioner)
 	}
 
-	_, err := publish.New(publish.WithBrokers(helpers.PublishBroker), publish.WithPartitioner("murmur3"))
+	_, err := helpers.NewPublishWithFake(t, publish.WithBrokers(helpers.PublishBroker), publish.WithPartitioner("murmur3"))
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), `unknown partitioner "murmur3"`)
 	assert.Contains(t, err.Error(), "murmur2_random")
@@ -226,7 +232,7 @@ func TestPublishWithDeliveryTimeout(t *testing.T) {
 	}
 	for _, testCase := range cases {
 		t.Run(testCase.name, func(t *testing.T) {
-			_, err := publish.New(publish.WithBrokers(helpers.PublishBroker), publish.WithDeliveryTimeout(testCase.timeout))
+			_, err := helpers.NewPublishWithFake(t, publish.WithBrokers(helpers.PublishBroker), publish.WithDeliveryTimeout(testCase.timeout))
 			if testCase.wantErr == "" {
 				require.NoError(t, err)
 				return
@@ -240,18 +246,18 @@ func TestPublishWithDeliveryTimeout(t *testing.T) {
 // TestPublishFunctionOptionsRejectNil verifies that the callback options refuse
 // a nil function.
 func TestPublishFunctionOptionsRejectNil(t *testing.T) {
-	_, err := publish.New(publish.WithBrokers(helpers.PublishBroker), publish.WithDeliveryErrorFunc(nil))
+	_, err := helpers.NewPublishWithFake(t, publish.WithBrokers(helpers.PublishBroker), publish.WithDeliveryErrorFunc(nil))
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "delivery error func cannot be nil")
 
-	_, err = publish.New(publish.WithBrokers(helpers.PublishBroker), publish.WithFatalHandler(nil))
+	_, err = helpers.NewPublishWithFake(t, publish.WithBrokers(helpers.PublishBroker), publish.WithFatalHandler(nil))
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "fatal handler cannot be nil")
 }
 
 // TestPublishAcceptsEveryOption verifies that all options combine.
 func TestPublishAcceptsEveryOption(t *testing.T) {
-	_, err := publish.New(
+	_, err := helpers.NewPublishWithFake(t,
 		publish.WithBrokers(helpers.PublishBroker, "localhost:2"),
 		publish.WithKafkaConfig(map[string]any{"linger.ms": 1}),
 		publish.WithoutIdempotence(),
@@ -263,4 +269,56 @@ func TestPublishAcceptsEveryOption(t *testing.T) {
 		publish.WithFatalHandler(func(error) {}),
 	)
 	require.NoError(t, err)
+}
+
+// TestPublishOptionsReachTheDriver verifies what New hands the driver, for
+// the defaults and with every option that changes it.
+func TestPublishOptionsReachTheDriver(t *testing.T) {
+	_, fake := helpers.NewFakePublisher(t)
+	assert.Equal(t, publishdriver.Config{
+		Brokers:         []string{helpers.PublishBroker},
+		KafkaConfig:     map[string]any{},
+		Idempotence:     true,
+		Partitioner:     "consistent_random",
+		DeliveryTimeout: 30 * time.Second,
+	}, fake.Config())
+
+	_, fake = helpers.NewFakePublisher(t,
+		publish.WithKafkaConfig(map[string]any{"linger.ms": 1}),
+		publish.WithAcksLeader(),
+		publish.WithPartitioner(publish.PartitionerJavaCompatible),
+		publish.WithDeliveryTimeout(10*time.Second),
+	)
+	assert.Equal(t, publishdriver.Config{
+		Brokers:         []string{helpers.PublishBroker},
+		KafkaConfig:     map[string]any{"linger.ms": 1},
+		AcksLeader:      true,
+		Partitioner:     "murmur2_random",
+		DeliveryTimeout: 10 * time.Second,
+	}, fake.Config())
+
+	_, fake = helpers.NewFakePublisher(t, publish.WithoutIdempotence())
+	assert.False(t, fake.Config().Idempotence)
+	assert.False(t, fake.Config().AcksLeader, "WithoutIdempotence keeps acks=all")
+}
+
+// TestPublishWithProducerFactoryRejectsNil verifies that a nil factory is
+// rejected.
+func TestPublishWithProducerFactoryRejectsNil(t *testing.T) {
+	_, err := publish.New(publish.WithBrokers(helpers.PublishBroker), publish.WithProducerFactory(nil))
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "producer factory cannot be nil")
+}
+
+// TestPublishNewReportsFactoryError verifies that a producer that cannot be
+// built fails New.
+func TestPublishNewReportsFactoryError(t *testing.T) {
+	_, err := publish.New(
+		publish.WithBrokers(helpers.PublishBroker),
+		publish.WithProducerFactory(func(publishdriver.Config) (publishdriver.Producer, error) {
+			return nil, errors.New("no producer today")
+		}),
+	)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "creating the producer: no producer today")
 }
