@@ -17,20 +17,32 @@ import (
 type FakePublishProducer struct {
 	// ProduceErr, if set, is returned by Produce, and nothing is recorded.
 	ProduceErr error
-	// Partitions is what TopicPartitions returns for the topics it holds;
-	// PartitionsErr, if set, is returned instead.
-	Partitions    map[string]int
+	// Partitions is the fake cluster: topic → partition count. TopicPartitions
+	// returns the requested topics found here.
+	Partitions map[string]int
+	// PartitionsErr, if set, is returned by TopicPartitions instead.
 	PartitionsErr error
 
+	// reports is the unbuffered channel Reports returns. The emit methods
+	// write to it; Close closes it.
 	reports chan publishdriver.Event
 
-	mu            sync.Mutex
-	records       []publishdriver.Record
-	tokens        []any
-	config        publishdriver.Config
+	// mu guards every field below.
+	mu sync.Mutex
+	// records is every record Produce accepted, in order.
+	records []publishdriver.Record
+	// tokens is the token passed with each record, at the same index, so a
+	// test can emit a report for the n-th record.
+	tokens []any
+	// config is what the factory was given, so a test can check what the
+	// options produced.
+	config publishdriver.Config
+	// pingTopics and pingDeadlined record the last TopicPartitions call: the
+	// topics asked for, and whether its context had a deadline.
 	pingTopics    []string
 	pingDeadlined bool
-	closed        bool
+	// closed makes Close idempotent.
+	closed bool
 }
 
 // NewFakePublishProducer returns a fake with nothing produced.
