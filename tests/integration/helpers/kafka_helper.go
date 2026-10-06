@@ -165,18 +165,18 @@ func DedicatedCluster(t *testing.T) *KafkaTestCluster {
 // Racy in principle — something else could take it in between — but the window
 // is microseconds and the alternative is a hard-coded port that collides with
 // whatever is already running.
-func freePort(t *testing.T) string {
-	t.Helper()
+func freePort(tb testing.TB) string {
+	tb.Helper()
 
 	l, err := net.Listen("tcp", "127.0.0.1:0")
 	if err != nil {
-		t.Fatalf("reserving a host port: %v", err)
+		tb.Fatalf("reserving a host port: %v", err)
 	}
 	defer func() { _ = l.Close() }()
 
 	_, port, err := net.SplitHostPort(l.Addr().String())
 	if err != nil {
-		t.Fatalf("reading the reserved port: %v", err)
+		tb.Fatalf("reading the reserved port: %v", err)
 	}
 
 	return port
@@ -486,10 +486,10 @@ func (k *KafkaTestCluster) WaitForBrokerReady(ctx context.Context, t *testing.T,
 
 // UniqueTopicName returns a topic name unique to this test, so tests sharing the
 // broker cannot interfere with one another.
-func UniqueTopicName(t *testing.T, prefix string) string {
-	t.Helper()
+func UniqueTopicName(tb testing.TB, prefix string) string {
+	tb.Helper()
 
-	return fmt.Sprintf("%s-%d-%s", prefix, time.Now().UnixNano(), sanitise(t.Name()))
+	return fmt.Sprintf("%s-%d-%s", prefix, time.Now().UnixNano(), sanitise(tb.Name()))
 }
 
 // sanitise reduces a test name to characters Kafka accepts in a topic name.
