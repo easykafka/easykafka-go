@@ -58,29 +58,40 @@ type ClientError struct {
 func (ClientError) sealedEvent() {}
 
 // KafkaError is a librdkafka error, translated so that confluent-kafka-go
-// types never leave this package. The flags are what the publisher decides on.
+// types never leave this package. It unwraps to its Sentinel, so errors.Is on
+// any error built from it reaches the publish sentinel it means.
 type KafkaError struct {
 	// Code is librdkafka's name for the error (kfk.ErrorCode.String()).
 	Code    string
 	Message string
-	// Fatal: the producer has failed and cannot write any more.
+	// Sentinel is the publish sentinel this error means: ErrDeliveryTimeout,
+	// ErrNotDelivered, ErrFatal or ErrQueueFull. Nil when none applies, as
+	// for a broker rejecting the record.
+	Sentinel error
+	// Fatal: the producer has failed and cannot write any more. Read by the
+	// publisher's handling of client errors.
 	Fatal bool
-	// TimedOut: not acknowledged within message.timeout.ms.
-	TimedOut bool
-	// Purged: removed from the queue or from flight by a purge.
-	Purged bool
-	// QueueFull: the local queue had no room. Returned by Produce only.
-	QueueFull bool
-	// Disconnected: the brokers, or one of them, could not be reached.
+	// Disconnected: the brokers, or one of them, could not be reached. Read
+	// by the publisher's connection logging.
 	Disconnected bool
 }
 
-// Error returns librdkafka's message, or the code when there is none.
+// Error returns the sentinel's text, if any, then librdkafka's message, or the
+// code when there is no message.
 func (e *KafkaError) Error() string {
-	if e.Message != "" {
-		return e.Message
+	message := e.Message
+	if message == "" {
+		message = e.Code
 	}
-	return e.Code
+	if e.Sentinel == nil {
+		return message
+	}
+	return e.Sentinel.Error() + ": " + message
+}
+
+// Unwrap returns the sentinel, so errors.Is reaches it.
+func (e *KafkaError) Unwrap() error {
+	return e.Sentinel
 }
 
 // TranslateError turns an error from confluent-kafka-go into a KafkaError. An
@@ -94,7 +105,7 @@ func TranslateError(err error) *KafkaError {
 		return &KafkaError{Message: err.Error()}
 	}
 	code := kafkaError.Code()
-	return &KafkaError{
+	translated := &KafkaError{
 		Code:    code.String(),
 		Message: kafkaError.Error(),
 		// Fatal errors arrive in two forms. The fatal error event carries the
@@ -102,11 +113,19 @@ func TranslateError(err error) *KafkaError {
 		// needed. A Produce after the producer has failed returns ErrFatal
 		// without the flag, so the code is needed.
 		Fatal:        kafkaError.IsFatal() || code == kfk.ErrFatal,
-		TimedOut:     code == kfk.ErrMsgTimedOut,
-		Purged:       code == kfk.ErrPurgeQueue || code == kfk.ErrPurgeInflight,
-		QueueFull:    code == kfk.ErrQueueFull,
 		Disconnected: code == kfk.ErrAllBrokersDown || code == kfk.ErrTransport,
 	}
+	switch {
+	case code == kfk.ErrMsgTimedOut:
+		translated.Sentinel = ErrDeliveryTimeout
+	case code == kfk.ErrPurgeQueue || code == kfk.ErrPurgeInflight:
+		translated.Sentinel = ErrNotDelivered
+	case code == kfk.ErrQueueFull:
+		translated.Sentinel = ErrQueueFull
+	case translated.Fatal:
+		translated.Sentinel = ErrFatal
+	}
+	return translated
 }
 
 // TranslateEvent turns one confluent-kafka-go event into an Event: a

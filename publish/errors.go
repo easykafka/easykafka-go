@@ -3,29 +3,35 @@ package publish
 import (
 	"errors"
 	"fmt"
+
+	"github.com/easykafka/easykafka-go/internal/publishdriver"
 )
 
 // Sentinels for the ways a record can fail. Test with errors.Is: a returned
 // error wraps the matching sentinel, alongside the underlying cause.
+//
+// The first five are defined in the library's internal driver, which attaches
+// them to the errors it reports, and re-exported here; their values are what
+// errors.Is compares, so the reference is all a caller needs.
 var (
 	// ErrClosed is returned for a record sent after Close.
-	ErrClosed = errors.New("publish: publisher is closed")
+	ErrClosed = publishdriver.ErrClosed
 
 	// ErrQueueFull is returned when librdkafka's local queue has no room. The
 	// send fails at once rather than waiting.
-	ErrQueueFull = errors.New("publish: local producer queue is full")
+	ErrQueueFull = publishdriver.ErrQueueFull
 
 	// ErrDeliveryTimeout means the record was not acknowledged within the
 	// delivery timeout. The broker may still have written it.
-	ErrDeliveryTimeout = errors.New("publish: not acknowledged within the delivery timeout")
+	ErrDeliveryTimeout = publishdriver.ErrDeliveryTimeout
 
 	// ErrNotDelivered means the record was purged before it was confirmed: at
 	// Close, or after a fatal error. A record purged while in flight may still
 	// have been written.
-	ErrNotDelivered = errors.New("publish: purged before delivery was confirmed")
+	ErrNotDelivered = publishdriver.ErrNotDelivered
 
 	// ErrFatal means the producer failed fatally and cannot write any more.
-	ErrFatal = errors.New("publish: producer failed fatally")
+	ErrFatal = publishdriver.ErrFatal
 
 	// ErrEncode means the key or value could not be encoded. Nothing was sent.
 	ErrEncode = errors.New("publish: encoding failed")

@@ -10,9 +10,6 @@ import (
 	kfk "github.com/confluentinc/confluent-kafka-go/v2/kafka"
 )
 
-// ErrClosed is returned by an operation on a closed producer.
-var ErrClosed = errors.New("producer is closed")
-
 // Producer is the part of librdkafka the publisher uses.
 type Producer interface {
 	// Produce enqueues one record. token comes back on its Report. It never

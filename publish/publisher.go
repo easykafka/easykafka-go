@@ -181,36 +181,11 @@ func (p *Publisher) enqueue(record publishdriver.Record) (*Delivery, error) {
 	}
 	delivery := newDelivery(record)
 	if err := p.producer.Produce(record, delivery); err != nil {
-		return nil, publicProduceError(record.Topic, err)
+		// The driver's error already wraps the matching sentinel (ErrQueueFull,
+		// ErrFatal, ErrClosed), so errors.Is reaches it through this wrap.
+		return nil, fmt.Errorf("publish: record for %s not enqueued: %w", record.Topic, err)
 	}
 	return delivery, nil
-}
-
-// publicProduceError maps a failed Produce from the driver's internal errors to
-// the public ones, since a caller outside this module cannot inspect the
-// driver's types. Each error names the topic:
-//
-//   - a full queue → ErrQueueFull, so the caller can back off or shed load;
-//   - a fatal error (Produce after the producer has failed) → ErrFatal,
-//     wrapping the Kafka error: retrying is pointless;
-//   - a closed driver → ErrClosed;
-//   - anything else, a record over message.max.bytes for example → the
-//     error wrapped as it is, librdkafka's message saying why.
-func publicProduceError(topic string, err error) error {
-	if kafkaError, isKafkaError := errors.AsType[*publishdriver.KafkaError](err); isKafkaError {
-		switch {
-		case kafkaError.QueueFull:
-			return fmt.Errorf("%w: record for %s not enqueued", ErrQueueFull, topic)
-		case kafkaError.Fatal:
-			return fmt.Errorf("%w: record for %s not enqueued: %w", ErrFatal, topic, kafkaError)
-		}
-	}
-	if errors.Is(err, publishdriver.ErrClosed) {
-		return fmt.Errorf("%w: record for %s not enqueued", ErrClosed, topic)
-	}
-	// A record over the client's message.max.bytes, for example: nothing was
-	// enqueued, and librdkafka's message names the reason.
-	return fmt.Errorf("publish: record for %s not enqueued: %w", topic, err)
 }
 
 // readReports settles every report until the driver closes events.
@@ -282,7 +257,7 @@ func newDeliveryError(record publishdriver.Record, report publishdriver.Report) 
 		Key:       record.Key,
 		Value:     record.Value,
 		Code:      report.Err.Code,
-		Err:       deliveryCause(report.Err),
+		Err:       report.Err, // unwraps to the matching sentinel, if any
 	}
 	if len(record.Headers) > 0 {
 		deliveryError.Headers = make([]Header, len(record.Headers))
@@ -291,21 +266,6 @@ func newDeliveryError(record publishdriver.Record, report publishdriver.Report) 
 		}
 	}
 	return deliveryError
-}
-
-// deliveryCause wraps the sentinel matching a failed report, if one does,
-// around librdkafka's error.
-func deliveryCause(kafkaError *publishdriver.KafkaError) error {
-	switch {
-	case kafkaError.Purged:
-		return fmt.Errorf("%w: %w", ErrNotDelivered, kafkaError)
-	case kafkaError.Fatal:
-		return fmt.Errorf("%w: %w", ErrFatal, kafkaError)
-	case kafkaError.TimedOut:
-		return fmt.Errorf("%w: %w", ErrDeliveryTimeout, kafkaError)
-	default:
-		return kafkaError
-	}
 }
 
 // invokeDeliveryErrorFunc calls the callback, recovering a panic: an
