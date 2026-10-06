@@ -49,7 +49,8 @@ func TestPublishSuccessWithoutOutageLogsNothing(t *testing.T) {
 }
 
 // TestPublishOtherClientErrorsAreLogged verifies that a client error that is
-// not a lost connection is logged as such, a fatal one at error level.
+// neither a lost connection nor fatal is logged as EK_PUBLISH_KAFKA_ERROR, and
+// a fatal one as EK_PUBLISH_FATAL at error level.
 func TestPublishOtherClientErrorsAreLogged(t *testing.T) {
 	logs := &helpers.SyncBuffer{}
 	publisher, fake := helpers.NewFakePublisher(t, publish.WithLogger(zerolog.New(logs)))
@@ -57,7 +58,7 @@ func TestPublishOtherClientErrorsAreLogged(t *testing.T) {
 	require.NoError(t, err)
 
 	fake.Emit(publishdriver.ClientError{Err: &publishdriver.KafkaError{Code: "Local: SSL error"}})
-	fake.Emit(publishdriver.ClientError{Err: &publishdriver.KafkaError{Code: "Broker: Producer fenced", Fatal: true}})
+	fake.Emit(helpers.FatalClientError())
 	// A barrier before reading the logs. Emit returns once the report goroutine
 	// has taken an event, not once it has logged it. That goroutine handles
 	// events one at a time, in order, so once this later report's delivery
@@ -67,9 +68,9 @@ func TestPublishOtherClientErrorsAreLogged(t *testing.T) {
 	require.NoError(t, err)
 
 	output := logs.String()
-	assert.Equal(t, 2, strings.Count(output, "EK_PUBLISH_KAFKA_ERROR"))
-	assert.Contains(t, output, `"level":"warn"`)
-	assert.Contains(t, output, `"level":"error"`)
-	assert.Contains(t, output, `"fatal":true`)
+	assert.Equal(t, 1, strings.Count(output, "EK_PUBLISH_KAFKA_ERROR"))
+	assert.Contains(t, output, `{"level":"warn","ek_code":"EK_PUBLISH_KAFKA_ERROR"`)
+	assert.Equal(t, 1, strings.Count(output, "EK_PUBLISH_FATAL"))
+	assert.Contains(t, output, `{"level":"error","ek_code":"EK_PUBLISH_FATAL"`)
 	assert.NotContains(t, output, "EK_PUBLISH_BROKER_DOWN")
 }

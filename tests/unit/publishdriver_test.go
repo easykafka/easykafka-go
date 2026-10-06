@@ -111,8 +111,10 @@ func TestPublishDriverTranslatesClientErrors(t *testing.T) {
 			want: publishdriver.KafkaError{Code: kfk.ErrAllBrokersDown.String(), Message: "3/3 brokers are down", Disconnected: true}},
 		{name: "transport", err: kfk.NewError(kfk.ErrTransport, "connection refused", false),
 			want: publishdriver.KafkaError{Code: kfk.ErrTransport.String(), Message: "connection refused", Disconnected: true}},
-		{name: "fatal", err: kfk.NewError(kfk.ErrFencedInstanceID, "fenced", true),
-			want: publishdriver.KafkaError{Code: kfk.ErrFencedInstanceID.String(), Message: "Fatal error: fenced", Fatal: true, Sentinel: publishdriver.ErrFatal}},
+		// A fatal event carries its cause's code, here an idempotent producer
+		// refused for lack of IDEMPOTENT_WRITE: only IsFatal marks it fatal.
+		{name: "fatal", err: kfk.NewError(kfk.ErrClusterAuthorizationFailed, "not authorized", true),
+			want: publishdriver.KafkaError{Code: kfk.ErrClusterAuthorizationFailed.String(), Message: "Fatal error: not authorized", Fatal: true, Sentinel: publishdriver.ErrFatal}},
 		{name: "fatal code", err: kfk.NewError(kfk.ErrFatal, "fatal", false),
 			want: publishdriver.KafkaError{Code: kfk.ErrFatal.String(), Message: "fatal", Fatal: true, Sentinel: publishdriver.ErrFatal}},
 		{name: "queue full", err: kfk.NewError(kfk.ErrQueueFull, "", false),
