@@ -447,15 +447,17 @@ func (p *Publisher) Close(ctx context.Context) error {
 			p.logger.Error().Err(err).Msg("purging the producer's queue failed")
 		}
 
-		// The flush after the purge is what makes the purge reports arrive:
+		// This Flush waits for reports, not deliveries: after the purge nothing
+		// is left to deliver. It is what makes the purge reports arrive:
 		//  1. Purge removes the records and makes librdkafka create one purge
 		//     report each, but queues them internally; with PurgeNonBlocking,
 		//     some purging even finishes after Purge returns.
 		//  2. Close, below, stops confluent's event pipeline: any report still
 		//     inside librdkafka then never reaches Reports, and its record would
 		//     go unreported, the very loss the purge exists to prevent.
-		//  3. Flush waits until librdkafka's queue is empty, handing the pending
-		//     events on as it goes, so every purge report is out before Close.
+		//  3. Flush counts what librdkafka still holds, reports not yet handed
+		//     to Go included, and waits until that is zero, handing the reports
+		//     on as it goes. So every purge report is out before Close.
 		// Purge reports are local, so purgeReportTimeout (1 s) is ample.
 		p.producer.Flush(purgeReportTimeout)
 	}
