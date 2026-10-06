@@ -634,7 +634,9 @@ not change.
 | `EK_PUBLISH_UNMATCHED_REPORT` | error | A delivery report matched no record waiting for one: a second report for a record already resolved, or one without the publisher's token. It was dropped; the record's first outcome stands and the callback did not run again. | Should never happen: it is a bug in the library or in librdkafka. Report it with the log line. |
 | `EK_PUBLISH_BROKER_DOWN` | warn | A publisher lost its connection to the brokers. librdkafka reconnects on its own; records wait in the queue until their delivery timeout. Logged once per outage. | Watch for a matching `EK_PUBLISH_BROKER_RESTORED`. |
 | `EK_PUBLISH_BROKER_RESTORED` | info | A record was acknowledged again after `EK_PUBLISH_BROKER_DOWN`. `suppressed` counts the connection errors not logged in between. | — |
-| `EK_PUBLISH_KAFKA_ERROR` | warn, error if `fatal` | A publisher's client reported an error that is neither about one record nor a lost connection. | The error says what. With `"fatal":true` the producer cannot write any more: restart the service. |
+| `EK_PUBLISH_KAFKA_ERROR` | warn | A publisher's client reported an error that is neither about one record, a lost connection, nor fatal. Publishing continues. | The error says what. |
+| `EK_PUBLISH_FATAL` | error | A publisher's producer failed fatally. Every further write fails with `ErrFatal`, `Err()` and `Ping` return the error, and the publisher does not recover. Records still queued are reported as purged. | Restart the service: wire `WithFatalHandler` to a graceful shutdown, and `Err()` into the liveness probe. The error says why, usually idempotence-related. |
+| `EK_PUBLISH_RECORDS_PURGED` | error | `Close` ran out of time with records still undelivered, and purged them. Each was reported as not delivered, to its delivery and the `WithDeliveryErrorFunc` callback. `remaining` says how many. | Give `Close` a longer budget, or check the broker's health at shutdown. A purged record that was in flight may still have been written. |
 
 ## 🧪 Testing
 

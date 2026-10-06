@@ -6,7 +6,8 @@
 //     that belong to it: brokers, acks, idempotence, partitioner, delivery
 //     timeout, logger and callbacks. A service that needs two partitioners
 //     creates two publishers. It also checks the cluster and the bound topics
-//     with Ping.
+//     with Ping, reports a fatal producer error with Err, and is shut down with
+//     Close, which reports every record still undelivered rather than drop it.
 //   - Topic[K, V]: a declaration of one Kafka topic: its name, how to encode a
 //     key of type K and a value of type V into bytes (StringKey, JSONValue and
 //     the other encoders cover the common cases), and headers added to every

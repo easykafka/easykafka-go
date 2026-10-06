@@ -145,7 +145,19 @@ const (
 	PublishBrokerRestored = "EK_PUBLISH_BROKER_RESTORED"
 
 	// PublishKafkaError: a publisher's client reported an error that is
-	// neither about one record nor a lost connection. Publishing continues.
-	// Warning.
+	// neither about one record, a lost connection, nor fatal. Publishing
+	// continues. Warning.
 	PublishKafkaError = "EK_PUBLISH_KAFKA_ERROR"
+
+	// PublishFatal: a publisher's producer failed fatally. Every further write
+	// fails with ErrFatal, Err and Ping return the error, and the publisher does
+	// not recover; the WithFatalHandler function has been called. Records still
+	// queued are reported as purged. Error.
+	PublishFatal = "EK_PUBLISH_FATAL"
+
+	// PublishRecordsPurged: Close ran out of time with records still
+	// undelivered, and purges them. Each is then reported as not delivered,
+	// through its delivery and the WithDeliveryErrorFunc callback. The
+	// "remaining" field says how many. Error.
+	PublishRecordsPurged = "EK_PUBLISH_RECORDS_PURGED"
 )

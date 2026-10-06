@@ -269,8 +269,14 @@ func WithDeliveryErrorFunc(onError DeliveryErrorFunc) Option {
 }
 
 // WithFatalHandler sets a function called once, with the error, when the
-// producer fails fatally. After that every send fails. A service typically
-// uses it, or Err, to fail its liveness probe.
+// producer fails fatally. After that every send fails, and the publisher does
+// not recover. A service typically uses it to start a graceful shutdown, so the
+// process restarts with a fresh publisher, and Err for its liveness probe.
+//
+// It runs on the publisher's report goroutine, so it must not block, and it
+// must not call Close or os.Exit: Close waits for that goroutine, and would
+// never return. Cancel a context that the application's shutdown waits on
+// instead. A panic in it is recovered and logged.
 func WithFatalHandler(onFatal func(error)) Option {
 	return func(c *config) error {
 		if onFatal == nil {

@@ -82,5 +82,6 @@ func (e *DeliveryError) Unwrap() error {
 // DeliveryErrorFunc receives every record that was not acknowledged. It runs
 // on the publisher's single report goroutine: it must not block, since every
 // later report waits behind it, and it must be safe for concurrent use when
-// shared across publishers. A panic in it is recovered and logged.
+// shared across publishers. It must not call Close, which waits for that
+// goroutine and would never return. A panic in it is recovered and logged.
 type DeliveryErrorFunc func(DeliveryError)
