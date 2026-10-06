@@ -15,6 +15,9 @@ func NextPublishReport(t *testing.T, reports <-chan publishdriver.Event) publish
 	timeout := time.After(5 * time.Second)
 	for {
 		select {
+		// Go's comma-ok receive: open is false once the channel is closed and
+		// drained, and event is then nil. Here it means Close has run, so fail
+		// at once rather than spin on nils until the timeout.
 		case event, open := <-reports:
 			require.True(t, open, "reports closed before a report arrived")
 			if report, isReport := event.(publishdriver.Report); isReport {
