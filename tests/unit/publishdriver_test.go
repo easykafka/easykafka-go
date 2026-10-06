@@ -160,7 +160,16 @@ func TestPublishDriverPurgeReportsCarryTheToken(t *testing.T) {
 		Topic: "invoices", Key: []byte("k"), Value: []byte("v"),
 		Headers: []publishdriver.Header{{Key: "trace", Value: []byte("t-1")}},
 	}, token))
-	assert.Equal(t, 1, producer.Len())
+	// At least 1, not exactly 1: Len is 2 in some runs. Len is librdkafka's
+	// count of records not yet delivered plus the events queued for the
+	// application but not yet handed to Go, error events included.
+	// Right after New, librdkafka tries to connect to the unreachable broker in
+	// the background; the refusal comes within a millisecond and is queued as
+	// an error event, which confluent's poller then moves to Reports. Until it
+	// has, Len counts that event too. Whether it is still queued here depends on
+	// thread timing, so an exact count is flaky. The record is what this checks:
+	// it is queued, so Len is at least 1.
+	assert.GreaterOrEqual(t, producer.Len(), 1)
 	require.NoError(t, producer.Purge())
 
 	// Connection errors from the unreachable broker come on the same channel.
