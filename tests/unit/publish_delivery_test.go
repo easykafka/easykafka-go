@@ -30,7 +30,7 @@ func TestPublishReturnsNilOnSuccessReport(t *testing.T) {
 	go func() { published <- writer.Publish(context.Background(), "INV-1", helpers.NewPublishInvoice()) }()
 
 	// The record is enqueued: Publish is now waiting.
-	require.Eventually(t, func() bool { return fake.Len() == 1 }, time.Second, time.Millisecond)
+	require.Eventually(t, func() bool { return fake.Produced() == 1 }, time.Second, time.Millisecond)
 	// It must not have returned yet: Publish waits for the report, unlike Send.
 	select {
 	case err := <-published:
@@ -53,7 +53,7 @@ func TestPublishReturnsDeliveryErrorOnFailureReport(t *testing.T) {
 		published <- writer.Publish(context.Background(), "INV-1", helpers.NewPublishInvoice(),
 			publish.Header{Key: "trace", Value: []byte("t-1")})
 	}()
-	require.Eventually(t, func() bool { return fake.Len() == 1 }, time.Second, time.Millisecond)
+	require.Eventually(t, func() bool { return fake.Produced() == 1 }, time.Second, time.Millisecond)
 	fake.Fail(0, 3, &publishdriver.KafkaError{Code: "Broker: Message size too large", Message: "Broker: Message size too large"})
 
 	err := <-published
@@ -246,7 +246,7 @@ func TestPublishPublishWithCancelledContextAbandonsTheRecord(t *testing.T) {
 	cancel()
 	err := writer.Publish(ctx, "INV-1", helpers.NewPublishInvoice())
 	require.ErrorIs(t, err, context.Canceled)
-	assert.Equal(t, 1, fake.Len(), "the record is enqueued all the same")
+	assert.Equal(t, 1, fake.Produced(), "the record is enqueued all the same")
 	fake.Succeed(0, 0, 1)
 }
 
@@ -311,7 +311,7 @@ func TestPublishEncodeFailuresEnqueueNothing(t *testing.T) {
 			require.ErrorIs(t, err, publish.ErrEncode)
 			assert.Contains(t, err.Error(), testCase.want)
 			assert.Nil(t, delivery)
-			assert.Zero(t, fake.Len())
+			assert.Zero(t, fake.Produced())
 		})
 	}
 }
@@ -334,7 +334,7 @@ func TestPublishDeleteWritesNilValue(t *testing.T) {
 
 	deleted := make(chan error, 1)
 	go func() { deleted <- writer.Delete(context.Background(), "INV-2") }()
-	require.Eventually(t, func() bool { return fake.Len() == 2 }, time.Second, time.Millisecond)
+	require.Eventually(t, func() bool { return fake.Produced() == 2 }, time.Second, time.Millisecond)
 	assert.Nil(t, fake.Records()[1].Value)
 	fake.Succeed(1, 0, 10)
 	require.NoError(t, <-deleted)
@@ -351,7 +351,7 @@ func TestPublishDeleteKeyEncodeFailure(t *testing.T) {
 	})
 	err := writer.Delete(context.Background(), "k")
 	require.ErrorIs(t, err, publish.ErrEncode)
-	assert.Zero(t, fake.Len())
+	assert.Zero(t, fake.Produced())
 }
 
 // TestPublishReportErrorMapping verifies the sentinel each failure report
@@ -375,7 +375,7 @@ func TestPublishReportErrorMapping(t *testing.T) {
 		},
 		{
 			name: "fatal",
-			err:  &publishdriver.KafkaError{Code: "Broker: Producer fenced", Fatal: true, Sentinel: publishdriver.ErrFatal},
+			err:  &publishdriver.KafkaError{Code: "Local: Fatal error", Fatal: true, Sentinel: publishdriver.ErrFatal},
 			want: []error{publish.ErrFatal}, notWant: []error{publish.ErrNotDelivered, publish.ErrDeliveryTimeout},
 		},
 		{

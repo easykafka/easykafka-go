@@ -14,6 +14,12 @@ import (
 //
 // Reports is unbuffered: an emit returns once the publisher's report goroutine
 // has taken the event, which then settles it.
+//
+// For shutdown it behaves as librdkafka does, minus the network: Len and Flush
+// count the records not yet reported, Flush waits for that count to reach zero,
+// and Purge reports every pending record as purged, from a goroutine of its own.
+// Close stops any purge reports not yet sent, as librdkafka drops reports that
+// are not out when it closes.
 type FakePublishProducer struct {
 	// ProduceErr, if set, is returned by Produce, and nothing is recorded.
 	ProduceErr error
@@ -22,10 +28,18 @@ type FakePublishProducer struct {
 	Partitions map[string]int
 	// PartitionsErr, if set, is returned by TopicPartitions instead.
 	PartitionsErr error
+	// PurgeReportDelay, if set, delays each purge report Purge sends, so a test
+	// can check that Close waits for the last one.
+	PurgeReportDelay time.Duration
 
 	// reports is the unbuffered channel Reports returns. The emit methods
 	// write to it; Close closes it.
 	reports chan publishdriver.Event
+	// stop is closed by Close, so that emits still waiting give up.
+	stop chan struct{}
+	// emitting counts the emits in progress, so Close can close reports only
+	// once none is left to send on it.
+	emitting sync.WaitGroup
 
 	// mu guards every field below.
 	mu sync.Mutex
@@ -34,20 +48,33 @@ type FakePublishProducer struct {
 	// tokens is the token passed with each record, at the same index, so a
 	// test can emit a report for the n-th record.
 	tokens []any
+	// pending holds the token of every record not yet reported: what Len and
+	// Flush count, and what Purge reports.
+	pending map[any]bool
 	// config is what the factory was given, so a test can check what the
 	// options produced.
 	config publishdriver.Config
 	// pingTopics and pingDeadlined record the last TopicPartitions call: the
-	// topics asked for, and whether its context had a deadline.
+	// topics asked for, and whether its context had a deadline. pingCalls
+	// counts the calls.
 	pingTopics    []string
 	pingDeadlined bool
-	// closed makes Close idempotent.
+	pingCalls     int
+	// flushTimeouts is the timeout of every Flush call, in order.
+	flushTimeouts []time.Duration
+	// purgeCalls counts the Purge calls.
+	purgeCalls int
+	// closed makes Close idempotent, and stops new emits.
 	closed bool
 }
 
 // NewFakePublishProducer returns a fake with nothing produced.
 func NewFakePublishProducer() *FakePublishProducer {
-	return &FakePublishProducer{reports: make(chan publishdriver.Event)}
+	return &FakePublishProducer{
+		reports: make(chan publishdriver.Event),
+		stop:    make(chan struct{}),
+		pending: map[any]bool{},
+	}
 }
 
 // Factory returns a producer factory that hands out this fake, recording the
@@ -70,6 +97,7 @@ func (f *FakePublishProducer) Produce(record publishdriver.Record, token any) er
 	defer f.mu.Unlock()
 	f.records = append(f.records, record)
 	f.tokens = append(f.tokens, token)
+	f.pending[token] = true
 	return nil
 }
 
@@ -78,24 +106,64 @@ func (f *FakePublishProducer) Reports() <-chan publishdriver.Event {
 	return f.reports
 }
 
-// Flush reports nothing left.
-func (f *FakePublishProducer) Flush(time.Duration) int { return 0 }
+// Flush waits up to timeout for every pending record to be reported, and
+// returns how many are left. It records the timeout.
+func (f *FakePublishProducer) Flush(timeout time.Duration) int {
+	f.mu.Lock()
+	f.flushTimeouts = append(f.flushTimeouts, timeout)
+	f.mu.Unlock()
 
-// Purge does nothing.
-func (f *FakePublishProducer) Purge() error { return nil }
+	deadline := time.Now().Add(timeout)
+	for {
+		remaining := f.Len()
+		if remaining == 0 || !time.Now().Before(deadline) {
+			return remaining
+		}
+		time.Sleep(time.Millisecond)
+	}
+}
 
-// Len is the number of records produced.
+// Purge reports every pending record as purged, from a goroutine of its own,
+// each after PurgeReportDelay. It returns at once, as a non-blocking purge does.
+func (f *FakePublishProducer) Purge() error {
+	f.mu.Lock()
+	f.purgeCalls++
+	var tokens []any
+	for token := range f.pending {
+		tokens = append(tokens, token)
+	}
+	f.mu.Unlock()
+
+	go func() {
+		for _, token := range tokens {
+			select {
+			case <-time.After(f.PurgeReportDelay):
+			case <-f.stop:
+				return
+			}
+			f.Emit(publishdriver.Report{Token: token, Partition: -1, Offset: -1, Err: &publishdriver.KafkaError{
+				Code:     "Local: Purged in queue",
+				Message:  "Local: Purged in queue",
+				Sentinel: publishdriver.ErrNotDelivered,
+			}})
+		}
+	}()
+	return nil
+}
+
+// Len is the number of records not yet reported.
 func (f *FakePublishProducer) Len() int {
 	f.mu.Lock()
 	defer f.mu.Unlock()
-	return len(f.records)
+	return len(f.pending)
 }
 
 // TopicPartitions returns Partitions, filtered to the requested topics, or
-// PartitionsErr. It records the topics and whether ctx had a deadline.
+// PartitionsErr. It records the call.
 func (f *FakePublishProducer) TopicPartitions(ctx context.Context, topics []string) (map[string]int, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
+	f.pingCalls++
 	_, f.pingDeadlined = ctx.Deadline()
 	f.pingTopics = append([]string(nil), topics...)
 	if f.PartitionsErr != nil {
@@ -110,15 +178,20 @@ func (f *FakePublishProducer) TopicPartitions(ctx context.Context, topics []stri
 	return found, nil
 }
 
-// Close closes Reports, which ends the publisher's report goroutine.
-// Idempotent.
+// Close stops the emits still waiting, then closes Reports, which ends the
+// publisher's report goroutine. Idempotent.
 func (f *FakePublishProducer) Close() {
 	f.mu.Lock()
-	defer f.mu.Unlock()
-	if !f.closed {
-		f.closed = true
-		close(f.reports)
+	if f.closed {
+		f.mu.Unlock()
+		return
 	}
+	f.closed = true
+	close(f.stop)
+	f.mu.Unlock()
+
+	f.emitting.Wait()
+	close(f.reports)
 }
 
 // Records returns what was produced, in order.
@@ -126,6 +199,13 @@ func (f *FakePublishProducer) Records() []publishdriver.Record {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	return append([]publishdriver.Record(nil), f.records...)
+}
+
+// Produced is the number of records produced, reported or not.
+func (f *FakePublishProducer) Produced() int {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return len(f.records)
 }
 
 // Config returns the configuration the factory was given.
@@ -143,6 +223,27 @@ func (f *FakePublishProducer) PingTopics() (topics []string, hadDeadline bool) {
 	return f.pingTopics, f.pingDeadlined
 }
 
+// PingCalls is the number of TopicPartitions calls.
+func (f *FakePublishProducer) PingCalls() int {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.pingCalls
+}
+
+// FlushTimeouts returns the timeout of every Flush call, in order.
+func (f *FakePublishProducer) FlushTimeouts() []time.Duration {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return append([]time.Duration(nil), f.flushTimeouts...)
+}
+
+// PurgeCalls is the number of Purge calls.
+func (f *FakePublishProducer) PurgeCalls() int {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.purgeCalls
+}
+
 // Succeed emits a success report for the index-th record produced.
 func (f *FakePublishProducer) Succeed(index int, partition int32, offset int64) {
 	f.Emit(publishdriver.Report{Token: f.token(index), Partition: partition, Offset: offset})
@@ -153,9 +254,28 @@ func (f *FakePublishProducer) Fail(index int, partition int32, err *publishdrive
 	f.Emit(publishdriver.Report{Token: f.token(index), Partition: partition, Offset: -1, Err: err})
 }
 
-// Emit sends one event to the publisher, returning once it has been taken.
+// Emit sends one event to the publisher, returning once it has been taken. A
+// report marks its record reported. After Close, it sends nothing.
 func (f *FakePublishProducer) Emit(event publishdriver.Event) {
-	f.reports <- event
+	f.mu.Lock()
+	if f.closed {
+		f.mu.Unlock()
+		return
+	}
+	f.emitting.Add(1)
+	f.mu.Unlock()
+	defer f.emitting.Done()
+
+	select {
+	case f.reports <- event:
+	case <-f.stop:
+		return
+	}
+	if report, isReport := event.(publishdriver.Report); isReport {
+		f.mu.Lock()
+		delete(f.pending, report.Token)
+		f.mu.Unlock()
+	}
 }
 
 func (f *FakePublishProducer) token(index int) any {
