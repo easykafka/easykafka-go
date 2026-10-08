@@ -12,6 +12,13 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
+// timeoutReportMargin is how late after its delivery timeout a record without
+// idempotence may be reported. librdkafka checks for timed-out records
+// periodically rather than at the deadline: up to about 1 s late on a laptop
+// (probe T-0.1), and nearly 3 s on a loaded CI runner. The margin only has to
+// tell "about at the timeout" from librdkafka's 300 s default, or never.
+const timeoutReportMargin = 5 * time.Second
+
 // TestPublishDeliveryTimeout verifies that WithDeliveryTimeout bounds a record
 // no broker ever acknowledges: Publish fails with ErrDeliveryTimeout soon after
 // the timeout, rather than after librdkafka's 300 s default or never. It also
@@ -39,7 +46,7 @@ func TestPublishDeliveryTimeout(t *testing.T) {
 			name:     "without idempotence",
 			options:  []publish.Option{publish.WithoutIdempotence()},
 			earliest: deliveryTimeout,
-			latest:   deliveryTimeout + 2*time.Second,
+			latest:   deliveryTimeout + timeoutReportMargin,
 		},
 		{
 			name:     "default publisher",
@@ -116,7 +123,7 @@ func TestPublishDeliveryTimeoutAfterBrokerStops(t *testing.T) {
 	cluster.StopBroker(ctx, t)
 
 	latest := map[string]time.Duration{
-		"without idempotence": deliveryTimeout + 2*time.Second,
+		"without idempotence": deliveryTimeout + timeoutReportMargin,
 		"default publisher":   12 * time.Second,
 	}
 	started := time.Now()
