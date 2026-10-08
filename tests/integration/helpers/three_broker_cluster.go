@@ -260,28 +260,66 @@ func (c *ThreeBrokerCluster) Heal(tb testing.TB) {
 func (c *ThreeBrokerCluster) CreateTopic(tb testing.TB, topic string, partitions int) {
 	tb.Helper()
 
-	admin := c.newAdmin(tb)
-	defer admin.Close()
-
-	ctx, cancel := context.WithTimeout(context.Background(), adminTimeout)
-	defer cancel()
-	results, err := admin.CreateTopics(ctx, []kfk.TopicSpecification{{
+	c.createTopic(tb, kfk.TopicSpecification{
 		Topic:             topic,
 		NumPartitions:     partitions,
 		ReplicationFactor: threeBrokerCount,
 		Config:            map[string]string{"min.insync.replicas": "2"},
-	}})
-	if err != nil {
-		tb.Fatalf("creating topic %s: %v", topic, err)
-	}
-	for _, result := range results {
-		if result.Error.Code() != kfk.ErrNoError {
-			tb.Fatalf("creating topic %s: %v", result.Topic, result.Error)
+	})
+	tb.Logf("created topic %s with %d partitions, replication factor 3", topic, partitions)
+}
+
+// createTopic creates one topic and waits until every partition has a leader
+// and a full set of in-sync replicas.
+//
+// A failed attempt is retried, with a new admin client, for up to
+// adminTimeout. Right after the cluster starts, librdkafka can replace the
+// connection it first made to a broker with the broker's own, and a request
+// in flight on the first is lost ("Broker handle destroyed without
+// termination"). If that request had in fact created the topic, the retry
+// finds it already there, which counts as done.
+func (c *ThreeBrokerCluster) createTopic(tb testing.TB, specification kfk.TopicSpecification) {
+	tb.Helper()
+
+	deadline := time.Now().Add(adminTimeout)
+	for attempt := 1; ; attempt++ {
+		err := c.createTopicOnce(specification, attempt > 1)
+		if err == nil {
+			break
 		}
+		if time.Now().After(deadline) {
+			tb.Fatalf("creating topic %s, attempt %d: %v", specification.Topic, attempt, err)
+		}
+		tb.Logf("creating topic %s, attempt %d failed, retrying: %v", specification.Topic, attempt, err)
+		time.Sleep(500 * time.Millisecond)
 	}
 
-	c.WaitForFullISR(tb, topic, brokerReadyTimeout)
-	tb.Logf("created topic %s with %d partitions, replication factor 3", topic, partitions)
+	c.WaitForFullISR(tb, specification.Topic, brokerReadyTimeout)
+}
+
+// createTopicOnce makes one attempt. alreadyExistsIsDone accepts a topic that
+// exists already, which on a retry means the first attempt made it.
+func (c *ThreeBrokerCluster) createTopicOnce(specification kfk.TopicSpecification, alreadyExistsIsDone bool) error {
+	admin, err := kfk.NewAdminClient(&kfk.ConfigMap{"bootstrap.servers": c.liveBrokers()})
+	if err != nil {
+		return err
+	}
+	defer admin.Close()
+
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	results, err := admin.CreateTopics(ctx, []kfk.TopicSpecification{specification})
+	if err != nil {
+		return err
+	}
+	for _, result := range results {
+		code := result.Error.Code()
+		if code == kfk.ErrNoError || (alreadyExistsIsDone && code == kfk.ErrTopicAlreadyExists) {
+			continue
+		}
+		return result.Error
+	}
+	return nil
 }
 
 // WaitForFullISR waits until every partition of topic has a leader and all
@@ -332,16 +370,29 @@ func describeISR(admin *kfk.AdminClient, topic string) (state string, full bool)
 	return "", true
 }
 
-// newAdmin returns an admin client that knows every broker, so it works while
-// any one of them is down.
+// newAdmin returns an admin client that connects only to the brokers that are
+// up. Given a broker the test has just killed, it could send its request
+// there, and wait for an answer that never comes.
 func (c *ThreeBrokerCluster) newAdmin(tb testing.TB) *kfk.AdminClient {
 	tb.Helper()
 
-	admin, err := kfk.NewAdminClient(&kfk.ConfigMap{"bootstrap.servers": strings.Join(c.Brokers, ",")})
+	admin, err := kfk.NewAdminClient(&kfk.ConfigMap{"bootstrap.servers": c.liveBrokers()})
 	if err != nil {
 		tb.Fatalf("creating admin client: %v", err)
 	}
 	return admin
+}
+
+// liveBrokers returns the addresses of the brokers that are up, joined for
+// bootstrap.servers.
+func (c *ThreeBrokerCluster) liveBrokers() string {
+	var live []string
+	for index, address := range c.Brokers {
+		if !c.down[index] {
+			live = append(live, address)
+		}
+	}
+	return strings.Join(live, ",")
 }
 
 // waitForBrokers waits until a metadata request lists count brokers.
