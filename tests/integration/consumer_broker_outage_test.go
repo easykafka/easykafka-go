@@ -193,7 +193,8 @@ func TestConsumerThroughBrokerOutages(t *testing.T) {
 		for partition, gap := range gaps {
 			assert.Greater(t, gap.Length, 5*time.Second,
 				"partition %d did not pause: the crash must stall every partition", partition)
-			assert.Less(t, gap.EndedAt.Sub(outageStarted), 20*time.Second,
+			resumedAfterCrash := gap.EndedAt.Sub(outageStarted)
+			assert.Less(t, resumedAfterCrash, 20*time.Second,
 				"partition %d must resume before the broker is back", partition)
 		}
 	})
