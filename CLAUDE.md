@@ -62,8 +62,8 @@ churn-heavy linters (`mnd`, `lll`, `dupl`, `gocognit`, `gosec`, `errcheck`,
 
 ### Internal packages
 - `internal/engine/` — core polling loop (`engine.go`) and batch accumulation (`batch.go`). Supports both single-message and batch modes.
-- `internal/kafka/` — wraps confluent-kafka-go consumer (`adapter.go`) and produces to retry/DLQ topics (`producer.go`)
-- `internal/types/` — core interfaces: `Handler`, `BatchHandler`, `Batch`/`BatchItem`, `Failure`, `ErrorStrategy`, `Message`, `Initializable`, `LoggerAware`, `DeliveryError`/`DeliveryErrorFunc`
+- `internal/kafka/` — wraps confluent-kafka-go consumer (`adapter.go`) and builds the retry publisher's Kafka config from the consumer's (`publisher_config.go`)
+- `internal/types/` — core interfaces: `Handler`, `BatchHandler`, `Batch`/`BatchItem`, `Failure`, `ErrorStrategy`, `Message`, `Initializable`, `LoggerAware`
 - `internal/metadata/` — message metadata via context decorators and header parsing
 
 ### What of `internal/metadata` is public, and what is deliberately not
@@ -130,39 +130,28 @@ A strategy returning a non-nil error is fatal — the engine stops the poll loop
 it. That is the whole of the "stop consuming" capability; there is no pause/resume, and a
 `CircuitBreaker` strategy that appeared to offer one was removed in 0.2.0 because it did not.
 
-### Retry/DLQ writes are not confirmed — and what that means for the callback
+### Retry/DLQ writes are confirmed before the offset is stored
 
-`Produce` (`internal/kafka/producer.go`) passes a **nil delivery channel**, so it returns as soon as
-the record is queued in librdkafka's local buffer. `RetryStrategy.HandleError` reads that nil as
-success and returns nil, and the engine stores the source offset on the strength of it. **A retry or
-DLQ write that never reaches the broker still advances the offset**, so the message is lost.
+The retry strategy writes through one `publish.Publisher` (`acks=all`, idempotence on, 30 s delivery
+timeout), with one writer per topic. `HandleError` returns nil only once every record of the call is
+acknowledged; any failure fails it, and the engine stops without storing the source offset. A lost
+write is a stopped consumer, not a lost message. `WithDeliveryErrorFunc` takes a
+`publish.DeliveryErrorFunc` and reports a failure the consumer also stops on — never describe it as
+reporting a loss.
 
-This is known and deliberate for now: confirming the write is scheduled with the greenfield producer
-API rather than bolted onto the retry strategy. See `producer-durability-implementation-plan.md` in
-`srm-specs` — and in particular its "Read this before designing the producer API" note, which
-records that `kafka.Message.Opaque` correlates a delivery report back to its record **without** a
-per-produce delivery channel, so confirmation need not block the producing goroutine at all.
+Three things to preserve in `HandleError`:
 
-`WithDeliveryErrorFunc(fn)` is the interim: it makes that loss visible so an application can log,
-count and alert on it. **It reports a loss, it does not prevent one** — the offset has already
-advanced when `fn` runs. Do not describe it as fixing the above, in code comments or docs.
+- **Send every record first, then wait once.** Waiting per record would cost one broker round trip
+  per message of a batch.
+- **The wait uses `context.WithoutCancel(ctx)`.** A shutdown must not abandon a write about to be
+  confirmed: that would fail `HandleError`, stop the consumer with a false error and duplicate the
+  record. The delivery timeout bounds the wait.
+- **A nil payload goes through `SendDelete`.** `publish.RawValue` refuses nil, and the record must
+  keep the value it was consumed with.
 
-Three things to preserve when touching this path:
-
-- **`Produce` sets `Opaque: msg`.** librdkafka does not return headers on a delivery report, so the
-  submitted `*types.ProduceMessage` is carried through as the opaque and preferred over the report's
-  own copy in `DeliveryErrorFor`. Without it the callback cannot name the retry attempt or original
-  topic. Needs no delivery channel; costs one client-side map entry per in-flight record.
-- **`InvokeDeliveryError` recovers panics.** The callback runs inside the `range` over `Events()` on
-  a single goroutine per producer; an unrecovered panic kills it and the producer then drains
-  nothing for the life of the process — silently, since that goroutine was the only thing reporting
-  failures. The same reason the callback must not block.
-- **No `Retriable` field.** `kafka.Error.IsRetriable()` is only ever set by the transactional
-  producer API, so on a delivery report it is always false. `DeliveryError.Code` carries the error
-  kind instead, derived from `Code().String()`.
-
-`DeliveryErrorFor` and `InvokeDeliveryError` are exported from `internal/kafka` purely so they are
-reachable from `tests/`; `internal/` keeps them out of the public API.
+`strategy.WithProducerFactory` is the unit tests' seam onto `helpers.FakePublishProducer`, as
+`publish.WithProducerFactory` is the publisher's; its argument names `internal/` types, so no other
+module can use it.
 
 ### Log codes
 
@@ -176,14 +165,14 @@ documented strings, not API.
 table** — code, level, meaning, what to do — in the same change. Nothing checks this
 automatically; the README table is the only place an operator finds what a code means.
 
-### Retry/DLQ producers inherit the consumer's Kafka config
+### The retry publisher inherits the consumer's Kafka config
 
 The consumer's `WithKafkaConfig` map reaches the strategy through `InitConfig.KafkaConfig`, and
-`kafka.ProducerConfig` builds each producer's config from it. Without that, the producers would
-connect without the consumer's security, SASL and TLS settings: `Produce` still succeeds locally,
-the offset is stored, and every retry and DLQ write fails later.
+`kafka.PublisherConfig` builds the publisher's config from it. Without that, the publisher would
+connect without the consumer's security, SASL and TLS settings, and every retry and DLQ write would
+fail.
 
-Two things to preserve:
+Three things to preserve:
 
 - **The filter is a deny-list of consumer-only keys, not an allowlist of shared ones.** A missed
   consumer-only key costs one librdkafka `CONFWARN` line at producer start. A missed shared key —
@@ -192,11 +181,12 @@ Two things to preserve:
 - **`go.*` keys are always dropped.** Some that a consumer accepts
   (`go.application.rebalance.enable`, `go.events.channel.enable`) make `kfk.NewProducer` fail with
   "No such configuration property".
-
-`bootstrap.servers` and `acks=all` are set after the inherited keys, so the map cannot change them.
+- **Keys the publisher manages are dropped**, or `publish.WithKafkaConfig` would reject them and
+  `Initialize` would fail. The list is `publishdriver.ManagedKeyReason`, the one
+  `publish.WithKafkaConfig` checks too: never copy it.
 
 ### Testing approach
-- `tests/unit/` — pure Go logic, no Kafka dependency (strategy behavior, batch buffer, shutdown logic, options validation, delivery-error mapping)
+- `tests/unit/` — pure Go logic, no Kafka dependency (strategy behavior, batch buffer, shutdown logic, options validation, the publisher against a fake producer)
 - `tests/integration/` — full Kafka via testcontainers-go (consumer basics, batch, retry/DLQ, fail-fast, graceful shutdown, rebalancing, reconnection, at-least-once semantics, delivery errors)
 
 - `examples/playground/` — not a test: a producer and consumer for trying the library by hand,
@@ -213,7 +203,7 @@ the helpers folder beside the tests that use it, in a file of its own, never ins
 file:
 
 - `tests/unit/helpers/` — one file per mock (`mock_kafka_client.go`, `mock_strategy.go`,
-  `mock_producer.go`, …), `fixtures.go` for `NewTestMessage` / `TestLogger`, and one file per
+  `fake_publish_producer.go`, …), `fixtures.go` for `NewTestMessage` / `TestLogger`, and one file per
   helper function (`run_batch.go`, `count_calls.go`, …).
 - `tests/integration/helpers/` — the test cluster (`kafka_helper.go`), cluster setup such as
   `create_topic_rejecting_everything.go`, fakes such as `sync_buffer.go`, and consumer helpers
@@ -229,8 +219,8 @@ To make a write fail deterministically in an integration test, create the target
 `max.message.bytes=1` (`cluster.CreateTopicRejectingEverything`). The record then passes
 librdkafka's own client-side size check — which would fail `Produce` synchronously and never
 produce a delivery report — and is rejected by the broker instead, which is the path that generates
-one. Stopping the broker does not work: `message.timeout.ms` is unset, so its 300 s default
-outlives any sane test.
+one. Stopping the broker works less well: a record then waits out its delivery timeout, 30 s by
+default.
 
 ### Key dependencies
 - `confluent-kafka-go/v2` — underlying Kafka client

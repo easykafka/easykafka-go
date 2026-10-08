@@ -455,6 +455,27 @@ consumer) is the time easykafka wrote it, not the source record's. Scheduling
 doesn't depend on it: `WaitUntilRetryTime` reads the `easykafka.retry.time`
 header.
 
+**Retry and DLQ writes are confirmed.** The strategy writes through a
+`publish` package publisher with `acks=all` and idempotence on, and
+waits until the broker has acknowledged every retry and DLQ record of a failure
+before the source offset is stored. A write the broker refuses, or that is not
+acknowledged within the publisher's 30 s delivery timeout, stops the consumer
+with an error, without storing the offset; the message is consumed again after a
+restart. A lost write is a stopped consumer, not a lost message.
+
+Three consequences to know:
+
+- **Only the failure path waits.** A failed message costs one broker round trip
+  more than before; the wait happens on the polling goroutine, bounded by the
+  30 s delivery timeout. Keep `max.poll.interval.ms` well above that (300 s by
+  default).
+- **A record the broker always refuses is a crash loop.** A DLQ write that can
+  never succeed — a record larger than the DLQ topic's `max.message.bytes`, say
+  — fails on every redelivery: stop, restart, stop. It needs a person; the log
+  and the error carry the broker's code (`Broker: Message size too large`).
+- **An outage of the retry or DLQ topic longer than 30 s stops consumers** whose
+  handlers fail in that window, instead of losing their messages.
+
 **Replaying a dead-lettered message** is a re-publish of its body and key to the
 source topic. Drop the `easykafka.*` headers when you do: the record carries the
 attempt count it died on, and would otherwise arrive at its last attempt and go
@@ -469,43 +490,44 @@ straight back to the DLQ on its first failure.
 | `WithMaxDelay(d)` | 30s | Backoff cap. Keep it below the retry consumer's `max.poll.interval.ms` (300s by default) |
 | `WithBackoffMultiplier(m)` | 2.0 | Exponential backoff factor |
 | `WithCustomBackoff(fn)` | — | Replaces the three options above |
-| `WithDeliveryErrorFunc(fn)` | — | Called for retry/DLQ writes that never reach the broker |
+| `WithDeliveryErrorFunc(fn)` | — | Called for every retry/DLQ record the broker did not acknowledge |
 
 #### Observing failed retry and DLQ writes
 
-A write to the retry or DLQ topic can fail — the broker rejects the record, or is unreachable.
-Today the library does not wait for the broker to acknowledge that write before advancing the
-source offset, so **a failed write loses the message**, and the only trace is a line on the
-library's logger.
+A write to the retry or DLQ topic can fail — the broker rejects the record, or is unreachable for
+longer than the delivery timeout. The consumer then stops (see above), and the library logs the
+record (`EK_PUBLISH_DELIVERY_FAILED`) and the write that failed (`EK_RETRY_WRITE_FAILED` or
+`EK_DLQ_WRITE_FAILED`).
 
-`WithDeliveryErrorFunc` makes that visible to your application, so you can log it in your own
-format, count it and alert on it:
+`WithDeliveryErrorFunc` hands each such record to your application too, so you can log it in your
+own format, count it and alert on it:
 
 ```go
 retryStrategy, err := easykafka.NewRetryStrategy(
 	easykafka.WithRetryTopic("orders.retry"),
 	easykafka.WithDLQTopic("orders.dlq"),
-	easykafka.WithDeliveryErrorFunc(func(de easykafka.DeliveryError) {
-		lostWrites.WithLabelValues(de.Topic, de.Code).Inc()
+	easykafka.WithDeliveryErrorFunc(func(de publish.DeliveryError) {
+		failedWrites.WithLabelValues(de.Topic, de.Code).Inc()
 		log.Error().Err(de.Err).
 			Str("topic", de.Topic).
-			Str("attempt", de.Headers[easykafka.HeaderRetryAttempt]).
-			Msg("retry/DLQ write lost")
+			Str("code", de.Code).
+			Msg("retry/DLQ write failed")
 	}),
 )
 ```
 
-**It reports the loss, it does not prevent it.** The source offset has already advanced by the time
-your function runs, and registering it changes nothing about that. Confirming the write before the
-offset moves is a separate piece of work, scheduled with the producer API.
+It receives a `publish.DeliveryError` (package `github.com/easykafka/easykafka-go/publish`), the same type a publisher's callback gets.
+**It reports a failure the consumer stops on, not a lost message:** the source offset is not
+stored, and the message is consumed again after a restart. It is also called for a record still
+unreported when the strategy closes, which is then purged.
 
-Two rules for the function you supply, because it runs on the producer's event goroutine: it must
-not block — while it runs, no further delivery report is processed, including the failures it
-exists to report — and it must be safe for concurrent use, since the retry and DLQ producers each
-have their own goroutine. A panic is recovered and logged rather than allowed to kill the goroutine.
+`de.Headers` is the record's headers in the order they were written, sorted by key: the
+`easykafka.*` headers (attempt, original topic, …) among them. `de.Value` carries the record body;
+usually the wrong thing to log wholesale.
 
-`de.Value` carries the record body, which for a DLQ write is the last copy that exists. Useful if
-you want to spool it somewhere; usually the wrong thing to log wholesale.
+The function runs on the publisher's report goroutine, so it must not block — every later report
+waits behind it — and must not call anything that closes the consumer. A panic is recovered and
+logged (`EK_PUBLISH_CALLBACK_PANIC`).
 
 ## ⏱ Commit Cadence
 
@@ -561,11 +583,15 @@ easykafka.WithKafkaConfig(map[string]any{
 })
 ```
 
-The retry strategy's producers inherit these settings as well, so on a secured
+The retry strategy's publisher inherits these settings as well, so on a secured
 cluster the `security.protocol`, SASL and TLS keys set here reach the retry and
 DLQ writes too — configure them once. Consumer-only keys (`session.timeout.ms`,
-`fetch.*`, `group.*`, …) and confluent-kafka-go's own `go.*` keys are left out,
-and the producers always keep `acks=all`.
+`fetch.*`, `group.*`, …), confluent-kafka-go's own `go.*` keys, and the keys the
+publisher manages itself (`acks`, `enable.idempotence`, `message.timeout.ms`,
+`partitioner`, `{topic}.*`, … — the list under `publish.WithKafkaConfig`) are left
+out, so the publisher keeps `acks=all`, idempotence and its 30 s delivery timeout.
+A `max.in.flight.requests.per.connection` above 5 is not left out: idempotence
+refuses it, so the consumer fails to start, naming the key.
 
 Some keys are managed by the library and are rejected with an explanation rather
 than silently ignored:
@@ -599,15 +625,13 @@ message. Search or alert on the code: the message may be reworded, the code does
 not change.
 
 ```json
-{"level":"error","ek_code":"EK_PRODUCER_RECORDS_DROPPED","unflushed":2,"message":"retry/DLQ records not delivered before the producer closed; they are dropped"}
+{"level":"error","ek_code":"EK_DLQ_WRITE_FAILED","topic":"orders","offset":42,"error":"publish: record for orders.dlq (partition 0) not delivered: Broker: Message size too large","message":"DLQ write not acknowledged"}
 ```
 
 | Code | Level | Meaning | What to do |
 |---|---|---|---|
 | **Messages lost or written off** | | | |
-| `EK_PRODUCER_RECORDS_DROPPED` | error | A retry or DLQ producer closed with records still unsent after its 7 s flush. They are dropped, and their source offsets were already committed, so those messages are lost. `unflushed` says how many. | Check the broker's health and the producers' connection settings around shutdown. Frequent occurrences mean the retry or DLQ topic cannot keep up. |
-| `EK_PRODUCER_DELIVERY_FAILED` | error | The broker never took a retry or DLQ write. Its source offset was already committed, so the message is lost. One line per record. | Alert on it. The error says why — authentication, record too large, broker unavailable. `WithDeliveryErrorFunc` receives the record itself. |
-| `EK_RETRY_WRITE_FAILED` | error | A message could not even be queued for the retry topic — a full local queue, say. The consumer stops. | Restart; the message is redelivered. If it recurs, the retry topic cannot keep up with the failure rate. |
+| `EK_RETRY_WRITE_FAILED` | error | A write to the retry topic failed: it could not be queued (a full local queue, a failed producer), or the broker did not acknowledge it. The consumer stops without storing the source offset. | Restart; the message is redelivered. The error says why — record too large, not authorized, timed out. If it recurs on every restart, the broker refuses the record for good: it needs a person. |
 | `EK_DLQ_WRITE_FAILED` | error | As `EK_RETRY_WRITE_FAILED`, for the DLQ. | As above. |
 | `EK_DLQ_MAX_ATTEMPTS` | error | A message failed its last allowed attempt and went to the DLQ. | Inspect the DLQ record; its headers say why it failed. |
 | `EK_DLQ_PERMANENT` | error | A message failed with `ErrPermanent` and went to the DLQ without retrying. | Usually a malformed record: inspect it in the DLQ. |
@@ -619,7 +643,6 @@ not change.
 | **Bugs in application code** | | | |
 | `EK_HANDLER_PANIC` | error | A handler panicked. The message — in batch mode, the whole batch — went to the error strategy. | Fix the handler; the line carries the stack. |
 | `EK_FAILURE_WITHOUT_ERROR` | warn | A handler reported a `Failure` with no `Err`; it was routed under `ErrUnspecified`. | Set `Err` where the handler builds the `Failure`. |
-| `EK_DELIVERY_CALLBACK_PANIC` | error | The `WithDeliveryErrorFunc` callback panicked; the panic was recovered. | Fix the callback; the line carries the stack. |
 | **Commits that failed — replay, not loss** | | | |
 | `EK_COMMIT_FAILED` | warn | Committing stored offsets failed; a later commit covers them. The `commit` field says which: `per_message`, `batch`, `final`, `revoke` or `auto`. | Occasional ones are harmless. Persistent ones mean a growing replay on restart — check the group coordinator. |
 | **Broker and rebalance trouble** | | | |

@@ -3,8 +3,8 @@
 // A code goes in its own field, Field, next to a readable message:
 //
 //	logger.Error().
-//	    Str(logcode.Field, logcode.ProducerRecordsDropped).
-//	    Msg("retry/DLQ records not delivered before the producer closed; they are dropped")
+//	    Str(logcode.Field, logcode.DLQWriteFailed).
+//	    Msg("DLQ write not acknowledged")
 //
 // The message is for people and may be reworded; the code is for searches and
 // alerts and does not change. A code is descriptive and starts with "EK_", so it
@@ -19,20 +19,11 @@ const Field = "ek_code"
 
 // Messages lost or written off.
 const (
-	// ProducerRecordsDropped: a retry or DLQ producer closed with records it
-	// had not delivered within its flush timeout. Those records are dropped, and
-	// their source offsets were already committed, so the messages are lost. The
-	// "unflushed" field says how many. Error.
-	ProducerRecordsDropped = "EK_PRODUCER_RECORDS_DROPPED"
-
-	// ProducerDeliveryFailed: the broker never took a retry or DLQ write. Its
-	// source offset was already committed, so the message is lost. One line per
-	// record. Error.
-	ProducerDeliveryFailed = "EK_PRODUCER_DELIVERY_FAILED"
-
-	// RetryWriteFailed: a message could not even be queued for the retry topic
-	// — a full local queue, say. The retry strategy returns the error and the
-	// consumer stops. Error.
+	// RetryWriteFailed: a write to the retry topic failed: it could not be
+	// queued (a full local queue, a failed producer), or the broker did not
+	// acknowledge it. The retry strategy returns the error, the consumer stops
+	// without storing the source offset, and the message is consumed again after
+	// a restart. Error.
 	RetryWriteFailed = "EK_RETRY_WRITE_FAILED"
 
 	// DLQWriteFailed: as RetryWriteFailed, for the DLQ. Error.
@@ -78,10 +69,6 @@ const (
 	// FailureWithoutError: a handler reported a Failure with no Err. It is
 	// routed under ErrUnspecified anyway. Warning.
 	FailureWithoutError = "EK_FAILURE_WITHOUT_ERROR"
-
-	// DeliveryCallbackPanic: the WithDeliveryErrorFunc callback panicked. The
-	// panic is recovered so the producer keeps draining. Error.
-	DeliveryCallbackPanic = "EK_DELIVERY_CALLBACK_PANIC"
 )
 
 // Commits that failed: messages are replayed on restart, not lost.

@@ -464,43 +464,46 @@ func TestNilFailurePointerIsSuccess(t *testing.T) {
 // as a batch handler recording that Failure with item.Fail.
 func TestSingleAndBatchHandlersWriteStepAndCodeAlike(t *testing.T) {
 	failure := types.Failure{Err: errors.New("publish failed"), Step: 2, Code: "x"}
-	newRetry := func() (*strategy.RetryStrategy, *helpers.MockProducer) {
-		retryProd := &helpers.MockProducer{}
-		cfg := strategy.RetryConfig{
-			RetryTopic: "t.retry", DLQTopic: "t.dlq", MaxAttempts: 3,
-			InitialDelay: time.Second, MaxDelay: time.Second, Multiplier: 1,
-		}
-		return strategy.NewRetryStrategyWithProducers(cfg, retryProd, &helpers.MockProducer{}, zerolog.Nop()), retryProd
+	newRetry := func() (*strategy.RetryStrategy, *helpers.FakePublishProducer) {
+		return helpers.NewAcknowledgingRetryStrategy(t, 3,
+			strategy.WithMaxDelay(time.Second), strategy.WithBackoffMultiplier(1))
 	}
 
 	// Single-message mode.
-	singleStrat, singleProd := newRetry()
+	singleStrat, singleFake := newRetry()
 	single := func(_ context.Context, _ []byte) *types.Failure {
 		f := failure
 		return &f
 	}
+	// With only Messages set, every call succeeds, and Poll returns "m" once, then nil (no message)
+	// forever.
 	client := &helpers.MockKafkaClient{Messages: []*types.Message{helpers.NewTestMessage("topic", 0, 0, "m")}}
 	eng := engine.NewEngine(client, single, singleStrat, helpers.TestLogger(), 10)
 	ctx, cancel := context.WithTimeout(context.Background(), 300*time.Millisecond)
 	defer cancel()
+	// The engine polls the one message, calls single on it, and hands its Failure to singleStrat.
 	require.NoError(t, eng.Start(ctx))
 
 	// Batch mode.
-	batchStrat, batchProd := newRetry()
+	batchStrat, batchFake := newRetry()
 	batchHandler := func(_ context.Context, batch *types.Batch) *types.Failure {
 		batch.Items()[0].Fail(failure)
 		return nil
 	}
+	// A fresh client, as the first one has handed out its message and been closed. With only Messages
+	// set, every call succeeds, and Poll returns "m" once, then nil (no message) forever.
 	client = &helpers.MockKafkaClient{Messages: []*types.Message{helpers.NewTestMessage("topic", 0, 0, "m")}}
+	// RunBatch runs a batch engine that calls batchHandler and hands the item's Failure to batchStrat.
 	require.NoError(t, helpers.RunBatch(t, client, batchHandler, batchStrat, helpers.TestLogger()))
 
-	for name, prod := range map[string]*helpers.MockProducer{"single": singleProd, "batch": batchProd} {
+	for name, fake := range map[string]*helpers.FakePublishProducer{"single": singleFake, "batch": batchFake} {
 		t.Run(name, func(t *testing.T) {
-			produced := prod.Messages()
+			produced := fake.RecordsTo("test.retry")
 			require.Len(t, produced, 1)
-			assert.Equal(t, "2", produced[0].Headers[metadata.HeaderRetryStep])
-			assert.Equal(t, "x", produced[0].Headers[metadata.HeaderErrorCode])
-			assert.Equal(t, "publish failed", produced[0].Headers[metadata.HeaderErrorMessage])
+			headers := helpers.HeadersOf(produced[0])
+			assert.Equal(t, "2", headers[metadata.HeaderRetryStep])
+			assert.Equal(t, "x", headers[metadata.HeaderErrorCode])
+			assert.Equal(t, "publish failed", headers[metadata.HeaderErrorMessage])
 		})
 	}
 }

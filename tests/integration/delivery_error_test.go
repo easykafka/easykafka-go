@@ -3,7 +3,6 @@ package integration
 import (
 	"context"
 	"fmt"
-	"sync"
 	"testing"
 	"time"
 
@@ -15,23 +14,24 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-// TestDeliveryErrorCallbackFiresOnRejectedWrite pins the mapping in
-// DeliveryErrorFor against a real librdkafka delivery report rather than a
-// fabricated one. The unit tests cover the field mapping; this covers the fact
-// that a report with these fields populated is what actually arrives.
+// TestRejectedDLQWriteStopsTheConsumerAndKeepsTheMessage is the regression test
+// for a retry or DLQ write the broker refuses. Before the retry strategy wrote
+// through a publisher, such a write was never confirmed: the handler failed,
+// the DLQ write was rejected, the source offset advanced anyway, and Start
+// returned nil. The message was lost, and the delivery-error callback was the
+// only trace of it.
 //
-// The rejection is arranged by creating the retry topic with a tiny
+// Now HandleError waits for the broker's answer, so the rejection fails it: the
+// consumer stops with an error, the source offset is not committed, and a
+// fresh consumer in the same group receives the message again.
+//
+// The rejection is arranged by creating the DLQ topic with a tiny
 // max.message.bytes. The record then passes librdkafka's own client-side check
-// — which would fail the Produce call synchronously and never reach a delivery
-// report — and is rejected by the broker instead, which is the path under test.
-//
-// Note what this test also demonstrates: the consumer sees no error at all. The
-// handler failed, the retry write was rejected, the source offset advanced
-// anyway, and Start returns nil. That is finding 6, and this callback is the
-// only thing that makes it visible.
-func TestDeliveryErrorCallbackFiresOnRejectedWrite(t *testing.T) {
-	t.Log("TestDeliveryErrorCallbackFiresOnRejectedWrite started")
-	defer t.Log("TestDeliveryErrorCallbackFiresOnRejectedWrite finished")
+// — which would fail the send synchronously and never reach a delivery report
+// — and is rejected by the broker instead, which is the path under test.
+func TestRejectedDLQWriteStopsTheConsumerAndKeepsTheMessage(t *testing.T) {
+	t.Log("TestRejectedDLQWriteStopsTheConsumerAndKeepsTheMessage started")
+	defer t.Log("TestRejectedDLQWriteStopsTheConsumerAndKeepsTheMessage finished")
 
 	if testing.Short() {
 		t.Skip("skipping integration test in short mode")
@@ -49,91 +49,84 @@ func TestDeliveryErrorCallbackFiresOnRejectedWrite(t *testing.T) {
 	consumerGroup := fmt.Sprintf("delivery-error-group-%d", time.Now().UnixNano())
 
 	cluster.CreateTopic(ctx, t, sourceTopic, 1)
-	cluster.CreateTopic(ctx, t, dlqTopic, 1)
-	cluster.CreateTopicRejectingEverything(ctx, t, retryTopic)
+	cluster.CreateTopic(ctx, t, retryTopic, 1)
+	cluster.CreateTopicRejectingEverything(ctx, t, dlqTopic)
 
-	const payload = "a message far larger than the retry topic will accept"
+	const payload = "a message far larger than the DLQ topic will accept"
 	cluster.ProduceMessages(ctx, t, sourceTopic, []string{payload})
 
-	var mu sync.Mutex
-	var deliveryErrors []easykafka.DeliveryError
-
-	onDeliveryError := func(de easykafka.DeliveryError) {
-		mu.Lock()
-		defer mu.Unlock()
-		deliveryErrors = append(deliveryErrors, de)
-	}
-
+	recorder := &helpers.PublishDeliveryErrorRecorder{}
 	retryStrategy, err := easykafka.NewRetryStrategy(
 		easykafka.WithRetryTopic(retryTopic),
 		easykafka.WithDLQTopic(dlqTopic),
-		easykafka.WithMaxAttempts(3),
-		easykafka.WithInitialDelay(1*time.Second),
-		easykafka.WithDeliveryErrorFunc(onDeliveryError),
+		easykafka.WithMaxAttempts(1), // straight to the DLQ
+		easykafka.WithDeliveryErrorFunc(recorder.CallbackFunc),
 	)
 	require.NoError(t, err)
 
-	handler := func(_ context.Context, _ []byte) *easykafka.Failure {
+	failing := func(_ context.Context, _ []byte) *easykafka.Failure {
 		return &easykafka.Failure{Err: fmt.Errorf("simulated failure")}
 	}
-
 	consumer, err := easykafka.New(
 		easykafka.WithTopic(sourceTopic),
 		easykafka.WithBrokers(cluster.Brokers...),
 		easykafka.WithConsumerGroup(consumerGroup),
-		easykafka.WithHandler(handler),
+		easykafka.WithHandler(failing),
 		easykafka.WithErrorStrategy(retryStrategy),
 		easykafka.WithPollTimeout(100*time.Millisecond),
 	)
 	require.NoError(t, err)
 
-	consumerCtx, cancel := context.WithCancel(ctx)
-	done := make(chan error, 1)
-	go func() {
-		done <- consumer.Start(consumerCtx)
-	}()
+	// The consumer stops on its own: nothing cancels this context.
+	startCtx, cancel := context.WithTimeout(ctx, 60*time.Second)
+	defer cancel()
+	consumerErr := consumer.Start(startCtx)
 
-	deadline := time.After(30 * time.Second)
-	for {
-		mu.Lock()
-		got := len(deliveryErrors)
-		mu.Unlock()
+	require.Error(t, consumerErr, "a rejected DLQ write must stop the consumer")
+	require.NoError(t, startCtx.Err(), "the consumer must stop because of the write, not the test's timeout")
+	assert.Contains(t, consumerErr.Error(), "not acknowledged")
 
-		if got > 0 {
-			break
-		}
+	assert.Equal(t, kfk.OffsetInvalid, cluster.CommittedOffset(ctx, t, consumerGroup, sourceTopic, 0),
+		"the source offset must not be committed past a message whose DLQ write failed")
 
-		select {
-		case <-deadline:
-			cancel()
-			<-done
-			t.Fatal("timed out waiting for the delivery error callback")
-		case <-time.After(100 * time.Millisecond):
-		}
+	delivered := recorder.Errors()
+	require.Len(t, delivered, 1, "the callback hears of the rejected record once")
+	deliveryError := delivered[0]
+	assert.Equal(t, dlqTopic, deliveryError.Topic, "the write was aimed at the DLQ")
+	require.Error(t, deliveryError.Err)
+	assert.Equal(t, kfk.ErrMsgSizeTooLarge.String(), deliveryError.Code, "the broker rejected the record for size")
+	assert.Equal(t, payload, string(deliveryError.Value), "the record body is carried through")
+	headers := map[string]string{}
+	for _, header := range deliveryError.Headers {
+		headers[header.Key] = string(header.Value)
 	}
+	assert.Equal(t, sourceTopic, headers[metadata.HeaderOriginalTopic], "the failure headers are carried through")
 
-	cancel()
-	consumerErr := <-done
+	// A fresh consumer in the same group receives the message again.
+	received := make(chan string, 1)
+	succeeding := func(_ context.Context, body []byte) *easykafka.Failure {
+		select {
+		case received <- string(body):
+		default:
+		}
+		return nil
+	}
+	again, err := easykafka.New(
+		easykafka.WithTopic(sourceTopic),
+		easykafka.WithBrokers(cluster.Brokers...),
+		easykafka.WithConsumerGroup(consumerGroup),
+		easykafka.WithHandler(succeeding),
+		easykafka.WithPollTimeout(100*time.Millisecond),
+	)
+	require.NoError(t, err)
+	stop := helpers.RunUntil(ctx, t, again)
 
-	// The consumer is none the wiser: the retry write was rejected and it
-	// stopped cleanly regardless. Asserted rather than merely observed, because
-	// it is the whole reason the callback has to exist.
-	require.NoError(t, consumerErr)
-
-	mu.Lock()
-	defer mu.Unlock()
-
-	require.NotEmpty(t, deliveryErrors)
-	de := deliveryErrors[0]
-
-	assert.Equal(t, retryTopic, de.Topic, "the write was aimed at the retry topic")
-	require.Error(t, de.Err)
-	assert.Equal(t, kfk.ErrMsgSizeTooLarge.String(), de.Code,
-		"the broker rejected the record for size")
-	assert.Equal(t, payload, string(de.Value),
-		"the record body is carried through, since this is the last copy of it")
-	assert.Equal(t, sourceTopic, de.Headers[metadata.HeaderOriginalTopic],
-		"retry headers are carried through")
-
-	t.Logf("delivery error: topic=%s code=%s err=%v", de.Topic, de.Code, de.Err)
+	select {
+	case body := <-received:
+		assert.Equal(t, payload, body)
+	case <-time.After(30 * time.Second):
+		_ = stop()
+		require.FailNow(t, "the message was not consumed again after the consumer stopped")
+	}
+	require.NoError(t, stop())
 }

@@ -17,15 +17,15 @@ import (
 )
 
 // =============================================================================
-// Retry/DLQ producers inherit the consumer's Kafka config
+// The retry publisher inherits the consumer's Kafka config
 //
 // The two plumbing tests below need no broker. They give the config a value
 // librdkafka rejects when a client is created — security.protocol "bogus" — so
-// an error naming it proves the map reached the retry strategy's producers.
+// an error naming it proves the map reached the retry strategy's publisher.
 // =============================================================================
 
 // TestRetryStrategyInitializeUsesKafkaConfig is the strategy side of the
-// plumbing: the map handed to Initialize must reach the producers it creates.
+// plumbing: the map handed to Initialize must reach the publisher it creates.
 func TestRetryStrategyInitializeUsesKafkaConfig(t *testing.T) {
 	s, err := strategy.NewRetryStrategy(
 		strategy.WithRetryTopic("orders.retry"),
@@ -40,7 +40,7 @@ func TestRetryStrategyInitializeUsesKafkaConfig(t *testing.T) {
 	})
 	t.Cleanup(func() { _ = s.Close() })
 
-	require.Error(t, err, "the producers must be built from the consumer's Kafka config")
+	require.Error(t, err, "the publisher must be built from the consumer's Kafka config")
 	assert.Contains(t, err.Error(), "security.protocol")
 }
 
@@ -75,14 +75,51 @@ func TestConsumerPassesKafkaConfigToRetryStrategy(t *testing.T) {
 	assert.Contains(t, err.Error(), "security.protocol")
 }
 
+// TestRetryStrategyInitializeDropsPublisherManagedKeys verifies a consumer map
+// holding keys the publisher manages still initializes the strategy:
+// publish.WithKafkaConfig would reject them, so the strategy drops them, and
+// the publisher keeps its own acks, idempotence and delivery timeout.
+func TestRetryStrategyInitializeDropsPublisherManagedKeys(t *testing.T) {
+	// Not scripted: nothing is sent, the fake only records the config the publisher builds it with.
+	fake := helpers.NewFakePublishProducer()
+	t.Cleanup(fake.Close)
+	s, err := strategy.NewRetryStrategy(
+		strategy.WithRetryTopic("orders.retry"),
+		strategy.WithDLQTopic("orders.dlq"),
+		strategy.WithProducerFactory(fake.Factory()),
+	)
+	require.NoError(t, err)
+
+	err = s.Initialize(types.InitConfig{
+		Brokers: []string{"broker:9092"}, // kept: reaches the publisher through publish.WithBrokers
+		Logger:  zerolog.Nop(),
+		KafkaConfig: map[string]any{
+			"acks":               "0",              // dropped: publisher-managed, it keeps acks=all
+			"enable.idempotence": false,            // dropped: publisher-managed, it keeps idempotence on
+			"message.timeout.ms": 300000,           // dropped: publisher-managed, it keeps its 30 s delivery timeout
+			"{topic}.acks":       "1",              // dropped: publisher-managed prefix, would bypass acks=all
+			"client.id":          "orders-service", // kept: a shared key the publisher does not manage
+		},
+	})
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = s.Close() })
+
+	config := fake.Config()
+	assert.Equal(t, map[string]any{"client.id": "orders-service"}, config.KafkaConfig)
+	assert.Equal(t, []string{"broker:9092"}, config.Brokers)
+	assert.False(t, config.AcksLeader, "acks=all")
+	assert.True(t, config.Idempotence)
+	assert.Equal(t, 30*time.Second, config.DeliveryTimeout)
+}
+
 // =============================================================================
-// kafka.ProducerConfig
+// kafka.PublisherConfig
 // =============================================================================
 
-// TestProducerConfigCarriesConnectionSettings verifies the settings a producer
+// TestPublisherConfigCarriesConnectionSettings verifies the settings a producer
 // needs to reach a secured cluster are passed through unchanged — including
 // enable.ssl.certificate.verification, whose name an "ssl." allowlist would miss.
-func TestProducerConfigCarriesConnectionSettings(t *testing.T) {
+func TestPublisherConfigCarriesConnectionSettings(t *testing.T) {
 	shared := map[string]any{
 		"security.protocol":                   "SASL_SSL",
 		"sasl.mechanisms":                     "PLAIN",
@@ -94,19 +131,14 @@ func TestProducerConfigCarriesConnectionSettings(t *testing.T) {
 		"socket.keepalive.enable":             true,
 	}
 
-	cfg, err := kafka.ProducerConfig([]string{"broker:9092"}, shared)
-	require.NoError(t, err)
-
-	for key, want := range shared {
-		assert.Equal(t, want, (*cfg)[key], "%s must reach the producer", key)
-	}
+	assert.Equal(t, shared, kafka.PublisherConfig(shared))
 }
 
-// TestProducerConfigDropsConsumerOnlyKeys verifies consumer-only keys — every
+// TestPublisherConfigDropsConsumerOnlyKeys verifies consumer-only keys — every
 // exact key on the list, and one from each prefix family — and all "go." keys
 // are left out. The keys are spelled out here rather than read from the
 // package, so the test checks the list instead of mirroring it.
-func TestProducerConfigDropsConsumerOnlyKeys(t *testing.T) {
+func TestPublisherConfigDropsConsumerOnlyKeys(t *testing.T) {
 	dropped := map[string]any{
 		// exact keys
 		"session.timeout.ms":            30000,
@@ -132,30 +164,33 @@ func TestProducerConfigDropsConsumerOnlyKeys(t *testing.T) {
 		"go.logs.channel.enable":          true,
 	}
 
-	cfg, err := kafka.ProducerConfig([]string{"broker:9092"}, dropped)
-	require.NoError(t, err)
+	assert.Empty(t, kafka.PublisherConfig(dropped))
+}
 
-	for key := range dropped {
-		assert.NotContains(t, *cfg, key, "%s must not reach the producer", key)
+// TestPublisherConfigDropsPublisherManagedKeys verifies every key
+// publish.WithKafkaConfig would reject is left out, so a consumer map holding
+// one cannot fail Initialize. Spelled out, as above.
+func TestPublisherConfigDropsPublisherManagedKeys(t *testing.T) {
+	managed := map[string]any{
+		"bootstrap.servers":        "elsewhere:9092",
+		"acks":                     "0",
+		"request.required.acks":    "1",
+		"enable.idempotence":       false,
+		"enable.gapless.guarantee": true,
+		"partitioner":              "random",
+		"message.timeout.ms":       300000,
+		"delivery.timeout.ms":      300000,
+		"transactional.id":         "orders-tx",
+		"default.topic.config":     map[string]any{"acks": "1"},
+		"{topic}.acks":             "1",
 	}
+
+	assert.Empty(t, kafka.PublisherConfig(managed))
 }
 
-// TestProducerConfigLibraryKeysWin verifies the caller's map cannot change the
-// brokers the producer connects to or weaken acks=all.
-func TestProducerConfigLibraryKeysWin(t *testing.T) {
-	cfg, err := kafka.ProducerConfig(
-		[]string{"a:9092", "b:9092"},
-		map[string]any{"acks": "0", "bootstrap.servers": "elsewhere:9092"},
-	)
-	require.NoError(t, err)
-
-	assert.Equal(t, "a:9092,b:9092", (*cfg)["bootstrap.servers"])
-	assert.Equal(t, "all", (*cfg)["acks"])
-}
-
-// TestProducerConfigLeavesCallerMapAlone verifies the caller's map is only
-// read: it also configures the consumer, and both producers are built from it.
-func TestProducerConfigLeavesCallerMapAlone(t *testing.T) {
+// TestPublisherConfigLeavesCallerMapAlone verifies the caller's map is only
+// read: it also configures the consumer.
+func TestPublisherConfigLeavesCallerMapAlone(t *testing.T) {
 	original := map[string]any{
 		"security.protocol":  "SASL_SSL",
 		"session.timeout.ms": 30000,
@@ -163,19 +198,15 @@ func TestProducerConfigLeavesCallerMapAlone(t *testing.T) {
 	}
 	snapshot := maps.Clone(original)
 
-	_, err := kafka.ProducerConfig([]string{"broker:9092"}, original)
-	require.NoError(t, err)
-
+	assert.Equal(t, map[string]any{"security.protocol": "SASL_SSL"}, kafka.PublisherConfig(original))
 	assert.Equal(t, snapshot, original)
 }
 
-// TestProducerConfigWithoutKafkaConfig verifies a consumer with no
-// WithKafkaConfig still gets a working producer config.
-func TestProducerConfigWithoutKafkaConfig(t *testing.T) {
-	cfg, err := kafka.ProducerConfig([]string{"broker:9092"}, nil)
-	require.NoError(t, err)
-
-	assert.Len(t, *cfg, 2, "only the library's own keys")
-	assert.Equal(t, "broker:9092", (*cfg)["bootstrap.servers"])
-	assert.Equal(t, "all", (*cfg)["acks"])
+// TestPublisherConfigWithoutKafkaConfig verifies a consumer with no
+// WithKafkaConfig still gets a config publish.WithKafkaConfig accepts: empty,
+// never nil.
+func TestPublisherConfigWithoutKafkaConfig(t *testing.T) {
+	config := kafka.PublisherConfig(nil)
+	require.NotNil(t, config)
+	assert.Empty(t, config)
 }

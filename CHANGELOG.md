@@ -10,9 +10,9 @@ public API may still change in a minor release.
 ### Added
 
 - **Log codes.** Every error and warning the library logs — plus the reconnect it pairs with — now
-  carries a stable code in an `ek_code` field, such as `EK_PRODUCER_DELIVERY_FAILED` or
+  carries a stable code in an `ek_code` field, such as `EK_DLQ_WRITE_FAILED` or
   `EK_HANDLER_PANIC`, so it can be searched and alerted on regardless of how the message is worded.
-  Nineteen codes, grouped as messages lost or written off, the consumer stopping, bugs in
+  Sixteen codes, grouped as messages lost or written off, the consumer stopping, bugs in
   application code, failed commits, and broker trouble. The README's *Log codes* section lists each
   with what it means and what to do about it.
 
@@ -118,25 +118,22 @@ public API may still change in a minor release.
   through, or lie to the library's own accessors about attempt counts.
 
 - **`WithDeliveryErrorFunc(fn)`** — a retry-strategy option registering a function called for every
-  retry or DLQ write that fails to reach the broker, so an application can log it in its own format,
+  retry or DLQ record the broker did not acknowledge, so an application can log it in its own format,
   count it and alert on it. Until now such a failure produced one line on the library's own logger
   and nothing else: no counter, no hook, no way for the application to know it happened.
 
-  **It reports a loss, it does not prevent one.** The library still treats a message as accounted
-  for once the record is queued with the client rather than once the broker acknowledges it, so the
-  source offset has already advanced when `fn` runs. Registering it does not change that. Confirming
-  the write before the offset moves is separate work, scheduled with the producer API.
+  A record `fn` hears of has also failed `HandleError` (see *Fixed*), so the consumer stops without
+  storing the source offset: `fn` reports a failure the consumer stops on, not a lost message. It is
+  also called for a record still unreported when the strategy closes, which is then purged.
 
-  `fn` receives a `DeliveryError` carrying the target topic, partition, key, value, the retry
-  headers, the underlying error and a `Code` naming the kind of failure for use as a metric label.
-  No confluent-kafka-go types appear in it, so callers need not import the Kafka client. `Value` is
-  the record body — for a DLQ write the last copy of it that exists, which is why it is there, and
-  usually the wrong thing to log wholesale.
+  `fn` is a `publish.DeliveryErrorFunc` and receives a `publish.DeliveryError`, the types a
+  publisher's own callback uses: the target topic, partition, key, value, the record's headers in
+  the order they were written (sorted by key, the retry headers among them), the underlying error
+  and a `Code` naming the kind of failure for use as a metric label. No confluent-kafka-go types
+  appear in it. `Value` is the record body, usually the wrong thing to log wholesale.
 
-  `fn` runs on the producer's event goroutine, so it must not block — while it runs no further
-  delivery report is processed, including the failures it exists to report — and it must be safe for
-  concurrent use, because the retry and DLQ producers each have their own goroutine. A panic is
-  recovered and logged rather than allowed to kill that goroutine.
+  `fn` runs on the publisher's report goroutine, so it must not block: every later report waits
+  behind it. A panic is recovered and logged rather than allowed to kill that goroutine.
 
 - **`WithAutoCommitEvery(d)`** — hands commit timing to librdkafka, which publishes the offset store
   on a background thread every `d`, instead of the library committing after every message. That
@@ -203,14 +200,6 @@ public API may still change in a minor release.
 
 ### Changed
 
-- **Shutdown waits up to 7 s for retry and DLQ records, and says how many it dropped.** When the
-  retry strategy closes, each producer now flushes for up to 7 s (was 5 s) and logs the count of
-  records still unsent — at error level with the log code `EK_PRODUCER_RECORDS_DROPPED` when it is
-  not zero, since those records are dropped and their source offsets were already committed, and at
-  info level otherwise. Until now the count was
-  discarded and the drop was silent. It is still a loss; confirming each write before its offset
-  moves belongs to the producer API.
-
 - **Both handlers return `*Failure` instead of `error`.** **Breaking.** nil still means success.
 
   ```go
@@ -274,13 +263,34 @@ public API may still change in a minor release.
 
 ### Fixed
 
+- **Retry and DLQ writes are confirmed before the source offset is stored.** The retry strategy
+  wrote with a fire-and-forget producer: `HandleError` returned as soon as a record was queued
+  locally, and the engine stored the source offset on the strength of it. A retry or DLQ write the
+  broker refused, or never received, still advanced the offset, and the message was lost. The
+  strategy now writes through a `publish` publisher (one, for both topics; `acks=all`, idempotence
+  on) and `HandleError` returns nil only once the broker has acknowledged every record of the call.
+  A write that fails makes `HandleError` fail, so the consumer stops without storing the offset, and
+  the message is consumed again after a restart: loud and recoverable instead of silent and
+  permanent. On shutdown, a record still unreported is purged and reported, not dropped. Three things
+  change with it:
+
+  - The failure path is slower by one broker round trip per failure, waited for on the polling
+    goroutine and bounded by the publisher's 30 s delivery timeout (librdkafka's 300 s default
+    before, which nothing waited for). Keep `max.poll.interval.ms` well above it.
+  - A record the broker refuses for good — larger than the DLQ topic's `max.message.bytes`, say —
+    now stops the consumer on every redelivery, where it used to be lost silently. It needs a
+    person; the error carries the broker's code.
+  - `acks`, `enable.idempotence`, `message.timeout.ms` and the other keys the publisher manages are
+    no longer taken from the consumer's `WithKafkaConfig`; the publisher's own settings win.
+
 - **Retry and DLQ writes on a secured cluster.** The retry strategy's producers were built from the
   broker list alone, so nothing set with `WithKafkaConfig` reached them — including
   `security.protocol` and the SASL and TLS settings a managed cluster requires. On such a cluster
   the consumer connected and the producers could not: every write was queued locally, its source
   offset committed, and then failed to authenticate, losing every retry and DLQ record. The
-  producers now inherit the consumer's `WithKafkaConfig`, minus consumer-only keys and
-  confluent-kafka-go's own `go.*` keys, and always keep `acks=all`.
+  retry strategy's publisher now inherits the consumer's `WithKafkaConfig`, minus consumer-only
+  keys, confluent-kafka-go's own `go.*` keys and the keys the publisher manages, and always keeps
+  `acks=all`.
 
 - **`easykafka.original.partition` and `.offset` survive every hop.** Only the topic used to: the
   partition and offset were overwritten with the current record's on each republish, so after a

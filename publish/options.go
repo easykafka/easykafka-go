@@ -113,49 +113,6 @@ func WithBrokers(brokers ...string) Option {
 	}
 }
 
-// managedKafkaKeys are librdkafka keys that WithKafkaConfig rejects, each with
-// the reason. Keys with a prefix in managedKafkaKeyPrefixes are rejected too.
-var managedKafkaKeys = map[string]string{
-	"bootstrap.servers": "managed by WithBrokers",
-	"acks":              "managed by WithAcksLeader; the default is acks=all",
-	"request.required.acks": "managed by WithAcksLeader; the default is acks=all " +
-		"(request.required.acks is another name for acks)",
-	"enable.idempotence": "managed by the library: idempotence is on unless WithoutIdempotence or " +
-		"WithAcksLeader is used",
-	"enable.gapless.guarantee": "managed by the library and kept off: it turns a timed-out record into " +
-		"a fatal error",
-	"partitioner":         "managed by WithPartitioner",
-	"message.timeout.ms":  "managed by WithDeliveryTimeout",
-	"delivery.timeout.ms": "managed by WithDeliveryTimeout (delivery.timeout.ms is another name for message.timeout.ms)",
-	"transactional.id":    "not supported: the publisher does not use transactions",
-	"default.topic.config": "not supported: it would bypass WithAcksLeader, WithPartitioner and " +
-		"WithDeliveryTimeout",
-}
-
-// managedKafkaKeyPrefixes are key prefixes that WithKafkaConfig rejects, each
-// with the reason.
-var managedKafkaKeyPrefixes = []struct{ prefix, reason string }{
-	{"go.", "managed by the library: confluent-kafka-go's own settings decide how delivery " +
-		"reports reach the publisher"},
-	// confluent-kafka-go moves a "{topic}." key into default.topic.config, so
-	// "{topic}.acks" is default.topic.config's acks under another spelling.
-	{"{topic}.", "not supported: confluent-kafka-go moves it into default.topic.config, which would " +
-		"bypass WithAcksLeader, WithPartitioner and WithDeliveryTimeout; set the property without the prefix"},
-}
-
-// managedKeyReason returns why WithKafkaConfig rejects key, if it does.
-func managedKeyReason(key string) (string, bool) {
-	if reason, managed := managedKafkaKeys[key]; managed {
-		return reason, true
-	}
-	for _, managed := range managedKafkaKeyPrefixes {
-		if strings.HasPrefix(key, managed.prefix) {
-			return managed.reason, true
-		}
-	}
-	return "", false
-}
-
 // WithKafkaConfig passes librdkafka configuration through to the producer:
 // security, SASL and TLS settings, client.id, linger.ms, compression.type, and
 // so on. The map is copied, never modified, and a later call replaces an
@@ -174,7 +131,7 @@ func WithKafkaConfig(kafkaConfig map[string]any) Option {
 		}
 		var rejected []error
 		for _, key := range slices.Sorted(maps.Keys(kafkaConfig)) {
-			if reason, managed := managedKeyReason(key); managed {
+			if reason, managed := publishdriver.ManagedKeyReason(key); managed {
 				rejected = append(rejected, fmt.Errorf("kafka config key %q cannot be set: %s", key, reason))
 			}
 		}

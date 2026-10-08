@@ -31,6 +31,10 @@ type FakePublishProducer struct {
 	// PurgeReportDelay, if set, delays each purge report Purge sends, so a test
 	// can check that Close waits for the last one.
 	PurgeReportDelay time.Duration
+	// AutoAcknowledge, if set, makes Produce emit a success report for every
+	// record it accepts, from a goroutine of its own, as a healthy broker
+	// would. Set it before the first Produce.
+	AutoAcknowledge bool
 
 	// reports is the unbuffered channel Reports returns. The emit methods
 	// write to it; Close closes it.
@@ -88,16 +92,23 @@ func (f *FakePublishProducer) Factory() func(publishdriver.Config) (publishdrive
 	}
 }
 
-// Produce records the record and its token, or returns ProduceErr.
+// Produce records the record and its token, or returns ProduceErr. With
+// AutoAcknowledge, it then reports the record as acknowledged, at the offset
+// that is its index.
 func (f *FakePublishProducer) Produce(record publishdriver.Record, token any) error {
 	if f.ProduceErr != nil {
 		return f.ProduceErr
 	}
 	f.mu.Lock()
-	defer f.mu.Unlock()
 	f.records = append(f.records, record)
 	f.tokens = append(f.tokens, token)
 	f.pending[token] = true
+	offset := int64(len(f.records) - 1)
+	f.mu.Unlock()
+
+	if f.AutoAcknowledge {
+		go f.Emit(publishdriver.Report{Token: token, Partition: 0, Offset: offset})
+	}
 	return nil
 }
 
@@ -199,6 +210,19 @@ func (f *FakePublishProducer) Records() []publishdriver.Record {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	return append([]publishdriver.Record(nil), f.records...)
+}
+
+// RecordsTo returns what was produced to topic, in order.
+func (f *FakePublishProducer) RecordsTo(topic string) []publishdriver.Record {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	var records []publishdriver.Record
+	for _, record := range f.records {
+		if record.Topic == topic {
+			records = append(records, record)
+		}
+	}
+	return records
 }
 
 // Produced is the number of records produced, reported or not.

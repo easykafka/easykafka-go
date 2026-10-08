@@ -58,14 +58,6 @@ var (
 	ErrStrategyInUse = strategy.ErrStrategyInUse
 )
 
-// DeliveryError describes a retry or DLQ write that never reached the broker.
-// Re-export from internal/types.
-type DeliveryError = types.DeliveryError
-
-// DeliveryErrorFunc is called for writes that fail to reach the broker.
-// Re-export from internal/types.
-type DeliveryErrorFunc = types.DeliveryErrorFunc
-
 // Re-export retry option types for public API
 type RetryOption = strategy.RetryOption
 
