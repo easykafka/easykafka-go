@@ -9,8 +9,8 @@ import (
 	"sync"
 	"time"
 
-	easykafka "github.com/easykafka/easykafka-go"
 	"github.com/easykafka/easykafka-go/examples/playground/internal/script"
+	"github.com/easykafka/easykafka-go/subscribe"
 )
 
 // handler carries out each message's payload script. One handler serves one
@@ -24,21 +24,21 @@ type handler struct {
 // resolved is a message together with the outcome its script gives for the
 // current attempt, or the reason its payload could not be parsed.
 type resolved struct {
-	msg     easykafka.Message
+	msg     subscribe.Message
 	outcome script.Outcome
 	err     error
 }
 
 // handle is the single-message handler.
-func (h *handler) handle(ctx context.Context, _ []byte) *easykafka.Failure {
-	msg, ok := easykafka.MessageFromContext(ctx)
+func (h *handler) handle(ctx context.Context, _ []byte) *subscribe.Failure {
+	msg, ok := subscribe.MessageFromContext(ctx)
 	if !ok {
-		return &easykafka.Failure{Err: errors.New("no message on the handler context")}
+		return &subscribe.Failure{Err: errors.New("no message on the handler context")}
 	}
 
-	if err := easykafka.WaitUntilRetryTime(ctx, msg); err != nil {
+	if err := subscribe.WaitUntilRetryTime(ctx, msg); err != nil {
 		h.line(msg, "-", "interrupted while waiting for its retry time")
-		return &easykafka.Failure{Err: err}
+		return &subscribe.Failure{Err: err}
 	}
 	h.delay()
 
@@ -51,15 +51,15 @@ func (h *handler) handle(ctx context.Context, _ []byte) *easykafka.Failure {
 }
 
 // handleBatch is the batch handler.
-func (h *handler) handleBatch(ctx context.Context, batch *easykafka.Batch) *easykafka.Failure {
+func (h *handler) handleBatch(ctx context.Context, batch *subscribe.Batch) *subscribe.Failure {
 	items := batch.Items()
 	h.batchLine(items)
 
 	for _, item := range items {
 		msg := item.Message()
-		if err := easykafka.WaitUntilRetryTime(ctx, &msg); err != nil {
+		if err := subscribe.WaitUntilRetryTime(ctx, &msg); err != nil {
 			h.out.printf("%s [%s] batch interrupted while waiting for a retry time\n", now(), h.name)
-			return &easykafka.Failure{Err: err}
+			return &subscribe.Failure{Err: err}
 		}
 	}
 	h.delay()
@@ -81,7 +81,7 @@ func (h *handler) handleBatch(ctx context.Context, batch *easykafka.Batch) *easy
 			for _, each := range all {
 				h.line(&each.msg, tokenOf(each), fmt.Sprintf("batch failed (batchko on %s)", r.msg.Key))
 			}
-			return &easykafka.Failure{
+			return &subscribe.Failure{
 				Err:  fmt.Errorf("scripted batch failure (batchko on %s)", r.msg.Key),
 				Step: r.outcome.Step,
 				Code: r.outcome.Code,
@@ -104,21 +104,21 @@ func (h *handler) handleBatch(ctx context.Context, batch *easykafka.Batch) *easy
 }
 
 // resolve parses msg's script and picks the outcome for the attempt it is on.
-func (h *handler) resolve(msg easykafka.Message) resolved {
+func (h *handler) resolve(msg subscribe.Message) resolved {
 	s, err := script.Parse(msg.Payload)
 	if err != nil {
 		return resolved{msg: msg, err: err}
 	}
-	return resolved{msg: msg, outcome: s.At(easykafka.GetRetryAttempt(&msg))}
+	return resolved{msg: msg, outcome: s.At(subscribe.GetRetryAttempt(&msg))}
 }
 
 // carryOut applies one message's outcome, logs it, and returns the failure to
 // report, or nil for success. A panic is handled by the callers, because in
 // batch mode it concerns the whole batch.
-func (h *handler) carryOut(r resolved) *easykafka.Failure {
+func (h *handler) carryOut(r resolved) *subscribe.Failure {
 	if r.err != nil {
 		h.line(&r.msg, "<malformed>", "perm ("+r.err.Error()+")")
-		return &easykafka.Failure{Err: fmt.Errorf("%w: malformed payload: %v", easykafka.ErrPermanent, r.err)}
+		return &subscribe.Failure{Err: fmt.Errorf("%w: malformed payload: %v", subscribe.ErrPermanent, r.err)}
 	}
 
 	o := r.outcome
@@ -128,21 +128,21 @@ func (h *handler) carryOut(r resolved) *easykafka.Failure {
 		return nil
 	case script.Perm:
 		h.line(&r.msg, o.Token, "perm")
-		return &easykafka.Failure{
-			Err:  fmt.Errorf("%w: scripted permanent failure", easykafka.ErrPermanent),
+		return &subscribe.Failure{
+			Err:  fmt.Errorf("%w: scripted permanent failure", subscribe.ErrPermanent),
 			Step: o.Step,
 			Code: o.Code,
 		}
 	case script.Nil:
 		h.line(&r.msg, o.Token, "nil (failure without an error)")
-		return &easykafka.Failure{Step: o.Step, Code: o.Code}
+		return &subscribe.Failure{Step: o.Step, Code: o.Code}
 	default: // script.Ko, and script.BatchKo outside batch mode
 		result := "ko"
 		if o.Kind == script.BatchKo {
 			result = "ko (batchko acts as ko outside batch mode)"
 		}
 		h.line(&r.msg, o.Token, result)
-		return &easykafka.Failure{Err: errors.New("scripted failure"), Step: o.Step, Code: o.Code}
+		return &subscribe.Failure{Err: errors.New("scripted failure"), Step: o.Step, Code: o.Code}
 	}
 }
 
@@ -154,18 +154,18 @@ func (h *handler) delay() {
 
 // line prints one delivery: which consumer, the record's key and position, the
 // attempt, step and code it arrived with, the token chosen and the result.
-func (h *handler) line(msg *easykafka.Message, token, result string) {
-	code := easykafka.GetErrorCode(msg)
+func (h *handler) line(msg *subscribe.Message, token, result string) {
+	code := subscribe.GetErrorCode(msg)
 	if code == "" {
 		code = "-"
 	}
 	h.out.printf("%s [%s] key=%s topic=%s partition=%d offset=%d attempt=%d step=%d code=%s token=%s -> %s\n",
 		now(), h.name, msg.Key, msg.Topic, msg.Partition, msg.Offset,
-		easykafka.GetRetryAttempt(msg), easykafka.GetRetryStep(msg), code, token, result)
+		subscribe.GetRetryAttempt(msg), subscribe.GetRetryStep(msg), code, token, result)
 }
 
 // batchLine prints the header line of a batch: its size and partitions.
-func (h *handler) batchLine(items []*easykafka.BatchItem) {
+func (h *handler) batchLine(items []*subscribe.BatchItem) {
 	var partitions []int32
 	for _, item := range items {
 		if p := item.Message().Partition; !slices.Contains(partitions, p) {

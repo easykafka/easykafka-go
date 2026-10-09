@@ -39,8 +39,11 @@ jobs:
       - name: Download dependencies
         run: go mod download
 
+      # -p 1: one test package at a time, as make test-integration runs them, so
+      # the subscribe and publish integration packages never start their Kafka
+      # clusters at once.
       - name: Run tests with coverage
-        run: go test -count=1 -timeout 1000s -coverprofile=coverage.out -covermode=atomic -coverpkg=./... ./tests/...
+        run: go test -count=1 -p 1 -timeout 1000s -coverprofile=coverage.out -covermode=atomic -coverpkg=./... ./tests/...
 
       - name: Upload coverage to Codecov
         uses: codecov/codecov-action@v7

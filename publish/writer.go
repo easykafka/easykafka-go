@@ -4,7 +4,7 @@ import (
 	"context"
 	"fmt"
 
-	"github.com/easykafka/easykafka-go/internal/publishdriver"
+	"github.com/easykafka/easykafka-go/internal/publish/publishdriver"
 )
 
 // Writer publishes typed records to one topic. Safe for concurrent use.

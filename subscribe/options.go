@@ -1,0 +1,317 @@
+package subscribe
+
+import (
+	"errors"
+	"fmt"
+	"slices"
+	"time"
+
+	"github.com/easykafka/easykafka-go/internal/subscribe/strategy"
+	"github.com/easykafka/easykafka-go/internal/subscribe/subscribedriver"
+	"github.com/easykafka/easykafka-go/internal/subscribe/types"
+	"github.com/rs/zerolog"
+)
+
+// Config holds the subscriber configuration derived from functional options.
+type Config struct {
+	Topic           string
+	Brokers         []string
+	ConsumerGroup   string
+	Handler         types.Handler
+	BatchHandler    types.BatchHandler
+	Mode            ConsumptionMode
+	BatchSize       int
+	BatchTimeout    time.Duration
+	PollTimeout     time.Duration
+	AutoCommitEvery time.Duration
+	ErrorStrategy   types.ErrorStrategy
+	KafkaConfig     map[string]any
+	Logger          zerolog.Logger
+
+	// newConsumer builds the Kafka consumer. Defaults to the real driver; see
+	// WithConsumerFactory.
+	newConsumer func(subscribedriver.Config) (subscribedriver.Consumer, error)
+}
+
+// ConsumptionMode represents single-message or batch consumption mode.
+type ConsumptionMode string
+
+const (
+	ModeSingleMessage ConsumptionMode = "single"
+	ModeBatch         ConsumptionMode = "batch"
+)
+
+// ApplyDefaults applies sensible defaults to optional configuration fields.
+func (c *Config) ApplyDefaults() {
+	if c.PollTimeout == 0 {
+		c.PollTimeout = 100 * time.Millisecond //nolint:mnd
+	}
+	if c.Mode == ModeSingleMessage && c.ErrorStrategy == nil {
+		// Default error strategy is skip for single message mode
+		c.ErrorStrategy = strategy.NewSkipStrategy(c.Logger)
+	}
+	if c.Mode == ModeBatch && c.ErrorStrategy == nil {
+		// Default error strategy is skip for batch mode
+		c.ErrorStrategy = strategy.NewSkipStrategy(c.Logger)
+	}
+	if c.KafkaConfig == nil {
+		c.KafkaConfig = make(map[string]any)
+	}
+	if c.newConsumer == nil {
+		c.newConsumer = subscribedriver.New
+	}
+}
+
+// Validate checks that required configuration is set correctly.
+func (c *Config) Validate() error {
+	if c.Topic == "" {
+		return errors.New("topic is required")
+	}
+	if len(c.Brokers) == 0 {
+		return errors.New("at least one broker is required")
+	}
+	if c.ConsumerGroup == "" {
+		return errors.New("consumer group is required")
+	}
+	if c.Handler == nil && c.BatchHandler == nil {
+		return errors.New("exactly one of Handler or BatchHandler must be set")
+	}
+	if c.Handler != nil && c.BatchHandler != nil {
+		return errors.New("only one of Handler or BatchHandler can be set")
+	}
+	if c.Mode == ModeBatch {
+		if c.BatchSize <= 0 {
+			return errors.New("batch size must be positive")
+		}
+		if c.BatchTimeout <= 0 {
+			return errors.New("batch timeout must be positive")
+		}
+	}
+	return nil
+}
+
+// Option configures a Subscriber. Options are applied during New().
+type Option func(*Config) error
+
+// WithTopic specifies the Kafka topic to consume from.
+// Required. Must be non-empty.
+func WithTopic(topic string) Option {
+	return func(c *Config) error {
+		if topic == "" {
+			return errors.New("topic cannot be empty")
+		}
+		c.Topic = topic
+		return nil
+	}
+}
+
+// WithBrokers specifies the Kafka broker addresses.
+// Required. Must provide at least one broker. Empty strings are rejected.
+func WithBrokers(brokers ...string) Option {
+	return func(c *Config) error {
+		if len(brokers) == 0 {
+			return errors.New("at least one broker must be provided")
+		}
+		if slices.Contains(brokers, "") {
+			return errors.New("broker address cannot be empty")
+		}
+		c.Brokers = brokers
+		return nil
+	}
+}
+
+// WithConsumerGroup specifies the consumer group ID.
+// Required. Multiple consumers with the same group ID will share partition load.
+func WithConsumerGroup(groupID string) Option {
+	return func(c *Config) error {
+		if groupID == "" {
+			return errors.New("consumer group cannot be empty")
+		}
+		c.ConsumerGroup = groupID
+		return nil
+	}
+}
+
+// WithHandler specifies the message processing function (single-message mode).
+// Required unless WithBatchHandler is used.
+func WithHandler(handler Handler) Option {
+	return func(c *Config) error {
+		if handler == nil {
+			return errors.New("handler cannot be nil")
+		}
+		c.Handler = handler
+		c.Mode = ModeSingleMessage
+		return nil
+	}
+}
+
+// WithBatchHandler specifies a batch processing function.
+// Required unless WithHandler is used. Enables batch mode.
+func WithBatchHandler(handler BatchHandler) Option {
+	return func(c *Config) error {
+		if handler == nil {
+			return errors.New("batch handler cannot be nil")
+		}
+		c.BatchHandler = handler
+		c.Mode = ModeBatch
+		if c.BatchSize <= 0 {
+			c.BatchSize = 100 // default batch size
+		}
+		if c.BatchTimeout <= 0 {
+			c.BatchTimeout = 5 * time.Second //nolint:mnd // default batch timeout
+		}
+		return nil
+	}
+}
+
+// WithErrorStrategy specifies how to handle message processing failures.
+//
+// Give each subscriber its own strategy. A strategy holds per-subscriber state,
+// such as the retry strategy's publisher, and a retry strategy that another
+// running subscriber holds makes Start fail with ErrStrategyInUse.
+func WithErrorStrategy(strategy types.ErrorStrategy) Option {
+	return func(c *Config) error {
+		if strategy == nil {
+			return errors.New("error strategy cannot be nil")
+		}
+		c.ErrorStrategy = strategy
+		return nil
+	}
+}
+
+// WithBatchSize specifies the maximum number of messages per batch.
+// Only applies when using WithBatchHandler.
+// Default: 100
+func WithBatchSize(size int) Option {
+	return func(c *Config) error {
+		if size <= 0 {
+			return errors.New("batch size must be positive")
+		}
+		c.BatchSize = size
+		return nil
+	}
+}
+
+// WithBatchTimeout specifies how long to wait before processing a partial batch.
+// Only applies when using WithBatchHandler.
+// Default: 5 seconds
+func WithBatchTimeout(timeout time.Duration) Option {
+	return func(c *Config) error {
+		if timeout <= 0 {
+			return errors.New("batch timeout must be positive")
+		}
+		c.BatchTimeout = timeout
+		return nil
+	}
+}
+
+// WithPollTimeout specifies the Kafka poll timeout.
+// Default: 100ms
+func WithPollTimeout(timeout time.Duration) Option {
+	return func(c *Config) error {
+		if timeout < 10*time.Millisecond {
+			return errors.New("poll timeout must be at least 10ms")
+		}
+		c.PollTimeout = timeout
+		return nil
+	}
+}
+
+// WithAutoCommitEvery hands commit timing to librdkafka, which publishes the
+// offset store on a background thread every d.
+//
+// Unset — the default — the library commits after every message or batch, which
+// is the narrowest possible duplicate window and costs one synchronous
+// round-trip to the group coordinator each time. Setting an interval trades that
+// cost for a wider window: an abrupt exit replays up to d of already-processed
+// messages. Duplicates only, never loss — the offset store advances only on
+// messages that were handled, so a committed offset can never run ahead of the
+// work. librdkafka's own default is 5s, which is a reasonable starting point.
+//
+// Offsets are still committed immediately on revocation and at shutdown,
+// whatever the interval, so a clean stop or a rebalance does not replay.
+func WithAutoCommitEvery(d time.Duration) Option {
+	return func(c *Config) error {
+		if d <= 0 {
+			return errors.New("auto-commit interval must be positive")
+		}
+		c.AutoCommitEvery = d
+		return nil
+	}
+}
+
+// WithLogger specifies a custom zerolog logger. Default uses global log.Logger.
+func WithLogger(logger zerolog.Logger) Option {
+	return func(c *Config) error {
+		c.Logger = logger
+		return nil
+	}
+}
+
+// managedKafkaKeys are Kafka configuration keys that are managed by the library
+// and cannot be overridden via WithKafkaConfig. These are set automatically
+// based on other functional options (WithBrokers, WithConsumerGroup, etc.).
+var managedKafkaKeys = map[string]string{
+	"bootstrap.servers":       "managed by WithBrokers",
+	"group.id":                "managed by WithConsumerGroup",
+	"enable.auto.commit":      "managed by WithAutoCommitEvery",
+	"auto.commit.interval.ms": "managed by WithAutoCommitEvery",
+	"enable.auto.offset.store": "managed by the library; " +
+		"offsets are stored only after a message is processed",
+	"partition.assignment.strategy": "managed by the library; " +
+		"rebalance handling requires an eager strategy, and a cooperative one would silently drop buffered messages",
+	"group.protocol": "managed by the library; " +
+		"rebalance handling requires the classic protocol, whose revokes are eager",
+}
+
+// WithKafkaConfig passes advanced configuration to confluent-kafka-go.
+// Use this to set low-level Kafka consumer properties.
+// Keys managed by the library (bootstrap.servers, group.id, enable.auto.commit,
+// enable.auto.offset.store, partition.assignment.strategy, group.protocol) cannot
+// be set via this option and will return an error explaining why.
+//
+// auto.offset.reset defaults to "earliest" and may be overridden. Setting it to
+// "latest" skips every message already on the topic whenever the group has no
+// committed offset: on first start, and again after the broker expires the
+// group's offsets (offsets.retention.minutes, 7 days by default).
+//
+// The retry strategy's producers inherit the map too, so a cluster that needs
+// security, SASL or TLS settings is configured once for both. Consumer-only keys
+// and confluent-kafka-go's own "go." keys are left out, and the producers keep
+// acks=all whatever the map says.
+func WithKafkaConfig(config map[string]any) Option {
+	return func(c *Config) error {
+		if config == nil {
+			return errors.New("kafka config cannot be nil")
+		}
+		// Reject managed keys
+		for key := range config {
+			if reason, ok := managedKafkaKeys[key]; ok {
+				return fmt.Errorf("kafka config key %q is managed by the library (%s) and cannot be overridden", key, reason)
+			}
+		}
+		c.KafkaConfig = config
+		return nil
+	}
+}
+
+// WithConsumerFactory replaces the function that builds the subscriber's
+// librdkafka consumer.
+//
+// This is a testing seam, as publish.WithProducerFactory is the publisher's. It
+// lets the subscriber's poll loop — dispatch, offset storing, commits, shutdown —
+// be driven by a scripted fake, with no broker and no Docker.
+//
+// It is exported only because the tests live in a separate package. It cannot
+// be used from outside this module: its argument names types under internal/,
+// which Go forbids other modules from importing, so no caller can construct
+// one.
+func WithConsumerFactory(factory func(subscribedriver.Config) (subscribedriver.Consumer, error)) Option {
+	return func(c *Config) error {
+		if factory == nil {
+			return errors.New("consumer factory cannot be nil")
+		}
+		c.newConsumer = factory
+		return nil
+	}
+}

@@ -1,188 +1,86 @@
-# 🧪 Easy Kafka Consumer Library - Test Organization
+# 🧪 Tests
 
-## 📋 Overview
-
-This directory contains comprehensive unit and integration tests for the Easy Kafka Consumer Library, organized following the Testing Pyramid with emphasis on realistic Kafka integration scenarios.
-
-## 📂 Test Organization
+Every test of the module lives here; there are no in-package `_test.go` files. The tests are split
+first by what they need, then by the side of the library they cover:
 
 ```
 tests/
-├── unit/                 # Unit tests (~70% of tests)
-│   ├── batch_buffer_test.go
-│   ├── commit_cadence_test.go
-│   ├── engine_dispatch_test.go
-│   ├── offset_store_test.go
-│   ├── options_validation_test.go
-│   ├── producer_delivery_test.go
-│   ├── shutdown_test.go
-│   ├── strategy_basic_test.go
-│   └── strategy_retry_test.go
+├── unit/                   no Docker; make test-unit runs ./tests/unit/... with -race
+│   ├── subscribe/          package subscribe_test: the poll loop, options, strategies, metadata, batches
+│   │   └── helpers/        fake consumers, fake strategies, retry-strategy builders, fixtures
+│   ├── publish/            package publish_test: publisher, writer, delivery, close, driver
+│   │   └── helpers/        fake publishers, publish fixtures, report helpers
+│   ├── sharedhelpers/      helpers both sides' unit tests use
+│   └── architecture/       package architecture_test: the guard on package boundaries
 │
-├── integration/          # Integration tests (~30% of tests)
-│   ├── at_least_once_test.go
-│   ├── batch_processing_test.go
-│   ├── commit_cadence_test.go
-│   ├── config_passthrough_test.go
-│   ├── consumer_basic_test.go
-│   ├── delivery_error_test.go
-│   ├── fail_fast_test.go
-│   ├── graceful_shutdown_test.go
-│   ├── offset_semantics_test.go
-│   ├── rebalance_test.go
-│   ├── reconnection_test.go
-│   ├── retry_dlq_test.go
-│   ├── revoked_store_test.go
-│   └── helpers/
-│       └── kafka_helper.go
+└── integration/            Docker; make test-integration runs ./tests/integration/...
+    ├── subscribe/          package subscribe_test: the subscriber against a real broker
+    │   └── helpers/        RunUntil, WaitForMessages, ConsumptionRecorder, NewRetryStrategy
+    ├── publish/            package publish_test: the publisher against real brokers
+    │   └── helpers/        invoices, partitioner vectors, throughput report, warm-up
+    └── sharedhelpers/      the clusters, topic setup, shared fakes and loads
 ```
 
-## 🔬 Unit Tests
+## Where a helper goes
 
-Unit tests focus on individual components in isolation with mocked dependencies.
+Test files contain tests only. Every helper — fake, fixture, shared setup — goes in a file of its
+own, named after it, in the lowest folder that covers every test using it:
 
-### Running Unit Tests
+- one side's `helpers/` if only that side's tests use it;
+- `sharedhelpers/` if a test of each side uses it today — not because it might one day. Moving one
+  later is cheap.
+
+`sharedhelpers` never imports a side's `helpers`, and a side's `helpers` never imports the other
+side's. At a call site the package says where a helper comes from: `helpers.NewTestMessage(…)` from
+the test's own side, `sharedhelpers.TestLogger()` from both.
+
+Helpers are a separate package from the tests, so anything a test sets or reads is exported. Files
+there are plain `.go`, not `_test.go`, or the tests could not import them.
+
+Two test files keep their helpers beside the tests, on purpose, because they are complex enough that
+one place to read serves a reviewer better: the architecture guard
+(`unit/architecture/architecture_test.go`) and the subscriber's broker-outage test
+(`integration/subscribe/broker_outage_test.go`). No other test file may do so.
+
+Scripted stand-ins are named `Fake` + what they stand in for: `FakeConsumer` and its variants for the
+subscriber's driver, `FakeProducer` for the publisher's, `FakeStrategy` for an error strategy.
+
+## Unit tests
 
 ```bash
-go test -v ./tests/unit -run "^TestUnit"
+make test-unit                                   # what CI runs
+go test -count=1 -race ./tests/unit/...
+go test -count=1 -run TestName ./tests/unit/...  # one test
 ```
 
-### Coverage
+The subscriber's tests drive its public entry point, `subscribe.New`, over a fake consumer through
+the `WithConsumerFactory` seam (`helpers.NewSubscriberOnFake`); the publisher's do the same through
+`publish.WithProducerFactory` and a `FakeProducer`.
+
+## Integration tests
+
+They use `testcontainers-go` to run Kafka in Docker. Each test binary starts one shared broker on
+first use (`sharedhelpers.SharedCluster`) and reuses it; a test that stops or restarts brokers takes
+a `DedicatedCluster` or a `NewThreeBrokerCluster` of its own. Every test creates its topics under
+unique names (`sharedhelpers.UniqueTopicName`), so tests sharing the broker do not interfere.
 
 ```bash
-go test -cover ./tests/unit
+make test-integration                            # what CI runs
+go test -count=1 -p 1 -timeout 1000s ./tests/integration/...
 ```
 
-## 🔗 Integration Tests
+`-p 1` runs one package at a time — `subscribe`, then `publish` — each still running its tests in
+parallel. Each package is its own test binary with its own clusters, so running both at once would
+start both sides' brokers together; on a CI runner that is more load than the suite needs.
+`make coverage` and the Code Coverage workflow run with `-p 1` too.
 
-Integration tests use `testcontainers-go` to spin up a real Kafka instance and verify end-to-end behavior.
+In CI the Kafka image is pulled from the GHCR mirror named by `KAFKA_IMAGE`.
 
-### Prerequisites
-
-- Docker (for Kafka container)
-- Docker daemon running
-
-### Running Integration Tests
+## Coverage
 
 ```bash
-go test -v ./tests/integration -run "^TestIntegration" -timeout 5m
+make coverage    # unit + integration; needs Docker
 ```
 
-or (to get a more readable output):
-```bash
-go install gotest.tools/gotestsum@latest
-gotestsum --format testdox -- -count=1 -timeout 1000s ./tests/integration/...
-```
-
-format options:
-* testdox
-    * Human-readable test names with ✓/✗
-* pkgname
-    * One line per package + failures
-* standard-verbose
-    * Like -v but with a summary at the end
-* dots
-    * Minimal dots during run, failures at end
-
-### Test Isolation
-
-- Each integration test uses unique topic names to avoid cross-test interference
-- Kafka container is reused across tests for efficiency (via TestMain)
-- Topics are created fresh for each test scenario
-
-### Container Strategy
-
-The test suite follows this container lifecycle pattern:
-
-1. **TestMain**: Initializes a single Kafka container before all tests
-2. **Test Helpers**: Provide topic creation, message production, consumption verification
-3. **Cleanup**: Container stops after all integration tests complete
-
-Example:
-
-```go
-var kafkaContainer testcontainers.Container
-var brokerAddr string
-
-func TestMain(m *testing.M) {
-    ctx := context.Background()
-    // Create container once  
-    kafkaContainer, brokerAddr, err := setupKafkaContainer(ctx)
-    if err != nil {
-        log.Fatalf("failed to setup kafka: %v", err)
-    }
-    
-    code := m.Run()
-    
-    // Cleanup
-    kafkaContainer.Terminate(ctx)
-    os.Exit(code)
-}
-```
-
-## 🧰 Test Helpers
-
-### Kafka Test Helper (`kafka_test_helper.go`)
-
-Provides utilities for integration tests:
-
-- `setupKafkaContainer(ctx)`: Creates and configures a Kafka testcontainer
-- `createTopic(ctx, brokerAddr, topic)`: Creates a Kafka topic
-- `producMessages(ctx, brokerAddr, topic, messages)`: Produces messages to a topic
-- `consumeMessages(ctx, brokerAddr, topic, groupID)`: Consumes and verifies messages
-
-### Container Helpers (`helpers/testcontainers.go`)
-
-Low-level testcontainers utilities:
-
-- Image configuration with proper versions
-- Readiness checks and container probes
-- Network configuration for Docker environments
-
-## 💻 Execution Requirements
-
-### Supported Platforms
-
-- Linux (primary)
-- macOS (requires Docker Desktop)
-- Windows (requires WSL2 + Docker Desktop)
-
-### System Requirements
-
-- Minimum 2GB RAM for Kafka container
-- Docker socket access (`/var/run/docker.sock`)
-
-## 📝 Test Naming Convention
-
-- Unit tests: `TestUnit<Component><Scenario>` (e.g., `TestUnitEngineDispatch`)
-- Integration tests: `TestIntegration<Feature><Scenario>` (e.g., `TestIntegrationConsumerBasic`)
-
-## 🎯 Coverage Goals
-
-- **Overall Coverage**: ≥80%
-- **Core Components** (consumer, engine, strategies): ≥85%
-- **Integration Paths**: ≥70% (realistic scenario coverage)
-- **Error Handling**: ≥80% (all error strategies tested)
-
-## ▶️ Running All Tests
-
-```bash
-# Unit tests only
-go test -v ./tests/unit
-
-# Integration tests only  
-go test -v ./tests/integration -timeout 5m
-
-# All tests with coverage (-coverpkg=./... instruments all library packages)
-go test -v -coverpkg=./... ./tests/... -timeout 5m -coverprofile=coverage.out
-go tool cover -html coverage.out
-```
-
-## 🔄 CI/CD Integration
-
-In CI environments, ensure:
-
-1. Docker is available and daemon is running
-2. Tests run with `timeout 5m` to catch hanging tests
-3. Coverage reports are generated post-run
-4. Failed tests include full Kafka container logs for debugging
+`-coverpkg=./...` is what instruments the library's packages: without it only the test packages,
+which hold no library code, would be measured.

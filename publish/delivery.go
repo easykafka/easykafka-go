@@ -4,7 +4,7 @@ import (
 	"context"
 	"errors"
 
-	"github.com/easykafka/easykafka-go/internal/publishdriver"
+	"github.com/easykafka/easykafka-go/internal/publish/publishdriver"
 )
 
 // Delivery is the outcome of one record. The publisher's report goroutine

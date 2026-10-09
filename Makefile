@@ -35,15 +35,19 @@ playground: ## Build the playground's consumer and producer into ./bin
 test-unit: $(GOTESTSUM) ## Run unit tests (human-readable output via gotestsum)
 	@$(GOTESTSUM) --format testdox -- -count=1 -race ./tests/unit/...
 
+# -p 1 runs one integration test package at a time (each still runs its own
+# tests in parallel). Every package is its own test binary, which starts its own
+# Kafka containers; running the subscribe and publish packages at once would
+# start both sides' clusters together and overload a CI runner.
 test-integration: $(GOTESTSUM) ## Run integration tests (requires Docker)
-	@$(GOTESTSUM) --format testdox -- -count=1 -timeout 1000s ./tests/integration/...
+	@$(GOTESTSUM) --format testdox -- -count=1 -p 1 -timeout 1000s ./tests/integration/...
 
 test: test-unit test-integration ## Run all tests
 
 ## ——— Coverage —————————————————————————————————————————
 
 coverage: ## Generate coverage report (unit + integration, requires Docker)
-	go test -count=1 -timeout 1000s \
+	go test -count=1 -p 1 -timeout 1000s \
 		-coverprofile=coverage.out -covermode=atomic \
 		-coverpkg=./... ./tests/...
 	go tool cover -func=coverage.out

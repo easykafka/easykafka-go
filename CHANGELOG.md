@@ -200,6 +200,44 @@ public API may still change in a minor release.
 
 ### Changed
 
+- **The consumer is now `subscribe.Subscriber`, in its own package.** **Breaking.** It moved out of
+  the module root into `github.com/easykafka/easykafka-go/subscribe`, beside `publish`, so the two
+  sides are laid out alike. Change the import, then the package name, and the type:
+
+  ```go
+  // before
+  import "github.com/easykafka/easykafka-go"
+
+  var consumer easykafka.Consumer
+  consumer, err := easykafka.New(easykafka.WithTopic("orders"), …)
+
+  // after
+  import "github.com/easykafka/easykafka-go/subscribe"
+
+  var subscriber *subscribe.Subscriber
+  subscriber, err := subscribe.New(subscribe.WithTopic("orders"), …)
+  ```
+
+  Every other name keeps its spelling under the new package: `WithHandler`, `Failure`, `Batch`,
+  `ErrPermanent`, `NewRetryStrategy`, `WithRetryTopic`, `MessageFromContext`, `HeaderRetryAttempt`,
+  and so on. The examples elsewhere in these notes keep the `easykafka.` they were written with;
+  read them as `subscribe.`. The header names on retry and DLQ records (`easykafka.retry.attempt`,
+  …) are wire format and do not change.
+
+  `subscribe.New` returns the concrete `*Subscriber`, as `publish.New` returns `*Publisher`, where
+  `easykafka.New` returned the `Consumer` interface. A caller that mocks it declares the one-method
+  interface it needs (`Start(ctx) error`). `GetConfig` now takes a `*Subscriber`.
+
+  The module root is documentation only and exports nothing; `pkg.go.dev` shows it as a landing page
+  naming the two packages.
+
+- **The `strategy` package is no longer public.** **Breaking.** The error strategies were already
+  reached through the root package's re-exports, and those are where they are now, under
+  `subscribe`: `subscribe.NewRetryStrategy`, `subscribe.WithMaxAttempts`, … A strategy of your own
+  implements `subscribe.ErrorStrategy` and needs nothing else. What goes is direct access to
+  `strategy.RetryConfig` and `(*RetryStrategy).Config()`, which only inspected a strategy's
+  settings.
+
 - **Both handlers return `*Failure` instead of `error`.** **Breaking.** nil still means success.
 
   ```go

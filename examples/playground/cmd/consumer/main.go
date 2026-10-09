@@ -16,7 +16,7 @@ import (
 	"syscall"
 	"time"
 
-	easykafka "github.com/easykafka/easykafka-go"
+	"github.com/easykafka/easykafka-go/subscribe"
 	"github.com/rs/zerolog"
 )
 
@@ -121,7 +121,7 @@ func run(ctx context.Context, cfg config) error {
 
 	type named struct {
 		name     string
-		consumer easykafka.Consumer
+		consumer *subscribe.Subscriber
 	}
 	source, err := newConsumer("source", cfg.topic, cfg.group, cfg, logger, out)
 	if err != nil {
@@ -173,7 +173,7 @@ func newConsumer(
 	cfg config,
 	logger zerolog.Logger,
 	out *printer,
-) (easykafka.Consumer, error) {
+) (*subscribe.Subscriber, error) {
 
 	strategy, err := newStrategy(cfg, logger)
 	if err != nil {
@@ -181,44 +181,44 @@ func newConsumer(
 	}
 
 	h := &handler{name: name, processingDelay: cfg.processingDelay, out: out}
-	opts := []easykafka.Option{
-		easykafka.WithTopic(topic),
-		easykafka.WithBrokers(cfg.brokers...),
-		easykafka.WithConsumerGroup(group),
-		easykafka.WithErrorStrategy(strategy),
-		easykafka.WithLogger(logger),
-		easykafka.WithPollTimeout(pollTimeout),
+	opts := []subscribe.Option{
+		subscribe.WithTopic(topic),
+		subscribe.WithBrokers(cfg.brokers...),
+		subscribe.WithConsumerGroup(group),
+		subscribe.WithErrorStrategy(strategy),
+		subscribe.WithLogger(logger),
+		subscribe.WithPollTimeout(pollTimeout),
 	}
 	if cfg.mode == modeBatch {
 		opts = append(opts,
-			easykafka.WithBatchHandler(h.handleBatch),
-			easykafka.WithBatchSize(cfg.batchSize),
-			easykafka.WithBatchTimeout(cfg.batchTimeout),
+			subscribe.WithBatchHandler(h.handleBatch),
+			subscribe.WithBatchSize(cfg.batchSize),
+			subscribe.WithBatchTimeout(cfg.batchTimeout),
 		)
 	} else {
-		opts = append(opts, easykafka.WithHandler(h.handle))
+		opts = append(opts, subscribe.WithHandler(h.handle))
 	}
 
-	consumer, err := easykafka.New(opts...)
+	consumer, err := subscribe.New(opts...)
 	if err != nil {
 		return nil, fmt.Errorf("%s consumer: %w", name, err)
 	}
 	return consumer, nil
 }
 
-func newStrategy(cfg config, logger zerolog.Logger) (easykafka.ErrorStrategy, error) {
+func newStrategy(cfg config, logger zerolog.Logger) (subscribe.ErrorStrategy, error) {
 	switch cfg.strategy {
 	case strategySkip:
-		return easykafka.NewSkipStrategy(logger), nil
+		return subscribe.NewSkipStrategy(logger), nil
 	case strategyFailFast:
-		return easykafka.NewFailFastStrategy(), nil
+		return subscribe.NewFailFastStrategy(), nil
 	default:
-		s, err := easykafka.NewRetryStrategy(
-			easykafka.WithRetryTopic(cfg.topic+".retry"),
-			easykafka.WithDLQTopic(cfg.topic+".dlq"),
-			easykafka.WithMaxAttempts(cfg.maxAttempts),
-			easykafka.WithInitialDelay(cfg.initialDelay),
-			easykafka.WithMaxDelay(cfg.maxDelay),
+		s, err := subscribe.NewRetryStrategy(
+			subscribe.WithRetryTopic(cfg.topic+".retry"),
+			subscribe.WithDLQTopic(cfg.topic+".dlq"),
+			subscribe.WithMaxAttempts(cfg.maxAttempts),
+			subscribe.WithInitialDelay(cfg.initialDelay),
+			subscribe.WithMaxDelay(cfg.maxDelay),
 		)
 		if err != nil {
 			return nil, fmt.Errorf("retry strategy: %w", err)

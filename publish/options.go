@@ -12,7 +12,7 @@ import (
 
 	"github.com/rs/zerolog"
 
-	"github.com/easykafka/easykafka-go/internal/publishdriver"
+	"github.com/easykafka/easykafka-go/internal/publish/publishdriver"
 )
 
 // defaultDeliveryTimeout bounds how long a record may take to be acknowledged:

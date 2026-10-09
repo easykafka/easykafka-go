@@ -15,7 +15,7 @@ import (
 	"github.com/rs/zerolog"
 
 	"github.com/easykafka/easykafka-go/internal/logcode"
-	"github.com/easykafka/easykafka-go/internal/publishdriver"
+	"github.com/easykafka/easykafka-go/internal/publish/publishdriver"
 )
 
 // defaultPingTimeout bounds Ping when its context has no deadline.

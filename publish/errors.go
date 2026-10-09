@@ -4,7 +4,7 @@ import (
 	"errors"
 	"fmt"
 
-	"github.com/easykafka/easykafka-go/internal/publishdriver"
+	"github.com/easykafka/easykafka-go/internal/publish/publishdriver"
 )
 
 // Sentinels for the ways a record can fail. Test with errors.Is: a returned

@@ -1,0 +1,489 @@
+package subscribe_test
+
+import (
+	"context"
+	"errors"
+	"github.com/easykafka/easykafka-go/internal/subscribe/batch"
+	"sync"
+	"testing"
+	"time"
+
+	"github.com/easykafka/easykafka-go/internal/subscribe/types"
+	"github.com/easykafka/easykafka-go/subscribe"
+	"github.com/easykafka/easykafka-go/tests/unit/subscribe/helpers"
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
+)
+
+// ============================================================================
+// batch.Buffer Unit Tests
+// ============================================================================
+
+func TestBatchBuffer_AccumulatesMessages(t *testing.T) {
+	buf := batch.NewBuffer(5, 10*time.Second)
+
+	msg1 := helpers.NewTestMessage("topic", 0, 0, "msg-1")
+	msg2 := helpers.NewTestMessage("topic", 0, 1, "msg-2")
+
+	buf.Add(msg1)
+	buf.Add(msg2)
+
+	assert.Equal(t, 2, buf.Len())
+	assert.False(t, buf.Ready(), "should not be ready with 2 of 5 messages")
+}
+
+func TestBatchBuffer_ReadyWhenFull(t *testing.T) {
+	buf := batch.NewBuffer(3, 10*time.Second)
+
+	buf.Add(helpers.NewTestMessage("topic", 0, 0, "a"))
+	buf.Add(helpers.NewTestMessage("topic", 0, 1, "b"))
+	assert.False(t, buf.Ready())
+
+	buf.Add(helpers.NewTestMessage("topic", 0, 2, "c"))
+	assert.True(t, buf.Ready(), "should be ready when batch size reached")
+}
+
+func TestBatchBuffer_FlushReturnsMessagesAndResets(t *testing.T) {
+	buf := batch.NewBuffer(5, 10*time.Second)
+
+	buf.Add(helpers.NewTestMessage("topic", 0, 0, "a"))
+	buf.Add(helpers.NewTestMessage("topic", 0, 1, "b"))
+	buf.Add(helpers.NewTestMessage("topic", 0, 2, "c"))
+
+	flushed := buf.Flush()
+	require.Len(t, flushed, 3)
+	assert.Equal(t, "a", string(flushed[0].Payload))
+	assert.Equal(t, "b", string(flushed[1].Payload))
+	assert.Equal(t, "c", string(flushed[2].Payload))
+
+	// After flush, buffer should be empty and not ready
+	assert.Equal(t, 0, buf.Len())
+	assert.False(t, buf.Ready())
+}
+
+func TestBatchBuffer_FlushReturnsNilWhenEmpty(t *testing.T) {
+	buf := batch.NewBuffer(5, 10*time.Second)
+	flushed := buf.Flush()
+	assert.Nil(t, flushed)
+}
+
+func TestBatchBuffer_MaintainsOrder(t *testing.T) {
+	buf := batch.NewBuffer(10, 10*time.Second)
+
+	for i := range 5 {
+		buf.Add(helpers.NewTestMessage("topic", 0, int64(i), "msg-"+string(rune('a'+i))))
+	}
+
+	flushed := buf.Flush()
+	require.Len(t, flushed, 5)
+	for i, msg := range flushed {
+		assert.Equal(t, int64(i), msg.Offset, "messages should maintain Kafka ordering")
+	}
+}
+
+func TestBatchBuffer_TimedOutAfterTimeout(t *testing.T) {
+	// Very short timeout for test
+	buf := batch.NewBuffer(100, 50*time.Millisecond)
+
+	buf.Add(helpers.NewTestMessage("topic", 0, 0, "msg"))
+
+	// Should not be timed out immediately
+	assert.False(t, buf.TimedOut())
+
+	// Wait for timeout
+	time.Sleep(60 * time.Millisecond)
+	assert.True(t, buf.TimedOut(), "should be timed out after duration expires")
+}
+
+func TestBatchBuffer_TimedOutNotTriggeredWhenEmpty(t *testing.T) {
+	buf := batch.NewBuffer(100, 50*time.Millisecond)
+
+	// Empty buffer should never time out
+	time.Sleep(60 * time.Millisecond)
+	assert.False(t, buf.TimedOut(), "empty buffer should not time out")
+}
+
+func TestBatchBuffer_TimeoutResetsAfterFlush(t *testing.T) {
+	buf := batch.NewBuffer(100, 50*time.Millisecond)
+
+	buf.Add(helpers.NewTestMessage("topic", 0, 0, "msg"))
+	time.Sleep(60 * time.Millisecond)
+	assert.True(t, buf.TimedOut())
+
+	// Flush resets the timer
+	buf.Flush()
+	assert.False(t, buf.TimedOut(), "timeout should reset after flush")
+
+	// Add new message - timer resets
+	buf.Add(helpers.NewTestMessage("topic", 0, 1, "msg2"))
+	assert.False(t, buf.TimedOut(), "should not be timed out right after adding new message")
+}
+
+// ============================================================================
+// Batch Subscriber Dispatch Tests
+// ============================================================================
+
+func TestBatchSubscriber_DispatchesBatchWhenFull(t *testing.T) {
+	var mu sync.Mutex
+	var receivedBatches [][]string
+
+	batchHandler := func(ctx context.Context, batch *types.Batch) *types.Failure {
+		mu.Lock()
+		defer mu.Unlock()
+		payloads := make([]string, batch.Len())
+		for i, item := range batch.Items() {
+			payloads[i] = string(item.Message().Payload)
+		}
+		receivedBatches = append(receivedBatches, payloads)
+		return nil
+	}
+
+	// 6 messages with batch size 3 => should produce 2 batches
+	messages := []*types.Message{
+		helpers.NewTestMessage("topic", 0, 0, "a"),
+		helpers.NewTestMessage("topic", 0, 1, "b"),
+		helpers.NewTestMessage("topic", 0, 2, "c"),
+		helpers.NewTestMessage("topic", 0, 3, "d"),
+		helpers.NewTestMessage("topic", 0, 4, "e"),
+		helpers.NewTestMessage("topic", 0, 5, "f"),
+	}
+
+	client := &helpers.FakeConsumer{Messages: messages}
+	strat := &helpers.FakeStrategy{}
+
+	subscriber := helpers.NewSubscriberOnFake(t, client,
+		subscribe.WithBatchHandler(batchHandler),
+		subscribe.WithErrorStrategy(strat),
+		subscribe.WithPollTimeout(100*time.Millisecond),
+		subscribe.WithBatchSize(3),
+		subscribe.WithBatchTimeout(5*time.Second),
+	)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+
+	err := subscriber.Start(ctx)
+	require.NoError(t, err)
+
+	mu.Lock()
+	defer mu.Unlock()
+	require.Len(t, receivedBatches, 2)
+	assert.Equal(t, []string{"a", "b", "c"}, receivedBatches[0])
+	assert.Equal(t, []string{"d", "e", "f"}, receivedBatches[1])
+
+	// All 6 offsets should be committed (committed after each batch)
+	commits := client.StoredOffsets()
+	// Each batch commit commits the last offset in the batch
+	require.Len(t, commits, 2)
+	assert.Equal(t, int64(2), commits[0].Offset) // last offset in batch 1
+	assert.Equal(t, int64(5), commits[1].Offset) // last offset in batch 2
+}
+
+func TestBatchSubscriber_DispatchesPartialBatchOnTimeout(t *testing.T) {
+	var mu sync.Mutex
+	var receivedBatches [][]string
+
+	batchHandler := func(ctx context.Context, batch *types.Batch) *types.Failure {
+		mu.Lock()
+		defer mu.Unlock()
+		payloads := make([]string, batch.Len())
+		for i, item := range batch.Items() {
+			payloads[i] = string(item.Message().Payload)
+		}
+		receivedBatches = append(receivedBatches, payloads)
+		return nil
+	}
+
+	// 2 messages with batch size 10 => partial batch should be flushed on timeout
+	messages := []*types.Message{
+		helpers.NewTestMessage("topic", 0, 0, "x"),
+		helpers.NewTestMessage("topic", 0, 1, "y"),
+	}
+
+	client := &helpers.FakeConsumer{Messages: messages}
+	strat := &helpers.FakeStrategy{}
+
+	subscriber := helpers.NewSubscriberOnFake(t, client,
+		subscribe.WithBatchHandler(batchHandler),
+		subscribe.WithErrorStrategy(strat),
+		subscribe.WithPollTimeout(100*time.Millisecond),
+		subscribe.WithBatchSize(10),
+		subscribe.WithBatchTimeout(200*time.Millisecond),
+	)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+
+	err := subscriber.Start(ctx)
+	require.NoError(t, err)
+
+	mu.Lock()
+	defer mu.Unlock()
+	require.GreaterOrEqual(t, len(receivedBatches), 1, "partial batch should be delivered on timeout")
+	assert.Equal(t, []string{"x", "y"}, receivedBatches[0])
+}
+
+func TestBatchSubscriber_AtomicCommitOnSuccess(t *testing.T) {
+	batchHandler := func(ctx context.Context, batch *types.Batch) *types.Failure {
+		return nil
+	}
+
+	messages := []*types.Message{
+		helpers.NewTestMessage("topic", 0, 0, "a"),
+		helpers.NewTestMessage("topic", 0, 1, "b"),
+		helpers.NewTestMessage("topic", 0, 2, "c"),
+	}
+
+	client := &helpers.FakeConsumer{Messages: messages}
+	strat := &helpers.FakeStrategy{}
+
+	subscriber := helpers.NewSubscriberOnFake(t, client,
+		subscribe.WithBatchHandler(batchHandler),
+		subscribe.WithErrorStrategy(strat),
+		subscribe.WithPollTimeout(100*time.Millisecond),
+		subscribe.WithBatchSize(3),
+		subscribe.WithBatchTimeout(5*time.Second),
+	)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+
+	err := subscriber.Start(ctx)
+	require.NoError(t, err)
+
+	// Atomic commit: only the highest offset in the batch should be committed
+	commits := client.StoredOffsets()
+	require.Len(t, commits, 1)
+	assert.Equal(t, int64(2), commits[0].Offset)
+}
+
+func TestBatchSubscriber_ErrorStrategyOnBatchFailure(t *testing.T) {
+	batchErr := errors.New("batch processing failed")
+
+	batchHandler := func(ctx context.Context, batch *types.Batch) *types.Failure {
+		return &types.Failure{Err: batchErr}
+	}
+
+	messages := []*types.Message{
+		helpers.NewTestMessage("topic", 0, 0, "a"),
+		helpers.NewTestMessage("topic", 0, 1, "b"),
+		helpers.NewTestMessage("topic", 0, 2, "c"),
+	}
+
+	client := &helpers.FakeConsumer{Messages: messages}
+	strat := &helpers.FakeStrategy{} // returns nil => continue
+
+	subscriber := helpers.NewSubscriberOnFake(t, client,
+		subscribe.WithBatchHandler(batchHandler),
+		subscribe.WithErrorStrategy(strat),
+		subscribe.WithPollTimeout(100*time.Millisecond),
+		subscribe.WithBatchSize(3),
+		subscribe.WithBatchTimeout(5*time.Second),
+	)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+
+	err := subscriber.Start(ctx)
+	require.NoError(t, err)
+
+	// Error strategy should receive all messages in the batch
+	calls := strat.HandleCalls()
+	require.Len(t, calls, 1)
+	assert.Equal(t, batchErr, calls[0].HandlerErr)
+	require.Len(t, calls[0].Msgs, 3, "strategy should receive entire batch")
+	assert.Equal(t, int64(0), calls[0].Msgs[0].Offset)
+	assert.Equal(t, int64(1), calls[0].Msgs[1].Offset)
+	assert.Equal(t, int64(2), calls[0].Msgs[2].Offset)
+}
+
+func TestBatchSubscriber_FatalStrategyStopsSubscriber(t *testing.T) {
+	batchHandler := func(ctx context.Context, batch *types.Batch) *types.Failure {
+		return &types.Failure{Err: errors.New("fail")}
+	}
+
+	messages := []*types.Message{
+		helpers.NewTestMessage("topic", 0, 0, "a"),
+		helpers.NewTestMessage("topic", 0, 1, "b"),
+		helpers.NewTestMessage("topic", 0, 2, "c"),
+	}
+
+	client := &helpers.FakeConsumer{Messages: messages}
+	strat := &helpers.FakeStrategy{ReturnErr: errors.New("fatal: stop consumer")}
+
+	subscriber := helpers.NewSubscriberOnFake(t, client,
+		subscribe.WithBatchHandler(batchHandler),
+		subscribe.WithErrorStrategy(strat),
+		subscribe.WithPollTimeout(100*time.Millisecond),
+		subscribe.WithBatchSize(3),
+		subscribe.WithBatchTimeout(5*time.Second),
+	)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+
+	err := subscriber.Start(ctx)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "error strategy")
+}
+
+func TestBatchSubscriber_PanicRecoveryInBatchHandler(t *testing.T) {
+	batchHandler := func(ctx context.Context, batch *types.Batch) *types.Failure {
+		panic("batch handler exploded")
+	}
+
+	messages := []*types.Message{
+		helpers.NewTestMessage("topic", 0, 0, "a"),
+		helpers.NewTestMessage("topic", 0, 1, "b"),
+	}
+
+	client := &helpers.FakeConsumer{Messages: messages}
+	strat := &helpers.FakeStrategy{}
+
+	subscriber := helpers.NewSubscriberOnFake(t, client,
+		subscribe.WithBatchHandler(batchHandler),
+		subscribe.WithErrorStrategy(strat),
+		subscribe.WithPollTimeout(100*time.Millisecond),
+		subscribe.WithBatchSize(2),
+		subscribe.WithBatchTimeout(5*time.Second),
+	)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+
+	err := subscriber.Start(ctx)
+	require.NoError(t, err) // strategy returned nil => subscriber continues
+
+	// Panic should be recovered and treated as handler error
+	calls := strat.HandleCalls()
+	require.Len(t, calls, 1)
+	assert.Contains(t, calls[0].HandlerErr.Error(), "handler panic")
+}
+
+func TestBatchSubscriber_CommitsAfterStrategySuccess(t *testing.T) {
+	// When error strategy returns nil (continue), offsets should still be committed
+	batchHandler := func(ctx context.Context, batch *types.Batch) *types.Failure {
+		return &types.Failure{Err: errors.New("temporary error")}
+	}
+
+	messages := []*types.Message{
+		helpers.NewTestMessage("topic", 0, 0, "a"),
+		helpers.NewTestMessage("topic", 0, 1, "b"),
+		helpers.NewTestMessage("topic", 0, 2, "c"),
+	}
+
+	client := &helpers.FakeConsumer{Messages: messages}
+	strat := &helpers.FakeStrategy{} // returns nil => continue
+
+	subscriber := helpers.NewSubscriberOnFake(t, client,
+		subscribe.WithBatchHandler(batchHandler),
+		subscribe.WithErrorStrategy(strat),
+		subscribe.WithPollTimeout(100*time.Millisecond),
+		subscribe.WithBatchSize(3),
+		subscribe.WithBatchTimeout(5*time.Second),
+	)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+
+	err := subscriber.Start(ctx)
+	require.NoError(t, err)
+
+	// Even though handler failed, strategy said continue => commit offset
+	commits := client.StoredOffsets()
+	require.Len(t, commits, 1)
+	assert.Equal(t, int64(2), commits[0].Offset)
+}
+
+// TestBatchSubscriber_CommitsHighestOffsetPerPartition verifies that when a batch
+// contains messages from multiple partitions, the subscriber commits the highest
+// offset for each partition independently.
+func TestBatchSubscriber_CommitsHighestOffsetPerPartition(t *testing.T) {
+	batchHandler := func(ctx context.Context, batch *types.Batch) *types.Failure {
+		return nil
+	}
+
+	// Batch with interleaved messages from 3 partitions
+	messages := []*types.Message{
+		helpers.NewTestMessage("topic", 0, 0, "p0-a"),
+		helpers.NewTestMessage("topic", 1, 0, "p1-a"),
+		helpers.NewTestMessage("topic", 2, 0, "p2-a"),
+		helpers.NewTestMessage("topic", 0, 1, "p0-b"),
+		helpers.NewTestMessage("topic", 1, 1, "p1-b"),
+		helpers.NewTestMessage("topic", 0, 2, "p0-c"),
+	}
+
+	client := &helpers.FakeConsumer{Messages: messages}
+	strat := &helpers.FakeStrategy{}
+
+	subscriber := helpers.NewSubscriberOnFake(t, client,
+		subscribe.WithBatchHandler(batchHandler),
+		subscribe.WithErrorStrategy(strat),
+		subscribe.WithPollTimeout(100*time.Millisecond),
+		subscribe.WithBatchSize(6),
+		subscribe.WithBatchTimeout(5*time.Second),
+	)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+
+	err := subscriber.Start(ctx)
+	require.NoError(t, err)
+
+	commits := client.StoredOffsets()
+	// Should have exactly 3 commits — one per partition
+	require.Len(t, commits, 3)
+
+	// Build a map of partition -> committed offset for easy assertion
+	commitMap := make(map[int32]int64)
+	for _, c := range commits {
+		commitMap[c.Partition] = c.Offset
+	}
+
+	assert.Equal(t, int64(2), commitMap[0], "partition 0 should commit highest offset 2")
+	assert.Equal(t, int64(1), commitMap[1], "partition 1 should commit highest offset 1")
+	assert.Equal(t, int64(0), commitMap[2], "partition 2 should commit highest offset 0")
+}
+
+// TestBatchSubscriber_CommitsHighestOffsetPerPartitionOnError verifies per-partition
+// commits work correctly even when the handler fails and the strategy continues.
+func TestBatchSubscriber_CommitsHighestOffsetPerPartitionOnError(t *testing.T) {
+	batchHandler := func(ctx context.Context, batch *types.Batch) *types.Failure {
+		return &types.Failure{Err: errors.New("handler error")}
+	}
+
+	messages := []*types.Message{
+		helpers.NewTestMessage("topic", 0, 5, "p0-x"),
+		helpers.NewTestMessage("topic", 1, 3, "p1-x"),
+		helpers.NewTestMessage("topic", 0, 10, "p0-y"),
+		helpers.NewTestMessage("topic", 1, 7, "p1-y"),
+	}
+
+	client := &helpers.FakeConsumer{Messages: messages}
+	strat := &helpers.FakeStrategy{} // returns nil => continue
+
+	subscriber := helpers.NewSubscriberOnFake(t, client,
+		subscribe.WithBatchHandler(batchHandler),
+		subscribe.WithErrorStrategy(strat),
+		subscribe.WithPollTimeout(100*time.Millisecond),
+		subscribe.WithBatchSize(4),
+		subscribe.WithBatchTimeout(5*time.Second),
+	)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+
+	err := subscriber.Start(ctx)
+	require.NoError(t, err)
+
+	commits := client.StoredOffsets()
+	require.Len(t, commits, 2)
+
+	commitMap := make(map[int32]int64)
+	for _, c := range commits {
+		commitMap[c.Partition] = c.Offset
+	}
+
+	assert.Equal(t, int64(10), commitMap[0], "partition 0 should commit highest offset 10")
+	assert.Equal(t, int64(7), commitMap[1], "partition 1 should commit highest offset 7")
+}

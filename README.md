@@ -53,6 +53,30 @@ go get github.com/easykafka/easykafka-go
 Requires Go 1.27+ and a C toolchain for `librdkafka` (see the confluent-kafka-go
 docs for platform-specific instructions).
 
+## 🗂 Layout
+
+The module has two packages, one per side, laid out the same way:
+
+| | Subscribe side | Publish side |
+|---|---|---|
+| Public package | [`subscribe`](https://pkg.go.dev/github.com/easykafka/easykafka-go/subscribe): `subscribe.New` returns a `*subscribe.Subscriber` | [`publish`](https://pkg.go.dev/github.com/easykafka/easykafka-go/publish): `publish.New` returns a `*publish.Publisher` |
+| Internals | `internal/subscribe/…` | `internal/publish/…` |
+| The one package that talks to confluent-kafka-go | `internal/subscribe/subscribedriver` | `internal/publish/publishdriver` |
+
+The module root (`github.com/easykafka/easykafka-go`) is documentation only and exports nothing.
+A test (`tests/unit/architecture`) keeps the two sides apart: confluent-kafka-go is imported by the
+two drivers only, the publish side never imports the subscribe side, and the subscribe side uses the
+publisher through `publish`, as any other caller does.
+
+**Vocabulary.** The library's words for its types are not quite Kafka's. A `publish.Publisher`
+*publishes*: every record it accepts is written and confirmed, or reported as not delivered. It
+works through a driver `Producer`, which only *produces*: it hands a record to librdkafka, and the
+outcome comes later. Likewise a `subscribe.Subscriber` *subscribes*: every record reaches the
+handler, a failure reaches the error strategy, and an offset is stored only once its record is
+handled or routed. It works through a driver `Consumer`, which only *consumes*: `Poll` hands over the
+next record and nothing more. Kafka's own words stay where they are Kafka's: a `Subscriber` joins a
+*consumer group*, configured with `WithConsumerGroup`.
+
 ## 🚀 Quick Start
 
 ```go
@@ -63,15 +87,15 @@ import (
 	"fmt"
 	"log"
 
-	"github.com/easykafka/easykafka-go"
+	"github.com/easykafka/easykafka-go/subscribe"
 )
 
 func main() {
-	consumer, err := easykafka.New(
-		easykafka.WithTopic("orders"),
-		easykafka.WithBrokers("localhost:9092"),
-		easykafka.WithConsumerGroup("order-processors"),
-		easykafka.WithHandler(func(ctx context.Context, payload []byte) *easykafka.Failure {
+	consumer, err := subscribe.New(
+		subscribe.WithTopic("orders"),
+		subscribe.WithBrokers("localhost:9092"),
+		subscribe.WithConsumerGroup("order-processors"),
+		subscribe.WithHandler(func(ctx context.Context, payload []byte) *subscribe.Failure {
 			fmt.Printf("received: %s\n", payload)
 			return nil
 		}),
@@ -90,7 +114,7 @@ That's it — the consumer connects, polls messages, calls your handler, and
 commits offsets on success.
 
 A handler reports failure by returning a `*Failure` — `return
-&easykafka.Failure{Err: err}` — and success by returning nil. It is a concrete
+&subscribe.Failure{Err: err}` — and success by returning nil. It is a concrete
 type rather than an `error` on purpose: a nil `*Failure` is always nil, whereas
 a nil pointer inside an `error` is not, and would read as a failure.
 
@@ -101,8 +125,8 @@ partition, which offset, the timestamp, the headers — it reads the message off
 the context:
 
 ```go
-easykafka.WithHandler(func(ctx context.Context, payload []byte) *easykafka.Failure {
-	msg, ok := easykafka.MessageFromContext(ctx)
+subscribe.WithHandler(func(ctx context.Context, payload []byte) *subscribe.Failure {
+	msg, ok := subscribe.MessageFromContext(ctx)
 	if !ok {
 		return nil
 	}
@@ -131,13 +155,13 @@ describing why they are there. The keys are exported as constants, and the
 values are read with accessors:
 
 ```go
-msg, _ := easykafka.MessageFromContext(ctx)
+msg, _ := subscribe.MessageFromContext(ctx)
 
-attempt := easykafka.GetRetryAttempt(msg)    // 0 on first delivery
-origin  := easykafka.GetOriginalTopic(msg)   // "" if never retried
-due     := easykafka.GetRetryTime(msg)       // zero Time if absent
-step    := easykafka.GetRetryStep(msg)       // resume point a previous attempt reported; 0 if none
-code    := easykafka.GetErrorCode(msg)       // why the previous attempt failed; "" if never retried
+attempt := subscribe.GetRetryAttempt(msg)    // 0 on first delivery
+origin  := subscribe.GetOriginalTopic(msg)   // "" if never retried
+due     := subscribe.GetRetryTime(msg)       // zero Time if absent
+step    := subscribe.GetRetryStep(msg)       // resume point a previous attempt reported; 0 if none
+code    := subscribe.GetErrorCode(msg)       // why the previous attempt failed; "" if never retried
 ```
 
 `easykafka.original.topic`, `.partition` and `.offset` always name the record
@@ -151,18 +175,18 @@ is an ordinary consumer subscribed to the retry topic, and
 `WaitUntilRetryTime` holds each record until it is due:
 
 ```go
-easykafka.New(
-	easykafka.WithTopic("orders.retry"),
-	easykafka.WithBrokers("localhost:9092"),
-	easykafka.WithConsumerGroup("order-retries"),
-	easykafka.WithHandler(func(ctx context.Context, payload []byte) *easykafka.Failure {
-		msg, _ := easykafka.MessageFromContext(ctx)
+subscribe.New(
+	subscribe.WithTopic("orders.retry"),
+	subscribe.WithBrokers("localhost:9092"),
+	subscribe.WithConsumerGroup("order-retries"),
+	subscribe.WithHandler(func(ctx context.Context, payload []byte) *subscribe.Failure {
+		msg, _ := subscribe.MessageFromContext(ctx)
 
-		if err := easykafka.WaitUntilRetryTime(ctx, msg); err != nil {
-			return &easykafka.Failure{Err: err} // cancelled at shutdown before it was due
+		if err := subscribe.WaitUntilRetryTime(ctx, msg); err != nil {
+			return &subscribe.Failure{Err: err} // cancelled at shutdown before it was due
 		}
 		if err := processOrder(ctx, payload); err != nil {
-			return &easykafka.Failure{Err: err}
+			return &subscribe.Failure{Err: err}
 		}
 		return nil
 	}),
@@ -210,27 +234,27 @@ go func() {
 	cancel()                                 // this is what shuts the consumers down
 }()
 
-orders, err := easykafka.New(
-	easykafka.WithTopic("orders"),
-	easykafka.WithBrokers("localhost:9092"),
-	easykafka.WithConsumerGroup("order-processors"),
-	easykafka.WithHandler(processOrder),
+orders, err := subscribe.New(
+	subscribe.WithTopic("orders"),
+	subscribe.WithBrokers("localhost:9092"),
+	subscribe.WithConsumerGroup("order-processors"),
+	subscribe.WithHandler(processOrder),
 )
 if err != nil {
 	log.Fatal(err)
 }
 
-payments, err := easykafka.New(
-	easykafka.WithTopic("payments"),
-	easykafka.WithBrokers("localhost:9092"),
-	easykafka.WithConsumerGroup("payment-processors"),
-	easykafka.WithHandler(processPayment),
+payments, err := subscribe.New(
+	subscribe.WithTopic("payments"),
+	subscribe.WithBrokers("localhost:9092"),
+	subscribe.WithConsumerGroup("payment-processors"),
+	subscribe.WithHandler(processPayment),
 )
 if err != nil {
 	log.Fatal(err)
 }
 
-consumers := map[string]easykafka.Consumer{
+consumers := map[string]*subscribe.Subscriber{
 	"orders":   orders,
 	"payments": payments,
 }
@@ -285,20 +309,20 @@ exit. The real hard deadline is the orchestrator's.
 For high-throughput workloads, switch to batch mode:
 
 ```go
-consumer, err := easykafka.New(
-	easykafka.WithTopic("events"),
-	easykafka.WithBrokers("localhost:9092"),
-	easykafka.WithConsumerGroup("event-processors"),
-	easykafka.WithBatchHandler(func(ctx context.Context, batch *easykafka.Batch) *easykafka.Failure {
+consumer, err := subscribe.New(
+	subscribe.WithTopic("events"),
+	subscribe.WithBrokers("localhost:9092"),
+	subscribe.WithConsumerGroup("event-processors"),
+	subscribe.WithBatchHandler(func(ctx context.Context, batch *subscribe.Batch) *subscribe.Failure {
 		for _, item := range batch.Items() {
 			if err := process(ctx, item.Message().Payload); err != nil {
-				item.Fail(easykafka.Failure{Err: err})
+				item.Fail(subscribe.Failure{Err: err})
 			}
 		}
 		return nil
 	}),
-	easykafka.WithBatchSize(100),
-	easykafka.WithBatchTimeout(5*time.Second),
+	subscribe.WithBatchSize(100),
+	subscribe.WithBatchTimeout(5*time.Second),
 )
 ```
 
@@ -324,9 +348,9 @@ should fail the remaining items itself and return nil. A handler with nothing
 per-message to say simply wraps the one error it has:
 
 ```go
-easykafka.WithBatchHandler(func(ctx context.Context, batch *easykafka.Batch) *easykafka.Failure {
+subscribe.WithBatchHandler(func(ctx context.Context, batch *subscribe.Batch) *subscribe.Failure {
 	if err := bulkInsert(ctx, batch); err != nil {
-		return &easykafka.Failure{Err: err}
+		return &subscribe.Failure{Err: err}
 	}
 	return nil
 })
@@ -352,7 +376,7 @@ be routed twice; that is within at-least-once.
 **Testing a batch handler** needs no broker:
 
 ```go
-batch := easykafka.NewBatch([]easykafka.Message{
+batch := subscribe.NewBatch([]subscribe.Message{
 	{Offset: 0, Payload: []byte(`{"ok":true}`)},
 	{Offset: 1, Payload: []byte(`not json`)},
 })
@@ -367,8 +391,8 @@ assert.NotNil(t, batch.Items()[1].Failed())
 A `Failure` carries the error and, optionally, two values the handler owns:
 
 ```go
-return &easykafka.Failure{Err: err}                                   // single-message handler
-item.Fail(easykafka.Failure{Err: err, Step: 2, Code: "publish_failed"}) // batch handler, with a step and a code
+return &subscribe.Failure{Err: err}                                   // single-message handler
+item.Fail(subscribe.Failure{Err: err, Step: 2, Code: "publish_failed"}) // batch handler, with a step and a code
 ```
 
 - **`Step`** is a resume point: which step of a multi-step process failed,
@@ -391,7 +415,7 @@ the error and the retry strategy sends the message straight to the DLQ on its
 first failure:
 
 ```go
-item.Fail(easykafka.Failure{Err: fmt.Errorf("%w: unmarshal: %v", easykafka.ErrPermanent, err)})
+item.Fail(subscribe.Failure{Err: fmt.Errorf("%w: unmarshal: %v", subscribe.ErrPermanent, err)})
 ```
 
 It has to be `%w`. `%v` compiles, reads almost the same, and drops the marker,
@@ -410,23 +434,23 @@ Pluggable strategies control what happens when a handler reports a failure:
 ### Retry + DLQ
 
 ```go
-retryStrategy, err := easykafka.NewRetryStrategy(
-	easykafka.WithRetryTopic("orders.retry"),
-	easykafka.WithDLQTopic("orders.dlq"),
-	easykafka.WithMaxAttempts(3), // 3 attempts in total = 1st try + 2 retries, then the DLQ
-	easykafka.WithInitialDelay(1*time.Second),
-	easykafka.WithMaxDelay(30*time.Second),
+retryStrategy, err := subscribe.NewRetryStrategy(
+	subscribe.WithRetryTopic("orders.retry"),
+	subscribe.WithDLQTopic("orders.dlq"),
+	subscribe.WithMaxAttempts(3), // 3 attempts in total = 1st try + 2 retries, then the DLQ
+	subscribe.WithInitialDelay(1*time.Second),
+	subscribe.WithMaxDelay(30*time.Second),
 )
 if err != nil {
 	log.Fatal(err)
 }
 
-consumer, err := easykafka.New(
-	easykafka.WithTopic("orders"),
-	easykafka.WithBrokers("localhost:9092"),
-	easykafka.WithConsumerGroup("order-processors"),
-	easykafka.WithHandler(processOrder),
-	easykafka.WithErrorStrategy(retryStrategy),
+consumer, err := subscribe.New(
+	subscribe.WithTopic("orders"),
+	subscribe.WithBrokers("localhost:9092"),
+	subscribe.WithConsumerGroup("order-processors"),
+	subscribe.WithHandler(processOrder),
+	subscribe.WithErrorStrategy(retryStrategy),
 )
 ```
 
@@ -503,10 +527,10 @@ record (`EK_PUBLISH_DELIVERY_FAILED`) and the write that failed (`EK_RETRY_WRITE
 own format, count it and alert on it:
 
 ```go
-retryStrategy, err := easykafka.NewRetryStrategy(
-	easykafka.WithRetryTopic("orders.retry"),
-	easykafka.WithDLQTopic("orders.dlq"),
-	easykafka.WithDeliveryErrorFunc(func(de publish.DeliveryError) {
+retryStrategy, err := subscribe.NewRetryStrategy(
+	subscribe.WithRetryTopic("orders.retry"),
+	subscribe.WithDLQTopic("orders.dlq"),
+	subscribe.WithDeliveryErrorFunc(func(de publish.DeliveryError) {
 		failedWrites.WithLabelValues(de.Topic, de.Code).Inc()
 		log.Error().Err(de.Err).
 			Str("topic", de.Topic).
@@ -537,7 +561,7 @@ coordinator per message. For higher throughput, hand commit timing to
 librdkafka:
 
 ```go
-easykafka.WithAutoCommitEvery(5 * time.Second)
+subscribe.WithAutoCommitEvery(5 * time.Second)
 ```
 
 A background thread then publishes the offset store on that interval. The
@@ -577,7 +601,7 @@ interval, so a rebalance or a clean stop does not replay.
 Low-level confluent-kafka-go settings can be passed through directly:
 
 ```go
-easykafka.WithKafkaConfig(map[string]any{
+subscribe.WithKafkaConfig(map[string]any{
 	"session.timeout.ms": 6000,
 	"auto.offset.reset":  "earliest",
 })
@@ -667,10 +691,18 @@ Unit and integration tests live under `tests/`:
 
 ```
 tests/
-├── unit/            # Pure logic tests, no Kafka dependency
-└── integration/     # Require a real Kafka broker (testcontainers-go)
-    └── helpers/     # Shared Kafka test cluster utilities
+├── unit/                 # Pure logic tests, no Kafka dependency
+│   ├── subscribe/        # the subscriber against fake consumers; helpers/ beside it
+│   ├── publish/          # the publisher against a fake producer; helpers/ beside it
+│   ├── sharedhelpers/    # helpers both sides' unit tests use
+│   └── architecture/     # the guard on package boundaries
+└── integration/          # Require a real Kafka broker (testcontainers-go)
+    ├── subscribe/        # helpers/ beside each side's tests
+    ├── publish/
+    └── sharedhelpers/    # the test clusters, topic setup, shared fakes and loads
 ```
+
+See [tests/README.md](tests/README.md) for what goes where.
 
 Run unit tests:
 
@@ -681,13 +713,16 @@ go test -v -count=1 ./tests/unit/...
 Run integration tests (requires Docker):
 
 ```bash
-go test -v -count=1 ./tests/integration/...
+go test -v -count=1 -p 1 -timeout 1000s ./tests/integration/...
 ```
+
+`-p 1` runs the subscribe and publish packages one after the other, so their Kafka containers do not
+all start at once; `make test-integration` does the same.
 
 or (to get a more readable output):
 ```bash
 go install gotest.tools/gotestsum@latest
-gotestsum --format testdox -- -count=1 -timeout 1000s ./tests/integration/...
+gotestsum --format testdox -- -count=1 -p 1 -timeout 1000s ./tests/integration/...
 ```
 
 ## 🛝 Playground

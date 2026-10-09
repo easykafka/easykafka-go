@@ -166,7 +166,7 @@ it, so the playground does; running both in one process gives you one log to wat
 | `--processing-delay` | 0 (off) | Block for this long on each message (single mode) or each batch (batch mode), like a slow database call. Slows things down enough to follow records and consumer lag in AKHQ. |
 
 **Waiting for the retry time.** Before processing, the handler calls
-`easykafka.WaitUntilRetryTime`, which holds a retry-topic record until its `easykafka.retry.time`.
+`subscribe.WaitUntilRetryTime`, which holds a retry-topic record until its `easykafka.retry.time`.
 It returns at once for a record without one, so the same handler serves both consumers. A record
 that is not due yet is never failed back — that would use up an attempt without processing it.
 

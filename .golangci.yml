@@ -59,13 +59,6 @@ linters:
     - source: "^\t*// "
       linters:
         - lll
-    # TODO(lint): gocritic commentFormatting — the disabled CreateTopic call in
-    # reconnection_test.go should either be deleted or restored; a commented-out
-    # line cannot carry its own //nolint directive, so it is suppressed here.
-    - path: ^tests/integration/reconnection_test\.go$
-      text: commentFormatting
-      linters:
-        - gocritic
     # Test code: magic numbers, long table-driven cases, deferred Close() and
     # fixed-signature helpers are idiomatic here and not worth the churn.
     - path: ^tests/
