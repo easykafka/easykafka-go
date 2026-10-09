@@ -39,6 +39,7 @@ func (k *KafkaTestCluster) CreateTopicRejectingEverything(ctx context.Context, t
 	for _, r := range results {
 		require.Equal(t, kfk.ErrNoError, r.Error.Code(), "creating topic %s: %v", r.Topic, r.Error)
 	}
+	waitForTopic(ctx, t, admin, topic)
 
 	t.Logf("created topic %s with max.message.bytes=1", topic)
 }

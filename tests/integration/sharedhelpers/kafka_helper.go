@@ -223,7 +223,8 @@ func (k *KafkaTestCluster) StartBroker(ctx context.Context, t *testing.T) {
 	t.Logf("Kafka container restarted, brokers: %v", brokers)
 }
 
-// CreateTopic creates a topic with the given name and partitions using an admin client.
+// CreateTopic creates a topic with the given name and partitions using an admin
+// client, and returns once the broker describes it (see waitForTopic).
 func (k *KafkaTestCluster) CreateTopic(ctx context.Context, t *testing.T, topic string, partitions int) {
 	t.Helper()
 
@@ -251,6 +252,7 @@ func (k *KafkaTestCluster) CreateTopic(ctx context.Context, t *testing.T, topic 
 			t.Fatalf("failed to create topic %s: %v", result.Topic, result.Error)
 		}
 	}
+	waitForTopic(ctx, t, admin, topic)
 
 	t.Logf("Created topic %s with %d partitions", topic, partitions)
 }
