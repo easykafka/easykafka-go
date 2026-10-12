@@ -9,24 +9,58 @@ public API may still change in a minor release.
 
 ### Added
 
-- **Log codes.** Every error and warning the library logs — plus the reconnect it pairs with — now
-  carries a stable code in an `ek_code` field, such as `EK_DLQ_WRITE_FAILED` or
+- **`publish`, a publisher that confirms every record.** A new package beside `subscribe`, for
+  writing to Kafka without losing records silently. A `Publisher` owns one librdkafka producer;
+  `Bind` turns a `Topic[K, V]` (its name, a key encoder, a value encoder) into a typed `Writer[K, V]`.
+  `Publish` returns once the broker has acknowledged the record; `Send` returns at once with a
+  `Delivery`, and `WaitAll` waits for many in one round trip. A record that is not acknowledged comes
+  back as a `*DeliveryError` and reaches the `WithDeliveryErrorFunc` callback, whether or not anyone
+  waits on it.
+
+  ```go
+  publisher, err := publish.New(publish.WithBrokers("localhost:9092"))
+  invoices := publisher.Bind(publish.Topic[string, Invoice]{
+      Name: "invoices", EncodeKey: publish.StringKey, EncodeValue: publish.JSONValue[Invoice],
+  })
+  err = invoices.Publish(ctx, invoice.ID, invoice) // nil once acknowledged
+  ```
+
+  **The defaults favour durability: `acks=all`, idempotence on, and a 30 s delivery timeout.** On a
+  three-broker cluster with `min.insync.replicas=2`, a publisher with them keeps writing without a
+  failure through a rolling restart and through a broker crash (a stall of about 10 s), and fails
+  every write within the delivery timeout when two brokers are down. `WithAcksLeader`,
+  `WithoutIdempotence` and `WithDeliveryTimeout` change them; `WithPartitioner` picks librdkafka's
+  partitioner, including `PartitionerJavaCompatible` for topics Java producers also write.
+
+  `Close` delivers what it can within its context, then purges the rest and reports each purged
+  record as not delivered, rather than dropping it. A fatal producer error is final: `Err` and
+  `Ping` return it, every later write fails with `ErrFatal`, and `WithFatalHandler` hears of it
+  once. `Ping` checks at startup that a broker answers and every bound topic exists. Eight log codes,
+  `EK_PUBLISH_*`, cover failed deliveries, broker loss and recovery, fatal errors and purged records.
+
+  Publishing from a subscriber's handler and returning only once the record is acknowledged, under
+  `context.WithoutCancel`, makes a consume-and-publish service at-least-once end to end; the README
+  and the [developer documentation](developer-doc.md) explain why.
+
+- **Log codes.** The errors and warnings that matter to an operator — plus the reconnect they pair
+  with — now carry a stable code in an `ek_code` field, such as `EK_DLQ_WRITE_FAILED` or
   `EK_HANDLER_PANIC`, so it can be searched and alerted on regardless of how the message is worded.
-  Sixteen codes, grouped as messages lost or written off, the consumer stopping, bugs in
-  application code, failed commits, and broker trouble. The README's *Log codes* section lists each
+  Sixteen codes on the subscribing side, grouped as messages lost or written off, the subscriber
+  stopping, bugs in application code, failed commits, and broker trouble; the publisher adds eight
+  more (see `publish` below), 24 in all. The README's *Log codes* section lists each
   with what it means and what to do about it.
 
 - **Per-message verdicts in batch mode.** A batch handler is now given a `*Batch` — the polled
   messages, each paired with a verdict — and records each failed message with `item.Fail`. The
-  engine routes every failure to the error strategy on its own, with its own error, its own attempt
+  subscriber routes every failure to the error strategy on its own, with its own error, its own attempt
   count and its own retry-vs-DLQ decision. One poison message in a batch of 500 used to send all 500
   to the retry topic under its error, each burning an attempt it never earned; now it sends one.
 
   ```go
-  easykafka.WithBatchHandler(func(ctx context.Context, batch *easykafka.Batch) *easykafka.Failure {
+  subscribe.WithBatchHandler(func(ctx context.Context, batch *subscribe.Batch) *subscribe.Failure {
       for _, item := range batch.Items() {
           if err := process(item.Message().Payload); err != nil {
-              item.Fail(easykafka.Failure{Err: err})
+              item.Fail(subscribe.Failure{Err: err})
           }
       }
       return nil
@@ -44,7 +78,7 @@ public API may still change in a minor release.
   routed may then be routed twice, which is within at-least-once.
 
   Items are in poll order: partitions interleaved as delivered, offsets ascending within each.
-  `item.Message()` returns a copy, so a handler cannot move the offsets the engine accounts against;
+  `item.Message()` returns a copy, so a handler cannot move the offsets the subscriber accounts against;
   the payload and headers are still shared and must be treated as read-only. Distinct items may be
   failed from different goroutines, provided they are joined before the handler returns.
 
@@ -66,7 +100,7 @@ public API may still change in a minor release.
   typed nil cannot end up inside an interface and read as a failure.
 
 - **`ErrPermanent`.** Wrap it into a failure's error — `fmt.Errorf("%w: unmarshal: %v",
-  easykafka.ErrPermanent, err)` — and the retry strategy sends the message straight to the DLQ on
+  subscribe.ErrPermanent, err)` — and the retry strategy sends the message straight to the DLQ on
   its first failure instead of walking the retry ladder. For a failure no reprocessing can fix: a
   malformed record, an unknown schema version. It must be `%w`; `%v` compiles and silently drops the
   marker. `Skip` and `FailFast` ignore it.
@@ -114,7 +148,7 @@ public API may still change in a minor release.
   outlives the deployment that wrote to it.
 
   The write side stays internal. There is no exported `WithMessage`, and no `BuildRetryHeaders`: a
-  handler that could mint either would be able to plant a context value the engine then dispatches
+  handler that could mint either would be able to plant a context value the subscriber then dispatches
   through, or lie to the library's own accessors about attempt counts.
 
 - **`WithDeliveryErrorFunc(fn)`** — a retry-strategy option registering a function called for every
@@ -180,10 +214,10 @@ public API may still change in a minor release.
   with `WithFailureThreshold`, `WithCooldownPeriod`, `WithHalfOpenAttempts` and `WithRetryOptions`.
   Three strategies remain: `Skip`, `FailFast` and `Retry`.
 
-  It did not do what its name said. When the breaker tripped it *returned an error*, and the engine
+  It did not do what its name said. When the breaker tripped it *returned an error*, and the subscriber
   treats any non-nil strategy error as fatal — so it stopped the consumer rather than pausing it,
   which made `CircuitOpen` and `CircuitHalfOpen` unreachable in real operation and the cooldown,
-  half-open probing and recovery logic dead code. Separately, the engine never called `OnSuccess`,
+  half-open probing and recovery logic dead code. Separately, the subscriber never called `OnSuccess`,
   so `WithFailureThreshold(n)` counted the *n*th failure ever rather than the *n*th consecutive one.
 
   **There is no replacement, and a pause/resume capability is not planned.** A caller reaching for
@@ -220,8 +254,7 @@ public API may still change in a minor release.
 
   Every other name keeps its spelling under the new package: `WithHandler`, `Failure`, `Batch`,
   `ErrPermanent`, `NewRetryStrategy`, `WithRetryTopic`, `MessageFromContext`, `HeaderRetryAttempt`,
-  and so on. The examples elsewhere in these notes keep the `easykafka.` they were written with;
-  read them as `subscribe.`. The header names on retry and DLQ records (`easykafka.retry.attempt`,
+  and so on. The header names on retry and DLQ records (`easykafka.retry.attempt`,
   …) are wire format and do not change.
 
   `subscribe.New` returns the concrete `*Subscriber`, as `publish.New` returns `*Publisher`, where
@@ -246,15 +279,15 @@ public API may still change in a minor release.
   func(ctx context.Context, payloads [][]byte) error { return err }
 
   // after
-  func(ctx context.Context, payload []byte) *easykafka.Failure { return &easykafka.Failure{Err: err} }
-  func(ctx context.Context, batch *easykafka.Batch) *easykafka.Failure {
+  func(ctx context.Context, payload []byte) *subscribe.Failure { return &subscribe.Failure{Err: err} }
+  func(ctx context.Context, batch *subscribe.Batch) *subscribe.Failure {
       for _, item := range batch.Items() { /* item.Fail(...) on the ones that failed */ }
       return nil
   }
   ```
 
   A batch handler that only ever had one error for the whole batch migrates by wrapping it —
-  `return &easykafka.Failure{Err: err}` — and keeps its all-or-nothing behaviour.
+  `return &subscribe.Failure{Err: err}` — and keeps its all-or-nothing behaviour.
 
 - **`ErrorStrategy.HandleError` takes a `Failure` instead of an error.** **Breaking** for anyone
   implementing a strategy outside the library. It is how the step and the code reach the strategy.
@@ -294,7 +327,7 @@ public API may still change in a minor release.
 
 - **A message being handled when the context is cancelled is failed, not rescued.** Its context is
   cancelled with the consumer's, and whatever the handler returns goes to the error strategy like any
-  other result: the engine cannot tell "this failed" from "this was abandoned", and does not try.
+  other result: the subscriber cannot tell "this failed" from "this was abandoned", and does not try.
   Under `Skip` that means a message interrupted by shutdown is skipped like any other failure. The
   alternative — handing handlers a context that survives cancellation — costs a second context, a
   deadline goroutine and a timeout the library cannot enforce anyway.
@@ -303,7 +336,7 @@ public API may still change in a minor release.
 
 - **Retry and DLQ writes are confirmed before the source offset is stored.** The retry strategy
   wrote with a fire-and-forget producer: `HandleError` returned as soon as a record was queued
-  locally, and the engine stored the source offset on the strength of it. A retry or DLQ write the
+  locally, and the subscriber stored the source offset on the strength of it. A retry or DLQ write the
   broker refused, or never received, still advanced the offset, and the message was lost. The
   strategy now writes through a `publish` publisher (one, for both topics; `acks=all`, idempotence
   on) and `HandleError` returns nil only once the broker has acknowledged every record of the call.
