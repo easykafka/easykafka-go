@@ -149,3 +149,25 @@ func TestMessageFromContextEmptyOnBareContext(t *testing.T) {
 	assert.False(t, ok)
 	assert.Nil(t, msg)
 }
+
+// TestGetRetryStepRejectsOutOfRange verifies that a step header outside int32's
+// range reads as absent (0) rather than wrapping into a different step.
+func TestGetRetryStepRejectsOutOfRange(t *testing.T) {
+	cases := []struct {
+		value string
+		want  int32
+	}{
+		{"3", 3},
+		{"2147483647", 2147483647}, // math.MaxInt32
+		{"2147483648", 0},          // one past it: would wrap to a negative step
+		{"-2147483649", 0},         // one below math.MinInt32
+		{"4294967298", 0},          // 2^32 + 2: would truncate to step 2
+		{"not-a-number", 0},
+	}
+	for _, tc := range cases {
+		t.Run(tc.value, func(t *testing.T) {
+			msg := &subscribe.Message{Headers: map[string]string{subscribe.HeaderRetryStep: tc.value}}
+			assert.Equal(t, tc.want, subscribe.GetRetryStep(msg))
+		})
+	}
+}

@@ -64,13 +64,13 @@ func GetRetryStep(msg *types.Message) int32 {
 	if !ok {
 		return 0
 	}
-	step, err := strconv.Atoi(val)
+	// Parsed at 32 bits, so a value outside int32's range is an error rather
+	// than silently wrapped into a different step.
+	step, err := strconv.ParseInt(val, 10, 32)
 	if err != nil {
-		return 0
+		return 0 // unparseable or out of range: start from the beginning
 	}
-	// TODO(lint): gosec G109 — validate that the parsed step fits in int32
-	// instead of truncating silently.
-	return int32(step) //nolint:gosec // see TODO above
+	return int32(step)
 }
 
 // GetErrorCode reads the error code of the failure that republished this
