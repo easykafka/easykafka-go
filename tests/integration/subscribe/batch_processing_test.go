@@ -220,7 +220,11 @@ func TestBatchProcessing_AtomicCommit(t *testing.T) {
 
 	topic := sharedhelpers.UniqueTopicName(t, "test-batch-commit")
 	groupID := fmt.Sprintf("test-batch-commit-group-%d", time.Now().UnixNano())
-	cluster.CreateTopic(ctx, t, topic, 1) // todo: with more than one partition this will probably not work!
+	// One partition is enough here: storing the highest offset of each partition
+	// in a batch is covered on several partitions by the unit tests
+	// (TestBatchSubscriber_CommitsHighestOffsetPerPartition) and against a broker
+	// (TestPartialBatchFailuresOnOnePartitionCommitBoth, on two partitions).
+	cluster.CreateTopic(ctx, t, topic, 1)
 
 	// Produce 3 messages
 	messages := []string{"one", "two", "three"}

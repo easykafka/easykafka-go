@@ -3,6 +3,7 @@ package subscribe_test
 import (
 	"context"
 	"fmt"
+	"slices"
 	"sync"
 	"testing"
 	"time"
@@ -199,9 +200,7 @@ func TestAtLeastOnceAfterBrokerRestart(t *testing.T) {
 	}
 
 	// Every produced message (pre and post restart) must appear at least once
-	// TODO(lint): gocritic appendAssign — appending to preMessages aliases its
-	// backing array; build the union into a fresh slice instead.
-	allProduced := append(preMessages, postMessages...) //nolint:gocritic // see TODO above
+	allProduced := slices.Concat(preMessages, postMessages)
 	for _, msg := range allProduced {
 		assert.GreaterOrEqual(t, receivedSet[msg], 1,
 			"message %q was never delivered after broker restart (violates at-least-once)", msg)
