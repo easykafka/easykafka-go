@@ -148,7 +148,15 @@ func (s *Subscriber) Start(ctx context.Context) error {
 	return err
 }
 
-// GetConfig returns the Config of a Subscriber for testing/inspection purposes.
+// GetConfig returns the configuration a Subscriber was built with: the values
+// its options set, after defaults. It exists for the library's own tests and is
+// not meant for use in applications.
+//
+// Do not use it to change how a subscriber behaves. The Config is a copy, but
+// some of its fields share data with the subscriber, KafkaConfig above all:
+// writing into that map changes what Start configures librdkafka with. Config's
+// fields are not covered by any compatibility promise and may change in any
+// release. Code that relies on GetConfig does so at its own risk.
 func GetConfig(s *Subscriber) Config {
 	return s.config
 }
