@@ -23,12 +23,16 @@
 [![Go Reference](https://pkg.go.dev/badge/github.com/easykafka/easykafka-go.svg)](https://pkg.go.dev/github.com/easykafka/easykafka-go)
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](https://opensource.org/licenses/MIT)
 
-A minimal, handler-based Kafka consumer library for Go, built on top of
-[confluent-kafka-go](https://github.com/confluentinc/confluent-kafka-go).
+A minimal Kafka library for Go, built on top of
+[confluent-kafka-go](https://github.com/confluentinc/confluent-kafka-go), with one package per side:
 
-Write a function, point it at a topic, and let the library handle polling,
-offset commits, rebalancing, and error recovery.
+* **`subscribe`** — write a handler, point it at a topic, and let the library handle polling,
+  offset commits, rebalancing, and error recovery.
+* **`publish`** — write typed records and know each one was written: a record counts only once the
+  broker has acknowledged it, and one that is not is reported, never lost silently.
 
+* **[Developer documentation](developer-doc.md)** — how the library works and why: delivery
+  guarantees, offsets, outages, and the design decisions with their costs.
 * **[Changelog](CHANGELOG.md)** — what each release contains, and what it deliberately does not.
 
 ## 💡 Why easykafka?
@@ -43,6 +47,12 @@ and operational plumbing. You write a plain handler function; the library
 provides high-level, composable blueprints — like retry-with-DLQ — so you can
 focus on *what* to do with a message instead of *how* to survive when things
 go wrong.
+
+Writing has the same problem in reverse. A Kafka client's `Produce` only queues a record in memory
+and returns; whether the broker ever stored it is reported later, on a channel that is easy to
+ignore. **easykafka**'s publisher makes the outcome part of the call: `Publish` returns once the
+record is acknowledged, durable defaults keep it acknowledged through a broker outage, and every
+record that fails reaches you.
 
 ## 🛠 Installation
 
@@ -79,6 +89,8 @@ next record and nothing more. Kafka's own words stay where they are Kafka's: a `
 
 ## 🚀 Quick Start
 
+### Subscribing
+
 ```go
 package main
 
@@ -91,7 +103,7 @@ import (
 )
 
 func main() {
-	consumer, err := subscribe.New(
+	subscriber, err := subscribe.New(
 		subscribe.WithTopic("orders"),
 		subscribe.WithBrokers("localhost:9092"),
 		subscribe.WithConsumerGroup("order-processors"),
@@ -104,13 +116,13 @@ func main() {
 		log.Fatal(err)
 	}
 
-	if err := consumer.Start(context.Background()); err != nil {
+	if err := subscriber.Start(context.Background()); err != nil {
 		log.Fatal(err)
 	}
 }
 ```
 
-That's it — the consumer connects, polls messages, calls your handler, and
+That's it — the subscriber connects, polls messages, calls your handler, and
 commits offsets on success.
 
 A handler reports failure by returning a `*Failure` — `return
@@ -118,7 +130,58 @@ A handler reports failure by returning a `*Failure` — `return
 type rather than an `error` on purpose: a nil `*Failure` is always nil, whereas
 a nil pointer inside an `error` is not, and would read as a failure.
 
-## 🏷 Message Metadata
+### Publishing
+
+```go
+package main
+
+import (
+	"context"
+	"log"
+	"time"
+
+	"github.com/easykafka/easykafka-go/publish"
+)
+
+type Invoice struct {
+	ID     string  `json:"id"`
+	Amount float64 `json:"amount"`
+}
+
+func main() {
+	publisher, err := publish.New(publish.WithBrokers("localhost:9092"))
+	if err != nil {
+		log.Fatal(err)
+	}
+	defer func() {
+		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+		defer cancel()
+		_ = publisher.Close(ctx) // delivers or reports every record still queued
+	}()
+
+	invoices := publisher.Bind(publish.Topic[string, Invoice]{
+		Name:        "invoices",
+		EncodeKey:   publish.StringKey,
+		EncodeValue: publish.JSONValue[Invoice], // spell out the type argument
+	})
+
+	invoice := Invoice{ID: "INV-1", Amount: 12.5}
+	if err := invoices.Publish(context.Background(), invoice.ID, invoice); err != nil {
+		log.Printf("not delivered: %v", err) // a *publish.DeliveryError says why
+	}
+}
+```
+
+`Publish` returns nil once the broker has acknowledged the record, with `acks=all` and idempotence
+on by default. See [📤 Publishing](#-publishing) for waiting on many records at once, outages,
+partitioning and shutdown.
+
+## 📥 Subscribing
+
+Everything about `subscribe`: reading a topic as a member of a consumer group, handling records,
+and what happens to the ones that fail.
+
+### 🏷 Message Metadata
 
 A handler receives the payload. When it needs more — which topic, which
 partition, which offset, the timestamp, the headers — it reads the message off
@@ -148,7 +211,7 @@ headers, topic, partition and offset of that one message (see
 There is no exported way to *put* a message on a context. Handlers read what the
 library wrote; they cannot plant a value the library then dispatches through.
 
-### Retry headers
+#### Retry headers
 
 Records the library republishes to the retry and DLQ topics carry headers
 describing why they are there. The keys are exported as constants, and the
@@ -214,7 +277,7 @@ tooling: `HeaderRetryAttempt`, `HeaderRetryTime`, `HeaderRetryStep`,
 `HeaderErrorCode`, `HeaderErrorMessage`, `HeaderOriginalTopic`,
 `HeaderOriginalPartition`, `HeaderOriginalOffset`, `HeaderFailedAt`.
 
-## 🛑 Stopping
+### 🛑 Stopping
 
 **Cancelling the context passed to `Start` is the only way to stop a consumer.**
 `Start` returns once that consumer's poll loop has exited, its final offsets are
@@ -304,7 +367,7 @@ Go cannot kill a goroutine, so no timeout the library held could change that.
 Bounding the wait is the caller's job, because only the caller can decide to
 exit. The real hard deadline is the orchestrator's.
 
-## 📦 Batch Processing
+### 📦 Batch Processing
 
 For high-throughput workloads, switch to batch mode:
 
@@ -386,7 +449,7 @@ assert.Nil(t, batch.Items()[0].Failed())
 assert.NotNil(t, batch.Items()[1].Failed())
 ```
 
-### Reporting a failure
+#### Reporting a failure
 
 A `Failure` carries the error and, optionally, two values the handler owns:
 
@@ -421,7 +484,7 @@ item.Fail(subscribe.Failure{Err: fmt.Errorf("%w: unmarshal: %v", subscribe.ErrPe
 It has to be `%w`. `%v` compiles, reads almost the same, and drops the marker,
 so the message walks the whole retry ladder after all.
 
-## ⚡ Error Strategies
+### ⚡ Error Strategies
 
 Pluggable strategies control what happens when a handler reports a failure:
 
@@ -431,7 +494,7 @@ Pluggable strategies control what happens when a handler reports a failure:
 | **FailFast** | Stop consumer immediately | Critical processing, manual intervention |
 | **Retry + DLQ** | Retry via Kafka topic with exponential backoff; route to DLQ after max attempts, or at once for `ErrPermanent` | Production systems with automatic recovery |
 
-### Retry + DLQ
+#### Retry + DLQ
 
 ```go
 retryStrategy, err := subscribe.NewRetryStrategy(
@@ -516,7 +579,7 @@ straight back to the DLQ on its first failure.
 | `WithCustomBackoff(fn)` | — | Replaces the three options above |
 | `WithDeliveryErrorFunc(fn)` | — | Called for every retry/DLQ record the broker did not acknowledge |
 
-#### Observing failed retry and DLQ writes
+##### Observing failed retry and DLQ writes
 
 A write to the retry or DLQ topic can fail — the broker rejects the record, or is unreachable for
 longer than the delivery timeout. The consumer then stops (see above), and the library logs the
@@ -553,7 +616,7 @@ The function runs on the publisher's report goroutine, so it must not block — 
 waits behind it — and must not call anything that closes the consumer. A panic is recovered and
 logged (`EK_PUBLISH_CALLBACK_PANIC`).
 
-## ⏱ Commit Cadence
+### ⏱ Commit Cadence
 
 By default the library commits an offset after every message, which is the
 narrowest possible duplicate window and costs one round-trip to the group
@@ -573,9 +636,9 @@ were handled, so a committed offset can never run ahead of the work. Offsets are
 still committed immediately on revocation and at shutdown, whatever the
 interval, so a rebalance or a clean stop does not replay.
 
-## ⚙️ Configuration Reference
+### ⚙️ Subscribe configuration reference
 
-### Required Options
+#### Required Options
 
 | Option | Description |
 |---|---|
@@ -584,7 +647,7 @@ interval, so a rebalance or a clean stop does not replay.
 | `WithConsumerGroup(id)` | Consumer group ID |
 | `WithHandler(fn)` or `WithBatchHandler(fn)` | Message processing function: `func(ctx, payload []byte) *Failure`, or `func(ctx, batch *Batch) *Failure` for batch mode |
 
-### Optional Options
+#### Optional Options
 
 | Option | Default | Description |
 |---|---|---|
@@ -596,7 +659,7 @@ interval, so a rebalance or a clean stop does not replay.
 | `WithLogger(l)` | no-op | Structured logger (zerolog) |
 | `WithKafkaConfig(m)` | — | Passthrough to confluent-kafka-go |
 
-### Kafka Config Passthrough
+#### Kafka Config Passthrough
 
 Low-level confluent-kafka-go settings can be passed through directly:
 
@@ -641,6 +704,168 @@ cooperative strategy breaks, and so does the newer consumer group protocol
 legitimate choice for a consumer that only wants new events. But `latest` is not
 at-least-once: whenever the group has no committed offset, on first start or
 after the broker expires its offsets, everything already on the topic is skipped.
+
+## 📤 Publishing
+
+Everything about `publish`: writing records and knowing what became of each.
+
+### Topics and writers
+
+A `Publisher` owns one librdkafka producer, shared by every topic it writes. Declare each topic once
+as a `Topic[K, V]` (its name, how to encode a key and a value, headers added to every record) and
+`Bind` it to get a typed `Writer[K, V]`:
+
+```go
+orders := publisher.Bind(publish.Topic[string, Order]{
+	Name:        "orders",
+	EncodeKey:   publish.StringKey,
+	EncodeValue: publish.JSONValue[Order],
+	Headers:     []publish.Header{{Key: "__TypeId__", Value: []byte("Order")}},
+})
+```
+
+`StringKey`, `BytesKey` and `Int64Key` encode keys; `JSONValue` and `RawValue` encode values; any
+`func(T) ([]byte, error)` will do for a format of your own. Spell out `JSONValue`'s type argument.
+A tombstone, a record with a nil value, is written on purpose with `Delete` or `SendDelete`: a value
+that encodes to nil is refused.
+
+### Waiting for the broker: `Publish`, `Send`, `WaitAll`
+
+A Kafka client's produce call only puts the record in a local queue; librdkafka sends it later, and
+the outcome comes back as a *delivery report*. The writer gives you both ways to deal with that:
+
+| Call | Returns | Use it when |
+|---|---|---|
+| `Publish(ctx, key, value)` | once the broker has acknowledged the record, or refused it | one record at a time |
+| `Send(key, value)` | at once, with a `*Delivery` to wait on | many records: `Send` them all, then `WaitAll` once |
+| `Delete` / `SendDelete` | as `Publish` / `Send`, for a tombstone | deleting a key on a compacted topic |
+
+```go
+deliveries := make([]*publish.Delivery, 0, len(batch))
+for _, order := range batch {
+	delivery, err := orders.Send(order.ID, order)
+	if err != nil {
+		return err // failed locally: encoding, a full queue, a closed publisher
+	}
+	deliveries = append(deliveries, delivery)
+}
+if err := publish.WaitAll(ctx, deliveries...); err != nil {
+	return err // every failure, joined
+}
+```
+
+Waiting for each record in turn costs a broker round trip per record; `WaitAll` costs one for the
+lot. A record the broker did not acknowledge comes back from the wait as a `*publish.DeliveryError`
+(`errors.As`), carrying the topic, partition, key, value, headers and librdkafka's error code;
+`errors.Is` finds the cause, such as `ErrDeliveryTimeout`, or `ErrNotDelivered` for a record purged
+at `Close`. A record that never left your process fails `Send` (or `Publish`) itself, with
+`ErrEncode`, `ErrQueueFull`, `ErrClosed`, or `ErrFatal` after a fatal producer error.
+
+A context that ends while you wait abandons the wait, not the record: it may still be delivered, and
+it is still reported.
+
+### Acks, idempotence, and outages
+
+A publisher starts with `acks=all` (a record is acknowledged once every in-sync replica has it),
+idempotence on (librdkafka's retries neither duplicate nor reorder records), and a 30 s delivery
+timeout. Measured on a three-broker cluster with replication factor 3 and `min.insync.replicas=2`:
+
+| Situation | Default publisher | With `WithAcksLeader()` |
+|---|---|---|
+| One broker restarted at a time (a rolling update) | ✅ no failures; latency rises while leaders move (worst measured: 1.05 s) | ✅ |
+| One broker crashes | ✅ no failures; writes stall for about 10 s until the cluster notices | ✅ after a leader election; records the dead leader had not replicated are lost |
+| Two brokers down | ❌ every write fails with `ErrDeliveryTimeout`, after the delivery timeout | ✅ written to a single copy |
+
+`acks=all` is only as strong as the topic's `min.insync.replicas`: with 2 of 3 replicas required,
+one broker can be down. `WithAcksLeader()` (acks=1, idempotence off) suits clusters whose
+`min.insync.replicas` equals their replication factor, where `acks=all` fails every write while a
+broker is down. `WithoutIdempotence()` keeps `acks=all` and turns idempotence off, as an escape hatch.
+
+### Partitioning
+
+The partitioner maps a key to a partition, and records with the same key stay in order only on the
+same partition. Two writers put a key on the same partition only if they use the same partitioner
+and the topic has the same partition count for both:
+
+| Partitioner | Keys hashed with | A null key goes to |
+|---|---|---|
+| `PartitionerDefault` (default) | CRC32 | a random partition |
+| `PartitionerJavaCompatible` | murmur2, as the Java client's default | a random partition |
+| `PartitionerMurmur2`, `PartitionerConsistent`, `PartitionerFNV1A` | murmur2, CRC32, FNV-1a | one fixed partition |
+| `PartitionerFNV1ARandom` | FNV-1a | a random partition |
+| `PartitionerRandom` | — (key ignored) | a random partition |
+
+Use `WithPartitioner(publish.PartitionerJavaCompatible)` for a topic that Java producers also write.
+The partitioner is per publisher; a service needing two creates two publishers. There is no way to
+send a record to a partition of your choosing.
+
+### Publishing from a handler
+
+A subscriber stores a record's offset only after its handler returns. So a handler that publishes,
+and returns only once the write is acknowledged, is at-least-once end to end: a write that fails
+fails the handler, and the record is consumed again.
+
+```go
+subscribe.WithHandler(func(ctx context.Context, payload []byte) *subscribe.Failure {
+	invoice, err := buildInvoice(payload)
+	if err != nil {
+		return &subscribe.Failure{Err: err}
+	}
+	// WithoutCancel: at shutdown, finish confirming a record already sent rather
+	// than abandon it and write it again on redelivery. The delivery timeout
+	// still bounds the wait.
+	if err := invoices.Publish(context.WithoutCancel(ctx), invoice.ID, invoice); err != nil {
+		return &subscribe.Failure{Err: err} // not acknowledged: the offset is not stored
+	}
+	return nil
+})
+```
+
+A batch handler `Send`s every record of the batch, then calls `WaitAll` once.
+
+### Shutdown
+
+`Close` stops accepting records, waits until its context ends for librdkafka to deliver what it
+still holds, then purges whatever is left and reports each purged record as not delivered
+(`ErrNotDelivered`), through its `Delivery` and the delivery-error callback. Nothing accepted is
+dropped silently. It returns an error wrapping `ErrNotDelivered` with the count, if any were purged.
+
+Close it last, after whatever writes through it has stopped, and with a context of its own: at
+shutdown the application's context is usually cancelled already. With a subscriber that publishes,
+cancel the subscriber's context, wait for `Start` to return, then close the publisher.
+
+### Health, fatal errors, and failures you did not wait for
+
+* **`Ping(ctx)`** checks that a broker answers and every bound topic exists, naming the missing ones
+  (`ErrTopicNotFound`). Bind your topics first; it suits a startup check or a readiness probe.
+* **`Err()`** returns the producer's fatal error, if it has had one. A few rare errors, mostly
+  around idempotence, leave a producer unable to write: every later write fails with `ErrFatal`, and
+  the publisher does not recover. Fail a liveness probe on `Err()`, and use
+  `WithFatalHandler(func(error))` to start a graceful shutdown so the process restarts with a fresh
+  publisher.
+* **`WithDeliveryErrorFunc(func(publish.DeliveryError))`** is called for every record that was not
+  acknowledged, whether or not anyone waits on it: a place for metrics and alerts. It runs on the
+  publisher's report goroutine, so it must not block, and must not call `Close`.
+
+### Publish configuration reference
+
+| Option | Default | Description |
+|---|---|---|
+| `WithBrokers(addrs...)` | — (required) | Broker addresses |
+| `WithKafkaConfig(m)` | — | Passthrough to librdkafka: security, SASL, TLS, `client.id`, `linger.ms`, `compression.type`, … |
+| `WithAcksLeader()` | off: `acks=all` | `acks=1`, idempotence off |
+| `WithoutIdempotence()` | idempotence on | Keeps `acks=all`, turns idempotence off |
+| `WithPartitioner(p)` | `PartitionerDefault` | How keys map to partitions |
+| `WithDeliveryTimeout(d)` | 30s | How long a record may take to be acknowledged; the bound on every wait |
+| `WithDeliveryErrorFunc(fn)` | none | Called for every record not acknowledged |
+| `WithFatalHandler(fn)` | none | Called once on a fatal producer error |
+| `WithLogger(l)` | no-op | Structured logger (zerolog) |
+
+Keys the publisher manages are rejected by `WithKafkaConfig`, each with the option that sets it:
+`bootstrap.servers`, `acks`, `request.required.acks`, `enable.idempotence`,
+`enable.gapless.guarantee`, `partitioner`, `message.timeout.ms`, `delivery.timeout.ms`,
+`transactional.id`, `default.topic.config`, and every key starting with `go.` or `{topic}.`. While
+idempotence is on, `max.in.flight.requests.per.connection` must be at most 5.
 
 ## 🔎 Log codes
 
