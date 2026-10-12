@@ -344,6 +344,57 @@ func TestNewAppliesDefaultErrorStrategy(t *testing.T) {
 	assert.Equal(t, "skip", cfg.ErrorStrategy.Name())
 }
 
+// TestNewAppliesDefaultErrorStrategyInBatchMode verifies that batch mode gets
+// the same default strategy as single-message mode.
+func TestNewAppliesDefaultErrorStrategyInBatchMode(t *testing.T) {
+	consumer, err := subscribe.New(
+		subscribe.WithTopic("test-topic"),
+		subscribe.WithBrokers("localhost:9092"),
+		subscribe.WithConsumerGroup("test-group"),
+		subscribe.WithBatchHandler(helpers.NoopBatchHandler),
+	)
+	require.NoError(t, err)
+
+	cfg := subscribe.GetConfig(consumer)
+	require.NotNil(t, cfg.ErrorStrategy)
+	assert.Equal(t, "skip", cfg.ErrorStrategy.Name())
+}
+
+// TestWithKafkaConfigCopiesTheMap verifies that changing the caller's map after
+// New does not change the subscriber's configuration.
+func TestWithKafkaConfigCopiesTheMap(t *testing.T) {
+	kafkaConfig := map[string]any{"session.timeout.ms": 30000}
+	consumer, err := subscribe.New(
+		subscribe.WithTopic("test-topic"),
+		subscribe.WithBrokers("localhost:9092"),
+		subscribe.WithConsumerGroup("test-group"),
+		subscribe.WithHandler(helpers.NoopHandler),
+		subscribe.WithKafkaConfig(kafkaConfig),
+	)
+	require.NoError(t, err)
+
+	kafkaConfig["session.timeout.ms"] = 1
+	kafkaConfig["fetch.min.bytes"] = 1
+
+	assert.Equal(t, map[string]any{"session.timeout.ms": 30000}, subscribe.GetConfig(consumer).KafkaConfig)
+}
+
+// TestWithKafkaConfigLaterCallReplaces verifies the documented behaviour of a
+// second call: it replaces the first map rather than merging into it.
+func TestWithKafkaConfigLaterCallReplaces(t *testing.T) {
+	consumer, err := subscribe.New(
+		subscribe.WithTopic("test-topic"),
+		subscribe.WithBrokers("localhost:9092"),
+		subscribe.WithConsumerGroup("test-group"),
+		subscribe.WithHandler(helpers.NoopHandler),
+		subscribe.WithKafkaConfig(map[string]any{"session.timeout.ms": 30000}),
+		subscribe.WithKafkaConfig(map[string]any{"fetch.min.bytes": 1}),
+	)
+	require.NoError(t, err)
+
+	assert.Equal(t, map[string]any{"fetch.min.bytes": 1}, subscribe.GetConfig(consumer).KafkaConfig)
+}
+
 // TestNewInitializesKafkaConfigMap verifies that KafkaConfig becomes a non-nil map.
 func TestNewInitializesKafkaConfigMap(t *testing.T) {
 	consumer, err := subscribe.New(

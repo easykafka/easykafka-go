@@ -3,6 +3,7 @@ package subscribe
 import (
 	"errors"
 	"fmt"
+	"maps"
 	"slices"
 	"time"
 
@@ -46,12 +47,8 @@ func (c *Config) ApplyDefaults() {
 	if c.PollTimeout == 0 {
 		c.PollTimeout = 100 * time.Millisecond //nolint:mnd
 	}
-	if c.Mode == ModeSingleMessage && c.ErrorStrategy == nil {
-		// Default error strategy is skip for single message mode
-		c.ErrorStrategy = strategy.NewSkipStrategy(c.Logger)
-	}
-	if c.Mode == ModeBatch && c.ErrorStrategy == nil {
-		// Default error strategy is skip for batch mode
+	if c.ErrorStrategy == nil {
+		// Skip is the default in both modes.
 		c.ErrorStrategy = strategy.NewSkipStrategy(c.Logger)
 	}
 	if c.KafkaConfig == nil {
@@ -240,7 +237,7 @@ func WithAutoCommitEvery(d time.Duration) Option {
 	}
 }
 
-// WithLogger specifies a custom zerolog logger. Default uses global log.Logger.
+// WithLogger sets the logger. By default the subscriber logs nothing.
 func WithLogger(logger zerolog.Logger) Option {
 	return func(c *Config) error {
 		c.Logger = logger
@@ -275,10 +272,13 @@ var managedKafkaKeys = map[string]string{
 // committed offset: on first start, and again after the broker expires the
 // group's offsets (offsets.retention.minutes, 7 days by default).
 //
-// The retry strategy's producers inherit the map too, so a cluster that needs
-// security, SASL or TLS settings is configured once for both. Consumer-only keys
-// and confluent-kafka-go's own "go." keys are left out, and the producers keep
-// acks=all whatever the map says.
+// The map is copied, never modified, and a later call replaces an earlier one.
+//
+// The retry strategy's publisher inherits the map too, so a cluster that needs
+// security, SASL or TLS settings is configured once for both. Consumer-only keys,
+// confluent-kafka-go's own "go." keys and the keys the publisher manages are left
+// out, and the publisher keeps acks=all, idempotence and its delivery timeout
+// whatever the map says.
 func WithKafkaConfig(config map[string]any) Option {
 	return func(c *Config) error {
 		if config == nil {
@@ -290,7 +290,7 @@ func WithKafkaConfig(config map[string]any) Option {
 				return fmt.Errorf("kafka config key %q is managed by the library (%s) and cannot be overridden", key, reason)
 			}
 		}
-		c.KafkaConfig = config
+		c.KafkaConfig = maps.Clone(config)
 		return nil
 	}
 }
