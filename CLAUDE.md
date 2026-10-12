@@ -6,6 +6,11 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 EasyKafka is a handler-based Kafka library for Go, built on top of `confluent-kafka-go`. Its `subscribe` package abstracts polling, offset management, rebalancing, and error recovery so developers write clean handler logic instead of Kafka infrastructure code; its `publish` package writes records and confirms each one.
 
+**[developer-doc.md](developer-doc.md) explains how the library works and why**: the
+subscribe/consume and publish/produce vocabulary, librdkafka's local queue and delivery reports, how
+publishing is made durable, offsets, the driver fakes, and the design decisions with their costs.
+Read it before changing behaviour, and keep it true when you do.
+
 ## Commands
 
 ### Testing
@@ -50,8 +55,7 @@ Version pins are single-sourced:
   `make install-test-tools` and runs tests through `make test-unit` /
   `make test-integration`, so flags cannot drift between local and CI.
 
-`.golangci.yml` is kept in sync with the other SRM Go repos (`srm-common`,
-`srm-overask`, `srm-transactional-core`); `tests/` is excluded from the
+`.golangci.yml` is kept in sync with the maintainers' other Go repositories; `tests/` is excluded from the
 churn-heavy linters (`mnd`, `lll`, `dupl`, `gocognit`, `gosec`, `errcheck`,
 `unparam`). Note golangci-lint v2 requires `golangci-lint-action@v7` or newer.
 
@@ -95,7 +99,7 @@ new rule goes into that comment in the same change, with a can-fail test.
   `publish.WithProducerFactory`; its argument names `internal/` types, so no other module can use it
 - `handler.go`, `strategy.go`, `metadata.go` — re-exports from internal packages: the handler types
   and `Failure`/`Batch`; the error strategies and their options; the message metadata accessors
-- `doc.go` — the package documentation
+- `doc.go` — the package documentation; `example_test.go` — the compiled examples
 
 ### Internal packages (subscribe side)
 - `internal/subscribe/subscribedriver/` — the only subscribe code importing confluent-kafka-go: the
@@ -106,6 +110,43 @@ new rule goes into that comment in the same change, with a can-fail test.
 - `internal/subscribe/metadata/` — message metadata via context decorators and header parsing
 - `internal/subscribe/strategy/` — the error strategies, and `PublisherConfig`, which builds the retry
   publisher's Kafka config from the subscriber's
+
+### Public API (`publish`)
+- `publisher.go` — the whole `Publisher` type: `New`, `Bind`, `Ping`, `Err`, `Close`, and its
+  internals as methods: `enqueue` (hands a record to the driver), `readReports` and `settle` (the
+  report goroutine), the fatal-error handling and `drain`. `New` returns the concrete `*Publisher`.
+- `writer.go` — `Writer[K, V]`, what `Bind` returns: `Publish`, `Send`, `Delete`, `SendDelete`
+- `topic.go` — `Topic[K, V]` and `Header`; `codec.go` — `StringKey`, `BytesKey`, `Int64Key`,
+  `JSONValue`, `RawValue`; `partitioner.go` — the `Partitioner` constants
+- `delivery.go` — `Delivery`, `Result`, `WaitAll`; `errors.go` — the sentinels and `DeliveryError`
+- `options.go` — the functional options, the managed-key rejection in `WithKafkaConfig`, and
+  `WithProducerFactory`, the unit tests' seam onto `FakeProducer`
+- `doc.go` — the package documentation and quick start; `example_test.go` — the compiled examples
+
+### Internal packages (publish side)
+- `internal/publish/publishdriver/` — the only publish code importing confluent-kafka-go: the
+  `Producer` interface the publisher uses, its unexported implementation, `New(Config)`,
+  `ConfigMap`, the sealed `Event` types (`Report`, `ClientError`), the error translation, and
+  `ManagedKeyReason`, the keys the publisher sets itself
+
+### What the publisher must keep doing
+
+Five things the code guards and a change could quietly break:
+
+- **`enqueue` holds the lifecycle read lock from its check of `closed` until `Produce` returns.**
+  Close takes the write lock to set `closed`, so no record can land behind the final flush and
+  purge, where it would never be reported.
+- **Every `Delivery` resolves exactly once, from its own report.** The `Delivery` is the token
+  passed to `Produce`; `settle` gets it back from the report. A second report, or a foreign token, is
+  logged (`EK_PUBLISH_UNMATCHED_REPORT`) and dropped; the first outcome stands.
+- **The delivery-error callback runs before the `Delivery` resolves.** A waiter whose `Wait` returns
+  can rely on the callback having run already; the retry strategy does.
+- **The first fatal error is kept, and never cleared.** Every later write fails with `ErrFatal`, and
+  `Err`/`Ping` return it. The publisher does not rebuild its producer: an event that needs an
+  operator must not be hidden.
+- **`Close` reports every record it accepted.** It flushes until its context ends, then purges and
+  flushes once more, so each purge report reaches its `Delivery` and the callback before the
+  producer closes. Nothing is dropped silently.
 
 ### What of `internal/subscribe/metadata` is public, and what is deliberately not
 
@@ -127,8 +168,8 @@ Two things to preserve here:
 - **`MessageFromContext` returns `(nil, false)` in batch mode**, because `dispatchBatch` passes the
   raw loop context. That is documented in three places and pinned by
   `TestMessageFromContextIsEmptyInBatchMode`. Do not "fix" it by attaching one message of the batch.
-  Nothing is missing: the per-message batch results in `srm-specs` `003-partial-batches` gave the
-  batch handler a `*Batch`, and each item's `Message()` carries that message's metadata.
+  Nothing is missing: the batch handler is given a `*Batch`, and each item's `Message()` carries
+  that message's metadata.
 
 Tests reach the public symbols through `subscribe.` rather than `internal/subscribe/metadata`
 wherever they are exercising the export, so a regression in the re-export fails a test. Nothing
@@ -249,8 +290,12 @@ Test packages are named `subscribe_test`, `publish_test` and `architecture_test`
   `internal/script` package is unreachable from `tests/`, so it has no unit tests; the playground
   itself is how it is exercised.
 
-**All tests live under `tests/`** — there are no in-package `_test.go` files. Unexported logic is
-therefore unreachable from tests, which is why some internals are exported within `internal/`.
+**All tests live under `tests/`** — there are no in-package `_test.go` files, with one exception:
+`publish/example_test.go` and `subscribe/example_test.go`, the compiled examples. They are
+documentation, not tests: Go renders an `Example` on pkg.go.dev only from a `_test.go` file in the
+package's own directory. They declare no `// Output:`, so `go test` compiles them but never runs
+them: they have no broker to reach. Keep them compiling, and keep them true. Unexported logic is
+unreachable from tests, which is why some internals are exported within `internal/`.
 
 **Test files contain tests only.** Every helper — fakes, fixtures, shared setup — goes in a file of
 its own, never inside a `_test.go` file, in the lowest folder that covers every test using it: one
