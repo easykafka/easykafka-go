@@ -155,17 +155,59 @@ replicated.
 
 ### The poll loop
 
-One goroutine, the one that calls `Start`, runs the whole loop:
+You give the subscriber a handler and call `Start`. The goroutine that calls `Start` then runs the
+whole loop, one record at a time, until you cancel its context. Single-message mode is shown;
+batch mode differs only in collecting records before calling the handler (see *Batches* below):
 
 ```mermaid
-flowchart LR
-    poll[Poll] --> handle[handler]
-    handle -->|nil| store[store the offset]
-    handle -->|*Failure or panic| strategy[error strategy]
-    strategy -->|nil: routed| store
-    strategy -->|error| stop[stop: offset not stored]
-    store --> commit[commit] --> poll
+sequenceDiagram
+    autonumber
+    participant app as your code
+    box rgba(80, 140, 255, 0.15) easykafka-go
+        participant sub as Subscriber
+        participant strat as error strategy
+        participant drv as driver (subscribedriver)
+    end
+    box rgba(150, 150, 150, 0.15) confluent-kafka-go
+        participant rd as librdkafka (its threads)
+    end
+    participant k as broker
+
+    app->>sub: Start(ctx)
+    sub->>drv: connect, subscribe to the topic
+    drv->>rd: subscribe: librdkafka joins the consumer group
+    rd->>k: fetch records, in the background, ahead of Poll
+
+    loop until ctx is cancelled
+        sub->>drv: Poll
+        drv->>rd: Poll
+        rd-->>drv: next record from the local queue
+        drv-->>sub: the record, as a Message
+        sub->>app: your handler(ctx, payload)
+        alt handler returns nil
+            app-->>sub: nil
+        else handler returns a *Failure, or panics
+            app-->>sub: *Failure (a panic is turned into one)
+            sub->>strat: HandleError(record, failure)
+            strat-->>sub: nil: routed (skipped, or written to retry or DLQ)
+            Note over sub,strat: an error here stops the loop,<br/>with the offset not stored
+        end
+        sub->>drv: StoreOffset(record)
+        drv->>rd: store offset + 1, locally
+        sub->>drv: commit (skipped under WithAutoCommitEvery)
+        drv->>rd: Commit
+        rd->>k: the stored offsets, to the consumer group
+    end
+
+    app->>sub: cancel ctx
+    sub->>drv: final commit, close
+    sub-->>app: Start returns
 ```
+
+Your code appears twice: it calls `Start`, and the subscriber calls your handler. Everything between
+is the library. The error strategy is one of the library's (`Skip`, `FailFast`, `Retry`), or one you
+wrote. librdkafka fetches ahead on its own threads, so `Poll` usually just takes the next record
+from memory.
 
 * **The handler returns `*Failure`, not `error`.** nil means success. A panic is recovered and
   treated as a failure.
