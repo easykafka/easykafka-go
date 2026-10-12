@@ -63,29 +63,49 @@ wrapper around librdkafka, the C client. You need only a few facts about it to f
 
 ### One record, start to finish
 
+Every record you write gets a **`Delivery`**: a small object the library creates for that record
+alone, which will hold its outcome once the broker has answered. Until then it is empty. `Send`
+hands it to you straight away; its `Wait` method blocks until the outcome is there and returns it:
+nil if the broker acknowledged the record, or a `*DeliveryError` saying why not. `Publish` is simply
+`Send` followed by `Wait`. Getting the outcome into the right `Delivery` is the publisher's job, and
+the diagram shows how it does it.
+
 ```mermaid
 sequenceDiagram
     autonumber
     participant app as your code
-    participant pub as Publisher
-    participant rd as librdkafka (its threads)
+    box rgba(80, 140, 255, 0.15) easykafka-go
+        participant pub as Publisher
+        participant rg as report goroutine
+        participant drv as driver (publishdriver)
+    end
+    box rgba(150, 150, 150, 0.15) confluent-kafka-go
+        participant rd as librdkafka (its threads)
+    end
     participant k as broker
-    participant rg as report goroutine
 
     app->>pub: Send(key, value)
     pub->>pub: encode, create the record's Delivery
-    pub->>rd: Produce(record, token = the Delivery)
+    pub->>drv: Produce(record, token = the Delivery)
+    drv->>rd: Produce: queued in memory
     pub-->>app: the Delivery, at once
     rd->>k: a batch of records, later
     k-->>rd: acknowledged (or refused)
-    rd-->>rg: delivery report, carrying the token
+    rd-->>drv: delivery report, carrying the token
+    drv-->>rg: the report, translated
     rg->>rg: match the token to its Delivery, resolve it exactly once
     rg-->>app: Wait returns: nil, or a *DeliveryError
 ```
 
-* **The token is the record's own `Delivery`.** It travels through librdkafka and comes back on the
-  record's delivery report, so the report goroutine knows which record a report is about without a
-  lookup table. Each `Delivery` resolves exactly once; a second report for the same record would be
+The blue box is this library: the `Publisher` your code calls, the *report goroutine*
+each publisher starts in `New` and runs until `Close`, and the *driver*, the only code that talks to
+confluent-kafka-go. A goroutine inside the driver turns confluent's events into the library's own
+report type and passes them on. librdkafka runs on its own threads beneath confluent-kafka-go.
+
+* **The token is the record's own `Delivery`.** librdkafka lets the caller attach an opaque value,
+  a *token*, to each record it produces, and hands it back untouched on that record's delivery
+  report. The publisher attaches the record's `Delivery`, so the report goroutine knows which
+  `Delivery` a report belongs to without a lookup table. Each `Delivery` resolves exactly once; a second report for the same record would be
   a bug in the library or librdkafka, so it is logged (`EK_PUBLISH_UNMATCHED_REPORT`) and dropped.
 * **One goroutine reads every report**, per publisher. It resolves the `Delivery`, and for a failed
   record also calls the function given to `WithDeliveryErrorFunc`, whether or not anyone is waiting.
