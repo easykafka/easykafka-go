@@ -9,9 +9,8 @@ go 1.27.0
 // - zerolog: Latest for structured logging across consumer, strategies, and engine
 
 require (
-	github.com/confluentinc/confluent-kafka-go/v2 v2.15.0
-	github.com/moby/moby/api v1.56.0
-	github.com/moby/moby/client v0.5.1
+	github.com/confluentinc/confluent-kafka-go/v2 v2.15.1
+	github.com/moby/moby/api v1.56.1
 	github.com/rs/zerolog v1.35.1
 	github.com/stretchr/testify v1.12.1
 	github.com/testcontainers/testcontainers-go v0.44.0
@@ -45,6 +44,7 @@ require (
 	github.com/mattn/go-isatty v0.0.24 // indirect
 	github.com/moby/docker-image-spec v1.3.1 // indirect
 	github.com/moby/go-archive v0.3.3 // indirect
+	github.com/moby/moby/client v0.6.1 // indirect
 	github.com/moby/patternmatcher v0.6.1 // indirect
 	github.com/moby/sys/sequential v0.7.0 // indirect
 	github.com/moby/sys/user v0.4.1 // indirect
