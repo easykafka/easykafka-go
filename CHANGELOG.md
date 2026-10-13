@@ -332,6 +332,12 @@ public API may still change in a minor release.
   alternative — handing handlers a context that survives cancellation — costs a second context, a
   deadline goroutine and a timeout the library cannot enforce anyway.
 
+- **Requires `confluent-kafka-go` 2.16.0** (librdkafka 2.16), up from 2.13.0 in 0.1.0. It brings
+  2.15.1's fix for `Consumer.Close()` hanging after a fatal consumer error, and 2.16's for a consumer
+  whose background auto-commit still tried to commit partitions it had already lost. Under
+  `WithAutoCommitEvery`, a consumer ejected from its group now logs the failed commit on revocation
+  (`EK_COMMIT_FAILED`, `commit=revoke`) rather than a failed background one (`commit=auto`).
+
 ### Fixed
 
 - **Retry and DLQ writes are confirmed before the source offset is stored.** The retry strategy
@@ -376,6 +382,14 @@ public API may still change in a minor release.
 
 - **The package doc named the wrong default error strategy.** It listed `FailFast` as the default;
   the default is and always was `Skip`, for both single-message and batch mode.
+
+- **`WithKafkaConfig` copies the map it is given.** It kept the caller's map, so changing that map
+  after `New` changed what `Start` configured librdkafka with, and what the retry strategy's
+  publisher inherited. A second call still replaces the first, which is now documented.
+
+- **An out-of-range `easykafka.retry.step` header reads as absent.** A value outside `int32`'s range
+  was silently truncated into a different step, which a handler resuming at it would act on. It now
+  reads as 0, start from the beginning, like a value that does not parse.
 
 ## [0.1.0]
 
