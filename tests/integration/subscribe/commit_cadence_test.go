@@ -154,15 +154,13 @@ func TestAutoCommitEveryCleanShutdownLeavesNothingToReplay(t *testing.T) {
 		"a clean shutdown under an interval must leave nothing to replay")
 }
 
-// TestAutoCommitFailureIsLogged covers R3: under an interval the commit happens
-// on librdkafka's background thread, so a failure is reported as an
-// OffsetsCommitted event rather than returned. Without the driver handling that
-// event, a coordinator rejecting every commit would be completely silent while
-// the duplicate window grew.
+// TestCommitFailureOnEjectionIsLogged verifies that a consumer ejected from its
+// group under an auto-commit interval logs the commit that fails because of it,
+// keeps running, and gets the message again: a failed commit is neither silent,
+// nor fatal, nor a record of work as done.
 //
 // The provocation is the same as TestCommitFailureDuringGroupLossIsTolerated:
-// stall the handler past max.poll.interval.ms so the broker ejects the consumer,
-// leaving the background committer with no group to commit to.
+// stall the handler past max.poll.interval.ms so the broker ejects the consumer.
 //
 // One message is produced but the test waits for two deliveries, which looks
 // unreachable until the ejection is followed through. The sequence:
@@ -173,18 +171,30 @@ func TestAutoCommitEveryCleanShutdownLeavesNothingToReplay(t *testing.T) {
 //  3. Nothing was committable in the meantime: the offset is stored only after
 //     the handler returns, so the store is empty for this partition throughout.
 //  4. At 20s the handler returns, the subscriber stores the offset, and the
-//     background committer tries to publish it with no group to publish to.
-//     That failure is the log line asserted at the end.
+//     next commit fails, since the consumer no longer holds the partition. That
+//     failure is the EK_COMMIT_FAILED line asserted at the end.
 //  5. Polling resumes, the consumer rejoins, and the fetch position resets to
 //     the committed offset — still nothing, because the commit failed.
 //  6. msg-1 is redelivered. That second delivery is the signal to stop waiting,
 //     and doubles as proof that a failed commit recorded nothing as done.
 //
+// Which commit fails in step 4 depends on librdkafka. Up to 2.15, the background
+// committer still tried to commit the lost partition, and the driver logged the
+// failed OffsetsCommitted event ("auto-commit failed", commit=auto). From 2.16
+// librdkafka skips commits for an assignment it has lost (librdkafka #5585), and
+// it is the subscriber's own commit on revocation that fails (commit=revoke).
+// Either is logged under EK_COMMIT_FAILED, which is what the test asserts. Since
+// 2.16 this test no longer exercises the code that logs a failed background
+// commit (subscribedriver's consumer.Poll, the `case kfk.OffsetsCommitted:`
+// branch with e.Error != nil, which logs "auto-commit failed, offsets remain
+// stored" with commit=auto): librdkafka no longer produces a failing
+// OffsetsCommitted event in this scenario, so that branch has no test at all.
+//
 // So deliveries counts deliveries, not distinct messages: the same message
 // arrives twice.
-func TestAutoCommitFailureIsLogged(t *testing.T) {
-	t.Log("TestAutoCommitFailureIsLogged started")
-	defer t.Log("TestAutoCommitFailureIsLogged finished")
+func TestCommitFailureOnEjectionIsLogged(t *testing.T) {
+	t.Log("TestCommitFailureOnEjectionIsLogged started")
+	defer t.Log("TestCommitFailureOnEjectionIsLogged finished")
 
 	if testing.Short() {
 		t.Skip("skipping integration test in short mode")
@@ -256,12 +266,10 @@ func TestAutoCommitFailureIsLogged(t *testing.T) {
 
 	captured := logs.String()
 
-	// The failing OffsetsCommitted event reached the driver and was logged. Drop
-	// the R3 handler and this event falls to Poll's default branch, leaving the
-	// whole ejection silent.
-	assert.Contains(t, captured, "auto-commit failed, offsets remain stored",
-		"a failed background commit must be logged, not dropped in Poll's default branch; logs were:\n%s",
-		captured)
+	// The commit that failed because of the ejection was logged under its code,
+	// whichever commit it was (see step 4 above).
+	assert.Contains(t, captured, `"ek_code":"EK_COMMIT_FAILED"`,
+		"a commit failing after the ejection must be logged, not silent; logs were:\n%s", captured)
 	assert.NotContains(t, captured, "stopping consumer",
 		"a commit failure must never be treated as fatal")
 }
