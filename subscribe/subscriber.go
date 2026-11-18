@@ -98,8 +98,8 @@ func (s *Subscriber) Start(ctx context.Context) error {
 		Msg("subscriber starting")
 
 	// Initialize the error strategy first. A retry strategy that another running
-	// subscriber holds rejects the claim here, before SetLogger below could
-	// replace that subscriber's logger.
+	// subscriber holds rejects the claim here, before its logger could be
+	// replaced.
 	if init, ok := s.config.ErrorStrategy.(types.Initializable); ok {
 		initCfg := types.InitConfig{
 			Brokers:       s.config.Brokers,
@@ -111,10 +111,10 @@ func (s *Subscriber) Start(ctx context.Context) error {
 		if err := init.Initialize(initCfg); err != nil {
 			return fmt.Errorf("failed to initialize error strategy: %w", err)
 		}
-	}
-
-	// Wire logger into error strategy if it supports it
-	if la, ok := s.config.ErrorStrategy.(types.LoggerAware); ok {
+	} else if la, ok := s.config.ErrorStrategy.(types.LoggerAware); ok {
+		// else if: Initialize already sets the logger from InitConfig, so a
+		// strategy gets its logger exactly once. A second write here could race
+		// with a HandleError call already reading it.
 		la.SetLogger(s.config.Logger)
 	}
 
