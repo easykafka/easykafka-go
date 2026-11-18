@@ -961,8 +961,9 @@ happen. Its README has the quick start and a walkthrough of the scenarios.
 ## 📜 Releases
 
 Version history is in [CHANGELOG.md](CHANGELOG.md); tagged releases appear on
-[pkg.go.dev](https://pkg.go.dev/github.com/easykafka/easykafka-go). Pre-1.0, the public API may still
-change in a minor release.
+[pkg.go.dev](https://pkg.go.dev/github.com/easykafka/easykafka-go). The library follows semantic
+versioning: from 1.0.0, a breaking change to the public API, the log codes or the retry and DLQ
+headers waits for the next major version.
 
 ## 📄 Licence
 

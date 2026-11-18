@@ -2,8 +2,47 @@
 
 All notable changes to this project are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project adheres to
-[Semantic Versioning](https://semver.org/spec/v2.0.0.html) — with the usual pre-1.0 caveat that the
-public API may still change in a minor release.
+[Semantic Versioning](https://semver.org/spec/v2.0.0.html).
+
+## [1.0.0] - 2026-11-18
+
+The first stable release. The API is the one 0.2.0 shipped; what changes is the promise. From here
+on, a breaking change to it waits for 2.0.0.
+
+### What 1.0.0 covers
+
+These stay compatible across every 1.x release:
+
+- **The exported API of `subscribe` and `publish`**: the types, functions, options, sentinel errors
+  and error strategies, and what each is documented to do.
+- **The log codes.** Every `ek_code` value in the README's *Log codes* table keeps its name and
+  meaning. A message may be reworded; its code may not change.
+- **The wire format of retry and DLQ records**: the `easykafka.*` header names the `Header*`
+  constants spell out, and what each header carries. A record written by a 1.x subscriber stays
+  readable by any later 1.x subscriber, so a rolling upgrade never strands a retry topic.
+
+These are not covered:
+
+- **Anything under `internal/`.** Go already stops other modules from importing it.
+- **`subscribe.WithConsumerFactory` and `publish.WithProducerFactory`.** They are the unit tests'
+  seams onto the fake drivers. Their arguments name `internal/` types, so no other module can call
+  them anyway.
+
+### Changed
+
+- **Requires `confluent-kafka-go` 2.16.1**, up from 2.16.0: a patch release of the Kafka client. It
+  is the same version `easykafka-config-go` 1.0.0 requires, so a service using both libraries
+  builds against one librdkafka.
+
+### Fixed
+
+- **A data race when the retry strategy was handed its logger.** `Subscriber.Start` set the
+  strategy's logger twice: once in `Initialize`, then again straight after. The second write came
+  after the strategy had logged "retry strategy initialized", so anything calling the strategy from
+  another goroutine once that line appeared could read the logger while it was being written. The
+  race detector caught it in a unit test. In production the strategy is only called from the
+  subscriber's own poll loop, after `Start` has finished, so no service is known to have hit it. The
+  logger is now set exactly once, and which logger the strategy uses is unchanged.
 
 ## [0.2.0] - 2026-10-13
 
@@ -446,5 +485,6 @@ These are named because a reader may come looking:
   different pattern with no handlers, no retries and no offset commits; that is
   [easykafka-config-go](https://github.com/easykafka/easykafka-config-go).
 
+[1.0.0]: https://github.com/easykafka/easykafka-go/compare/v0.2.0...v1.0.0
 [0.2.0]: https://github.com/easykafka/easykafka-go/compare/v0.1.0...v0.2.0
 [0.1.0]: https://github.com/easykafka/easykafka-go/releases/tag/v0.1.0
